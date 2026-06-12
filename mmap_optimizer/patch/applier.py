@@ -20,8 +20,9 @@ class PatchApplier:
             new_content = (section.content.rstrip() + "\n" + patch.patch_text.strip()).strip()
         new_ir = base_prompt.prompt_ir.with_replaced_section(patch.section_id, new_content)
         new_ir = replace(new_ir, version=new_version, parent_prompt_ir_id=base_prompt.prompt_ir.id, applied_patch_ids=[*base_prompt.prompt_ir.applied_patch_ids, patch.id])
+        prompt_type_value = getattr(base_prompt.prompt_type, "value", str(base_prompt.prompt_type))
         new_prompt = PromptVersion(
-            id=f"{base_prompt.prompt_type}_prompt_v{new_version}", prompt_type=base_prompt.prompt_type, version=new_version,
+            id=f"{prompt_type_value}_prompt_v{new_version}", prompt_type=base_prompt.prompt_type, version=new_version,
             prompt_ir=new_ir, output_schema_contract_id=base_prompt.output_schema_contract_id,
             version_type=PromptVersionType.OPTIMIZATION, parent_version_id=base_prompt.id,
             applied_patch_ids=[*base_prompt.applied_patch_ids, patch.id],

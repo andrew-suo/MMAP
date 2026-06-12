@@ -20,8 +20,8 @@ class PromptSection:
     metrics: dict[str, Any] = field(default_factory=dict)
     constraints: dict[str, Any] = field(default_factory=dict)
 
-    def clone_with_content(self, content: str) -> "PromptSection":
-        return replace(self, content=content)
+    def clone_with_content(self, content: str, *, rendering_enabled: bool | None = None) -> "PromptSection":
+        return replace(self, content=content, rendering_enabled=self.rendering_enabled if rendering_enabled is None else rendering_enabled)
 
 
 @dataclass
@@ -42,5 +42,5 @@ class PromptIR:
         return next((s for s in self.sections if s.id == section_id), None)
 
     def with_replaced_section(self, section_id: str, content: str) -> "PromptIR":
-        sections = [s.clone_with_content(content) if s.id == section_id else s for s in self.sections]
+        sections = [s.clone_with_content(content, rendering_enabled=True) if s.id == section_id else s for s in self.sections]
         return replace(self, sections=sections)

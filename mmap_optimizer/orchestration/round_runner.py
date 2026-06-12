@@ -5,14 +5,21 @@ from dataclasses import dataclass
 
 from mmap_optimizer.core.config import OptimizerConfig
 from mmap_optimizer.core.enums import RunType
+from mmap_optimizer.analysis.runner import AnalysisRunner
 from mmap_optimizer.dataset.sample import GroundTruth, Sample, SampleAsset, SampleState
 from mmap_optimizer.evaluation.evaluator import EvaluationRecord, Evaluator
 from mmap_optimizer.metrics.round_metrics import RoundMetrics, compute_round_metrics
+from mmap_optimizer.patch.applier import PatchApplier
+from mmap_optimizer.patch.merger import PatchMerger
+from mmap_optimizer.patch.schema import Patch
+from mmap_optimizer.patch.validator import PatchValidator
 from mmap_optimizer.model.client import ModelClient
 from mmap_optimizer.prompt.contract import OutputSchemaContract
 from mmap_optimizer.prompt.version import PromptVersion
 from mmap_optimizer.sampling.dynamic_validation_sampler import DynamicValidationBatch, select_dynamic_validation_batch
 from mmap_optimizer.sampling.optimization_sampler import select_optimization_batch
+from mmap_optimizer.testing.patch_tester import PatchTestResult, summarize_patch_test
+from mmap_optimizer.testing.suite_builder import PatchTestSuiteBuilder
 from mmap_optimizer.storage.json_store import JsonStore
 from .records import OptimizationRound, RunRecord
 
@@ -64,14 +71,89 @@ class RoundRunner:
         round_record.extraction_run_ids = [r.id for r in extraction_runs]
         round_record.dynamic_validation_run_ids = [r.id for r in dval_runs]
 
+        extraction_by_sample = {run.sample_id: run for run in extraction_runs if run.sample_id}
+        analysis_records = []
+        analysis_runs = []
+        draft_patches: list[Patch] = []
+        candidate_patches: list[Patch] = []
+        rejected_patches: list[Patch] = []
+        patch_test_results: list[PatchTestResult] = []
+
+        wrong_evals = [evaluation for evaluation in evals if evaluation.overall_status != "correct"]
+        if wrong_evals:
+            analysis_result = AnalysisRunner(self.model_client, model_id=self.config.optimizer_model.model).analyze_errors(
+                round_id=round_id,
+                error_evaluations=wrong_evals,
+                extraction_runs=extraction_by_sample,
+                sample_metadata={sample.id: sample.metadata for sample in state.samples},
+                analysis_prompt=state.active_analysis_prompt,
+            )
+            analysis_records = analysis_result.analysis_records
+            analysis_runs = analysis_result.analysis_runs
+            draft_patches = analysis_result.draft_patches
+
+            validator = PatchValidator()
+            for patch in draft_patches:
+                validation = validator.validate(patch, state.active_extraction_prompt.prompt_ir)
+                if validation.valid:
+                    patch.status = "candidate"
+                    candidate_patches.append(patch)
+                else:
+                    patch.status = "rejected"
+                    patch.rejection_reason = validation.reason
+                    rejected_patches.append(patch)
+
+            merged_patches = PatchMerger().merge(candidate_patches)
+            accepted_patches: list[Patch] = []
+            suite_builder = PatchTestSuiteBuilder()
+            for patch in merged_patches:
+                suite = suite_builder.build_individual_suite(round_id=round_id, patch=patch, current_evaluations=evals)
+                base_suite_evals = [evaluation for evaluation in evals if evaluation.sample_id in set(suite.sample_ids)]
+                patched_evals = self._evaluate_mock_patch_outputs(round_id=round_id, patch=patch, suite_sample_ids=suite.sample_ids, state=state)
+                test_result = summarize_patch_test(round_id, patch.id, suite.id, base_suite_evals, patched_evals)
+                patch_test_results.append(test_result)
+                patch.fixed_sample_ids = test_result.fixed_sample_ids
+                patch.broken_sample_ids = test_result.broken_sample_ids
+                patch.toxicity_result = test_result.toxicity_result
+                patch.effectiveness_result = test_result.effectiveness_result
+                if test_result.accepted:
+                    patch.status = "accepted"
+                    accepted_patches.append(patch)
+                else:
+                    patch.status = "rejected"
+                    patch.rejection_reason = test_result.rejection_reason
+                    rejected_patches.append(patch)
+
+            if accepted_patches:
+                new_version_number = state.active_extraction_prompt.version + 1
+                next_prompt = state.active_extraction_prompt
+                for patch in accepted_patches:
+                    next_prompt = PatchApplier().apply(next_prompt, patch, new_version=new_version_number)
+                    new_version_number += 1
+                state.active_extraction_prompt = next_prompt
+                round_record.accepted_patch_ids = [patch.id for patch in accepted_patches]
+            round_record.rejected_patch_ids = [patch.id for patch in rejected_patches]
+
         metrics = compute_round_metrics(round_id, evals, dval_evals)
+        metrics.draft_count = len(draft_patches)
+        metrics.candidate_count = len(candidate_patches)
+        metrics.accepted_count = len(round_record.accepted_patch_ids)
+        metrics.rejected_count = len(round_record.rejected_patch_ids)
+        metrics.toxic_count = sum(1 for result in patch_test_results if result.toxicity_result == "toxic")
+        metrics.ineffective_count = sum(1 for result in patch_test_results if result.effectiveness_result == "ineffective")
         round_record.round_metrics_id = metrics.id
         round_record.status = "ROUND_COMPLETED"
         self._update_sample_state(state, evals, round_index)
 
         self.store.append_jsonl(f"{round_id}/runs/extraction_runs.jsonl", extraction_runs)
         self.store.append_jsonl(f"{round_id}/runs/dynamic_validation_runs.jsonl", dval_runs)
+        self.store.append_jsonl(f"{round_id}/runs/analysis_runs.jsonl", analysis_runs)
         self.store.append_jsonl(f"{round_id}/evaluations/evaluation_records.jsonl", evals + dval_evals)
+        self.store.append_jsonl(f"{round_id}/analyses/analysis_records.jsonl", analysis_records)
+        self.store.append_jsonl(f"{round_id}/patches/draft_patches.jsonl", draft_patches)
+        self.store.append_jsonl(f"{round_id}/patches/patch_test_results.jsonl", patch_test_results)
+        if round_record.accepted_patch_ids:
+            self.store.write_json(f"{round_id}/prompts/active_extraction_prompt.json", state.active_extraction_prompt)
         self.store.write_json(f"{round_id}/metrics/round_metrics.json", metrics)
         self.store.write_json(f"{round_id}/round.json", round_record)
         return round_record, metrics
@@ -99,6 +181,25 @@ class RoundRunner:
             runs.append(run)
             evals.append(evaluation)
         return runs, evals
+
+    def _evaluate_mock_patch_outputs(self, *, round_id: str, patch: Patch, suite_sample_ids: list[str], state: OptimizerState) -> list[EvaluationRecord]:
+        samples_by_id = {sample.id: sample for sample in state.samples}
+        evaluations: list[EvaluationRecord] = []
+        for sample_id in suite_sample_ids:
+            sample = samples_by_id[sample_id]
+            patch_outputs = sample.metadata.get("mock_patch_outputs", {})
+            raw_output = patch_outputs.get(patch.id) or patch_outputs.get(patch.section_id) or sample.metadata.get("mock_output")
+            evaluations.append(
+                self.evaluator.evaluate(
+                    round_id=round_id,
+                    run_id=f"run_{round_id}_patch_test_{patch.id}_{sample_id}",
+                    sample_id=sample_id,
+                    raw_output=raw_output,
+                    ground_truth=state.ground_truths[sample.ground_truth_id],
+                    contract=state.extraction_output_schema_contract,
+                )
+            )
+        return evaluations
 
     def _update_sample_state(self, state: OptimizerState, evals: list[EvaluationRecord], round_index: int) -> None:
         for evaluation in evals:

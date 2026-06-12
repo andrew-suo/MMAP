@@ -28,7 +28,7 @@ class MockModelClient:
     def complete(self, messages: list[dict[str, Any]], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:
         for message in reversed(messages):
             content = message.get("content")
-            if isinstance(content, dict) and "mock_output" in content:
+            if isinstance(content, dict) and content.get("mock_output") is not None:
                 return ModelResponse(raw_output=content["mock_output"])
         return ModelResponse(raw_output=self.default_output)
 

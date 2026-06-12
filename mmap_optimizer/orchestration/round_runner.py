@@ -154,14 +154,30 @@ class RoundRunner:
                     patch.rejection_reason = test_result.rejection_reason
                     rejected_patches.append(patch)
 
+            final_patches: list[Patch] = []
             if accepted_patches:
+                final_patches, bundle_runs, bundle_evals, bundle_results = self._select_safe_bundle(
+                    round_id=round_id,
+                    accepted_patches=accepted_patches,
+                    patch_tester=patch_tester,
+                    suite_builder=suite_builder,
+                    base_prompt=state.active_extraction_prompt,
+                    base_evaluations=evals,
+                    state=state,
+                )
+                patch_test_runs.extend(bundle_runs)
+                patch_test_evals.extend(bundle_evals)
+                patch_test_results.extend(bundle_results)
+                rejected_patches.extend([patch for patch in accepted_patches if patch not in final_patches])
+
+            if final_patches:
                 next_prompt = state.active_extraction_prompt
                 next_version = next_prompt.version + 1
-                for patch in accepted_patches:
+                for patch in final_patches:
                     next_prompt = PatchApplier().apply(next_prompt, patch, new_version=next_version)
                     next_version += 1
                 state.active_extraction_prompt = next_prompt
-                round_record.accepted_patch_ids = [patch.id for patch in accepted_patches]
+                round_record.accepted_patch_ids = [patch.id for patch in final_patches]
             round_record.rejected_patch_ids = [patch.id for patch in rejected_patches]
 
         metrics = compute_round_metrics(round_id, evals, dval_evals)
@@ -188,6 +204,66 @@ class RoundRunner:
         self.store.write_json(f"{round_id}/metrics/round_metrics.json", metrics)
         self.store.write_json(f"{round_id}/round.json", round_record)
         return round_record, metrics
+
+
+    def _select_safe_bundle(
+        self,
+        *,
+        round_id: str,
+        accepted_patches: list[Patch],
+        patch_tester: PatchTester,
+        suite_builder: PatchTestSuiteBuilder,
+        base_prompt: PromptVersion,
+        base_evaluations: list[EvaluationRecord],
+        state: OptimizerState,
+    ) -> tuple[list[Patch], list[RunRecord], list[EvaluationRecord], list[PatchTestResult]]:
+        runs: list[RunRecord] = []
+        evaluations: list[EvaluationRecord] = []
+        results: list[PatchTestResult] = []
+        all_suite = suite_builder.build_bundle_suite(round_id=round_id, patches=accepted_patches, current_evaluations=base_evaluations)
+        all_base_evals = [evaluation for evaluation in base_evaluations if evaluation.sample_id in set(all_suite.sample_ids)]
+        all_bundle = patch_tester.test_bundle(
+            round_id=round_id,
+            patches=accepted_patches,
+            base_prompt=base_prompt,
+            base_evaluations=all_base_evals,
+            suite=all_suite,
+            samples=state.samples,
+            assets=state.assets,
+            ground_truths=state.ground_truths,
+            contract=state.extraction_output_schema_contract,
+        )
+        runs.extend(all_bundle.runs)
+        evaluations.extend(all_bundle.evaluations)
+        results.append(all_bundle.test_result)
+        if all_bundle.test_result.accepted:
+            return accepted_patches, runs, evaluations, results
+
+        safe: list[Patch] = []
+        for patch in sorted(accepted_patches, key=lambda item: len(item.fixed_sample_ids), reverse=True):
+            trial = [*safe, patch]
+            trial_suite = suite_builder.build_bundle_suite(round_id=round_id, patches=trial, current_evaluations=base_evaluations)
+            trial_base_evals = [evaluation for evaluation in base_evaluations if evaluation.sample_id in set(trial_suite.sample_ids)]
+            trial_bundle = patch_tester.test_bundle(
+                round_id=round_id,
+                patches=trial,
+                base_prompt=base_prompt,
+                base_evaluations=trial_base_evals,
+                suite=trial_suite,
+                samples=state.samples,
+                assets=state.assets,
+                ground_truths=state.ground_truths,
+                contract=state.extraction_output_schema_contract,
+            )
+            runs.extend(trial_bundle.runs)
+            evaluations.extend(trial_bundle.evaluations)
+            results.append(trial_bundle.test_result)
+            if trial_bundle.test_result.accepted:
+                safe = trial
+            else:
+                patch.status = "rejected"
+                patch.rejection_reason = "BUNDLE_TOXIC" if trial_bundle.test_result.toxicity_result == "toxic" else "BUNDLE_INEFFECTIVE"
+        return safe, runs, evaluations, results
 
     def _prompt_runner(self) -> PromptTestRunner:
         return PromptTestRunner(model_client=self.model_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model)

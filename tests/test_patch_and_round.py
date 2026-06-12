@@ -224,3 +224,148 @@ def test_round_runner_rejects_toxic_temp_prompt_patch(tmp_path: Path):
     assert metrics.accepted_count == 0
     assert state.active_extraction_prompt.version == 1
     assert toxic_rule not in state.active_extraction_prompt.render().text
+
+
+def test_round_runner_applies_all_patches_when_bundle_passes(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("raw extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    rule_a = "规则A：检查缺失标签。"
+    rule_b = "规则B：检查安装方向。"
+    analysis_output = (
+        '{'
+        '"judgement":{"is_correct":false},'
+        '"confirmed_facts":[],"hypothesized_error_causes":[],"prompt_section_attribution":[],'
+        f'"patch_candidates":['
+        f'{{"target_prompt":"extraction","target_section":"ambiguity_policy","operation":"ADD_RULE","intent":"rule_a","content":"{rule_a}","risk":"low"}},'
+        f'{{"target_prompt":"extraction","target_section":"visual_evidence_rules","operation":"ADD_RULE","intent":"rule_b","content":"{rule_b}","risk":"low"}}'
+        ']}'
+    )
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_analysis_output": analysis_output,
+                "mock_prompt_outputs": [
+                    {"contains": rule_a, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                    {"contains": rule_b, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+            },
+        ),
+        Sample(
+            id="s2",
+            ground_truth_id="gt2",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {"contains_all": [rule_a, rule_b], "output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                    {"contains": rule_a, "output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                    {"contains": rule_b, "output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+            },
+        ),
+    ]
+    gts = {
+        "gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG"),
+        "gt2": GroundTruth(id="gt2", sample_id="s2", value={"result": "OK"}, primary_answer="OK"),
+    }
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
+    )
+
+    round_record, metrics = runner.run_round(state, round_index=1)
+
+    rendered = state.active_extraction_prompt.render().text
+    assert len(round_record.accepted_patch_ids) == 2
+    assert metrics.accepted_count == 2
+    assert rule_a in rendered
+    assert rule_b in rendered
+
+
+def test_round_runner_uses_greedy_safe_subset_when_bundle_is_toxic(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("raw extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    safe_rule = "安全规则：检查缺失标签。"
+    interaction_rule = "交互风险规则：检查安装方向。"
+    analysis_output = (
+        '{'
+        '"judgement":{"is_correct":false},'
+        '"confirmed_facts":[],"hypothesized_error_causes":[],"prompt_section_attribution":[],'
+        f'"patch_candidates":['
+        f'{{"target_prompt":"extraction","target_section":"ambiguity_policy","operation":"ADD_RULE","intent":"safe_rule","content":"{safe_rule}","risk":"low"}},'
+        f'{{"target_prompt":"extraction","target_section":"visual_evidence_rules","operation":"ADD_RULE","intent":"interaction_rule","content":"{interaction_rule}","risk":"medium"}}'
+        ']}'
+    )
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_analysis_output": analysis_output,
+                "mock_prompt_outputs": [
+                    {"contains": safe_rule, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                    {"contains": interaction_rule, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+            },
+        ),
+        Sample(
+            id="s2",
+            ground_truth_id="gt2",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {"contains_all": [safe_rule, interaction_rule], "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                    {"contains": safe_rule, "output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                    {"contains": interaction_rule, "output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+            },
+        ),
+    ]
+    gts = {
+        "gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG"),
+        "gt2": GroundTruth(id="gt2", sample_id="s2", value={"result": "OK"}, primary_answer="OK"),
+    }
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
+    )
+
+    round_record, metrics = runner.run_round(state, round_index=1)
+
+    rendered = state.active_extraction_prompt.render().text
+    assert round_record.accepted_patch_ids == ["patch_round_000001_s1_00"]
+    assert metrics.accepted_count == 1
+    assert metrics.toxic_count >= 1
+    assert safe_rule in rendered
+    assert interaction_rule not in rendered

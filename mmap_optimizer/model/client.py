@@ -31,6 +31,9 @@ class MockModelClient:
             content = message.get("content")
             if isinstance(content, dict):
                 for rule in content.get("mock_prompt_outputs", []) or []:
+                    contains_all = rule.get("contains_all")
+                    if contains_all and all(fragment in prompt_text for fragment in contains_all):
+                        return ModelResponse(raw_output=rule["output"])
                     contains = rule.get("contains")
                     if contains and contains in prompt_text:
                         return ModelResponse(raw_output=rule["output"])

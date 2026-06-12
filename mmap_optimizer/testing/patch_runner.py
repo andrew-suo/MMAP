@@ -58,3 +58,39 @@ class PatchTester:
         ordered_base_evals = [base_by_sample[evaluation.sample_id] for evaluation in run_result.evaluations if evaluation.sample_id in base_by_sample]
         test_result = summarize_patch_test(round_id, patch.id, suite.id, ordered_base_evals, run_result.evaluations)
         return PatchRunResult(temp_prompt=temp_prompt, runs=run_result.runs, evaluations=run_result.evaluations, test_result=test_result)
+
+    def test_bundle(
+        self,
+        *,
+        round_id: str,
+        patches: list[Patch],
+        base_prompt: PromptVersion,
+        base_evaluations: list[EvaluationRecord],
+        suite: PatchTestSuite,
+        samples: list[Sample],
+        assets: dict[str, SampleAsset],
+        ground_truths: dict[str, GroundTruth],
+        contract: OutputSchemaContract,
+    ) -> PatchRunResult:
+        temp_prompt = base_prompt
+        next_version = base_prompt.version + 1
+        for patch in patches:
+            temp_prompt = PatchApplier().apply(temp_prompt, patch, new_version=next_version)
+            next_version += 1
+        sample_by_id = {sample.id: sample for sample in samples}
+        suite_samples = [sample_by_id[sample_id] for sample_id in suite.sample_ids if sample_id in sample_by_id]
+        bundle_id = "bundle_" + "_".join(patch.id for patch in patches)
+        run_result = self.prompt_runner.run(
+            round_id=round_id,
+            run_type="bundle_patch_test_extraction",
+            prompt=temp_prompt,
+            samples=suite_samples,
+            assets=assets,
+            ground_truths=ground_truths,
+            contract=contract,
+            run_id_suffix=bundle_id,
+        )
+        base_by_sample = {evaluation.sample_id: evaluation for evaluation in base_evaluations}
+        ordered_base_evals = [base_by_sample[evaluation.sample_id] for evaluation in run_result.evaluations if evaluation.sample_id in base_by_sample]
+        test_result = summarize_patch_test(round_id, bundle_id, suite.id, ordered_base_evals, run_result.evaluations)
+        return PatchRunResult(temp_prompt=temp_prompt, runs=run_result.runs, evaluations=run_result.evaluations, test_result=test_result)

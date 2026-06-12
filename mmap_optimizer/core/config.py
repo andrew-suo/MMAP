@@ -27,6 +27,8 @@ class OptimizerConfig:
     batch_size: int = 24
     dynamic_validation_batch_size: int = 48
     max_text_rounds: int = 10
+    extraction_line_budget: int | None = None
+    analysis_line_budget: int | None = None
     extraction_model: ModelConfig = field(default_factory=ModelConfig)
     optimizer_model: ModelConfig = field(default_factory=ModelConfig)
 

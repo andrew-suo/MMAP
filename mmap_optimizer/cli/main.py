@@ -35,7 +35,11 @@ def run_smoke(args: argparse.Namespace) -> None:
         active_extraction_prompt=extraction_prompt, active_analysis_prompt=analysis_prompt,
         extraction_output_schema_contract=extraction_contract, analysis_output_schema_contract=analysis_contract,
     )
-    config = OptimizerConfig(batch_size=args.batch_size, dynamic_validation_batch_size=args.dynamic_validation_batch_size)
+    config = OptimizerConfig(
+        batch_size=args.batch_size,
+        dynamic_validation_batch_size=args.dynamic_validation_batch_size,
+        extraction_line_budget=args.extraction_line_budget,
+    )
     runner = RoundRunner(model_client=MockModelClient(), evaluator=Evaluator(), store=JsonStore(args.run_dir), config=config)
     _, metrics = runner.run_round(state, round_index=1)
     print(json.dumps({"round_id": metrics.round_id, "batch_accuracy": metrics.batch_accuracy, "dynamic_validation_raw_accuracy": metrics.dynamic_validation_raw_accuracy}, ensure_ascii=False))
@@ -53,6 +57,7 @@ def main() -> None:
     smoke.add_argument("--analysis-schema", default="schemas/analysis_output_schema.json")
     smoke.add_argument("--batch-size", type=int, default=24)
     smoke.add_argument("--dynamic-validation-batch-size", type=int, default=48)
+    smoke.add_argument("--extraction-line-budget", type=int, default=None)
     smoke.set_defaults(func=run_smoke)
     args = parser.parse_args()
     args.func(args)

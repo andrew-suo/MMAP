@@ -35,4 +35,5 @@ class OptimizationRound:
     rejected_patch_ids: list[str] = field(default_factory=list)
     round_metrics_id: str | None = None
     analysis_evolution_report_id: str | None = None
+    compression_report_ids: list[str] = field(default_factory=list)
     failure_reason: str | None = None

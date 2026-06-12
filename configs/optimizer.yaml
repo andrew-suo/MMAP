@@ -2,6 +2,10 @@ text_optimization:
   max_rounds: 10
   batch_size: 24
 
+compression:
+  extraction_line_budget: null
+  analysis_line_budget: null
+
 dynamic_validation:
   batch_size: 48
 

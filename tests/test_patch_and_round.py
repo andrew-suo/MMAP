@@ -484,3 +484,105 @@ def test_toxic_patch_promotes_analysis_risk_policy(tmp_path: Path):
     assert metrics.toxic_count >= 1
     assert state.active_analysis_prompt.version == 2
     assert "生成 patch 前必须说明它可能破坏的原正确样本类型" in rendered_analysis
+
+
+def test_round_runner_compresses_extraction_prompt_after_text_round(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    repeated_prompt = "保留关键审核规则。\n保留关键审核规则。\n保留关键审核规则。\n"
+    extraction_prompt = initialize_prompt_version(repeated_prompt, PromptType.EXTRACTION, extraction_contract)
+    before_lines = len(extraction_prompt.render().text.splitlines())
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={"mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+        )
+    ]
+    gts = {"gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "OK"}, primary_answer="OK")}
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0, extraction_line_budget=1),
+    )
+
+    round_record, metrics = runner.run_round(state, round_index=1)
+
+    assert metrics.compression_triggered
+    assert metrics.compression_accepted
+    assert metrics.compression_line_reduction > 0
+    assert state.active_extraction_prompt.version == 2
+    assert state.active_extraction_prompt.version_type == "compression"
+    assert len(state.active_extraction_prompt.render().text.splitlines()) < before_lines
+    assert round_record.compression_report_ids == ["compression_round_000001_extraction"]
+    report = JsonStore(tmp_path).read_json("round_000001/reports/compression_round_000001_extraction.json")
+    assert report["accepted"] is True
+    assert report["compressed_section_id"] == "legacy_unmapped"
+    assert (tmp_path / "round_000001" / "runs" / "compression_runs.jsonl").exists()
+
+
+def test_round_runner_rejects_compression_when_behavior_changes(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    raw_prompt = "触发 A。\n触发 A。\n"
+    extraction_prompt = initialize_prompt_version(raw_prompt, PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {
+                        "contains_all": ["触发 A。", "触发 A。\n触发 A。"],
+                        "output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                    },
+                    {
+                        "contains": "触发 A。",
+                        "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                    },
+                ],
+            },
+        )
+    ]
+    gts = {"gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "OK"}, primary_answer="OK")}
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0, extraction_line_budget=1),
+    )
+
+    round_record, metrics = runner.run_round(state, round_index=1)
+
+    assert metrics.compression_triggered
+    assert not metrics.compression_accepted
+    assert state.active_extraction_prompt.version == 1
+    assert round_record.compression_report_ids == ["compression_round_000001_extraction"]
+    report = JsonStore(tmp_path).read_json("round_000001/reports/compression_round_000001_extraction.json")
+    assert report["accepted"] is False
+    assert report["failure_reason"] == "NO_SAFE_COMPRESSION_CANDIDATE"
+    assert report["rejected_sections"][0]["reason"].startswith("PREDICTION_CHANGED")

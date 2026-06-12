@@ -21,6 +21,9 @@ class RoundMetrics:
     rejected_count: int = 0
     toxic_count: int = 0
     ineffective_count: int = 0
+    compression_triggered: bool = False
+    compression_accepted: bool = False
+    compression_line_reduction: int = 0
     extra: dict = field(default_factory=dict)
 
 

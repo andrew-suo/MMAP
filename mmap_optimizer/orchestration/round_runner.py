@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from mmap_optimizer.compression.engine import CompressionEngine
 from mmap_optimizer.core.config import OptimizerConfig
 from mmap_optimizer.core.enums import RunType
 from mmap_optimizer.analysis.evolution import AnalysisEvolutionEngine
@@ -96,6 +97,9 @@ class RoundRunner:
         patch_test_results: list[PatchTestResult] = []
         patch_test_runs = []
         patch_test_evals = []
+        compression_reports = []
+        compression_runs = []
+        compression_evals = []
 
         wrong_evals = [evaluation for evaluation in evals if evaluation.overall_status != "correct"]
         if wrong_evals:
@@ -191,6 +195,26 @@ class RoundRunner:
         if analysis_evolution_report.promoted and analysis_evolution_report.candidate_prompt is not None:
             state.active_analysis_prompt = analysis_evolution_report.candidate_prompt
 
+        compression_engine = CompressionEngine(
+            model_client=self.model_client,
+            evaluator=self.evaluator,
+            model_id=self.config.extraction_model.model,
+        )
+        compressed_prompt, compression_report, compression_runs, compression_evals = compression_engine.compress_if_needed(
+            round_id=round_id,
+            prompt=state.active_extraction_prompt,
+            line_budget=self.config.extraction_line_budget,
+            samples=optimization_batch,
+            assets=state.assets,
+            ground_truths=state.ground_truths,
+            contract=state.extraction_output_schema_contract,
+            base_evaluations=evals,
+        )
+        compression_reports.append(compression_report)
+        round_record.compression_report_ids = [report.id for report in compression_reports]
+        if compression_report.accepted:
+            state.active_extraction_prompt = compressed_prompt
+
         metrics = compute_round_metrics(round_id, evals, dval_evals)
         metrics.draft_count = len(draft_patches)
         metrics.candidate_count = len(candidate_patches)
@@ -198,6 +222,9 @@ class RoundRunner:
         metrics.rejected_count = len(round_record.rejected_patch_ids)
         metrics.toxic_count = sum(1 for result in patch_test_results if result.toxicity_result == "toxic")
         metrics.ineffective_count = sum(1 for result in patch_test_results if result.effectiveness_result == "ineffective")
+        metrics.compression_triggered = any(report.triggered for report in compression_reports)
+        metrics.compression_accepted = any(report.accepted for report in compression_reports)
+        metrics.compression_line_reduction = sum(report.line_reduction for report in compression_reports)
         round_record.round_metrics_id = metrics.id
         round_record.status = "ROUND_COMPLETED"
         self._update_sample_state(state, evals, round_index)
@@ -206,12 +233,15 @@ class RoundRunner:
         self.store.append_jsonl(f"{round_id}/runs/dynamic_validation_runs.jsonl", dval_runs)
         self.store.append_jsonl(f"{round_id}/runs/analysis_runs.jsonl", analysis_runs)
         self.store.append_jsonl(f"{round_id}/runs/patch_test_runs.jsonl", patch_test_runs)
-        self.store.append_jsonl(f"{round_id}/evaluations/evaluation_records.jsonl", evals + dval_evals + patch_test_evals)
+        self.store.append_jsonl(f"{round_id}/runs/compression_runs.jsonl", compression_runs)
+        self.store.append_jsonl(f"{round_id}/evaluations/evaluation_records.jsonl", evals + dval_evals + patch_test_evals + compression_evals)
         self.store.append_jsonl(f"{round_id}/analyses/analysis_records.jsonl", analysis_records)
         self.store.append_jsonl(f"{round_id}/patches/draft_patches.jsonl", draft_patches)
         self.store.append_jsonl(f"{round_id}/patches/patch_test_results.jsonl", patch_test_results)
         self.store.write_json(f"{round_id}/reports/analysis_evolution_report.json", analysis_evolution_report)
-        if round_record.accepted_patch_ids:
+        for compression_report in compression_reports:
+            self.store.write_json(f"{round_id}/reports/{compression_report.id}.json", compression_report)
+        if round_record.accepted_patch_ids or any(report.accepted for report in compression_reports):
             self.store.write_json(f"{round_id}/prompts/active_extraction_prompt.json", state.active_extraction_prompt)
         self.store.write_json(f"{round_id}/metrics/round_metrics.json", metrics)
         self.store.write_json(f"{round_id}/round.json", round_record)

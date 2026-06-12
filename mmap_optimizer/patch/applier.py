@@ -8,7 +8,14 @@ from .schema import Patch
 
 
 class PatchApplier:
-    def apply(self, base_prompt: PromptVersion, patch: Patch, *, new_version: int) -> PromptVersion:
+    def apply(
+        self,
+        base_prompt: PromptVersion,
+        patch: Patch,
+        *,
+        new_version: int,
+        version_type: PromptVersionType | str = PromptVersionType.OPTIMIZATION,
+    ) -> PromptVersion:
         section = base_prompt.prompt_ir.section_by_id(patch.section_id)
         if section is None:
             raise ValueError(f"Section not found: {patch.section_id}")
@@ -24,7 +31,7 @@ class PatchApplier:
         new_prompt = PromptVersion(
             id=f"{prompt_type_value}_prompt_v{new_version}", prompt_type=base_prompt.prompt_type, version=new_version,
             prompt_ir=new_ir, output_schema_contract_id=base_prompt.output_schema_contract_id,
-            version_type=PromptVersionType.OPTIMIZATION, parent_version_id=base_prompt.id,
+            version_type=version_type, parent_version_id=base_prompt.id,
             applied_patch_ids=[*base_prompt.applied_patch_ids, patch.id],
         )
         new_prompt.render()

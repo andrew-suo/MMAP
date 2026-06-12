@@ -27,6 +27,11 @@ class RoundMetrics:
     fewshot_triggered: bool = False
     fewshot_accepted: bool = False
     fewshot_accuracy_delta: float = 0.0
+    fewshot_slot_count_before: int = 0
+    fewshot_slot_count_after: int = 0
+    fewshot_candidate_count: int = 0
+    fewshot_replacement_count: int = 0
+    fewshot_rejected_candidate_count: int = 0
     analysis_parse_success_rate: float = 0.0
     analysis_schema_valid_rate: float = 0.0
     analysis_judgement_match_rate: float = 0.0

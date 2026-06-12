@@ -42,7 +42,7 @@ The smoke command loads samples, prompts, and schemas; renders prompt IRs; runs 
 
 ## Current scope
 
-This implementation slice focuses on stable data models, logging, prompt rendering, evaluation, dynamic validation, and a runnable text-patch round skeleton. Analysis outputs can now be parsed into patch candidates, each candidate is applied to a temporary PromptVersion for model-backed testing, and accepted patches can update the active extraction PromptVersion after strict tests. If extraction or analysis line budgets are configured, the round then tries conservative compression on mutable sections and promotes only candidates that preserve baseline extraction predictions/statuses or parsed analysis outputs on the behavior suite. Full production LLM prompt engineering for patch generation and multi-round few-shot search remain next implementation steps.
+This implementation slice focuses on stable data models, logging, prompt rendering, evaluation, dynamic validation, and a runnable text-patch round skeleton. Analysis outputs can now be parsed into patch candidates, each candidate is applied to a temporary PromptVersion for model-backed testing, and accepted patches can update the active extraction PromptVersion after strict tests. If extraction or analysis line budgets are configured, the round then tries conservative compression on mutable sections and promotes only candidates that preserve baseline extraction predictions/statuses or parsed analysis outputs on the behavior suite. Full production LLM prompt engineering for patch generation and unified analysis-prompt patch testing remain next implementation steps.
 
 
 ## Mock prompt-dependent outputs
@@ -87,7 +87,7 @@ Set `OptimizerConfig.extraction_line_budget` / `OptimizerConfig.analysis_line_bu
 
 ## Few-shot optimization protocol
 
-Set `OptimizerConfig.fewshot_enabled` or pass `--fewshot-enabled` to run few-shot optimization after text rounds have completed (`round_index > max_text_rounds`). The MVP miner ranks currently failed samples by difficulty, generates a schema-complete example from ground truth plus an analysis-process text, appends it to a `few_shot_examples` section, and tests the temporary prompt on the current behavior suite. A slot is promoted only when it improves accuracy by at least the configured delta, creates no schema violations, and breaks no sample that was already correct. Reports are written under `round_xxxxxx/reports/fewshot_<round>_extraction.json`, and few-shot test runs are written under `round_xxxxxx/runs/fewshot_runs.jsonl`.
+Set `OptimizerConfig.fewshot_enabled` or pass `--fewshot-enabled` to run few-shot optimization after text rounds have completed (`round_index > max_text_rounds`). The miner records failed samples in a persistent `fewshot_candidate_pool.json`, ranks current and historical candidates by difficulty/gain, generates schema-complete examples with analysis-process text (using sample overrides or the optimizer model), then either adds an empty slot or replaces the lowest-index slot when capacity is full. A candidate is promoted only when individual and bundle few-shot tests improve accuracy by at least the configured delta, create no schema violations, and break no sample that was already correct. Reports are written under `round_xxxxxx/reports/fewshot_<round>_extraction.json`, and few-shot test runs are written under `round_xxxxxx/runs/fewshot_runs.jsonl`.
 
 ## Cross-round metrics trend
 

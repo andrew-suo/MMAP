@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 
 from mmap_optimizer.core.config import ModelConfig, OptimizerConfig
 from mmap_optimizer.core.enums import PromptType
@@ -11,6 +12,7 @@ from mmap_optimizer.patch.schema import Patch
 from mmap_optimizer.patch.validator import PatchValidator
 from mmap_optimizer.prompt.contract import OutputSchemaContract
 from mmap_optimizer.prompt.initializer import initialize_prompt_version
+from mmap_optimizer.prompt.ir import PromptSection
 from mmap_optimizer.storage.json_store import JsonStore
 
 
@@ -992,3 +994,131 @@ def test_round_runner_compresses_analysis_prompt_when_budget_exceeded(tmp_path: 
     assert report["compressed_section_id"] == "legacy_unmapped"
     runs_path = tmp_path / "round_000001" / "runs" / "compression_runs.jsonl"
     assert "analysis_compression_behavior_test" in runs_path.read_text(encoding="utf-8")
+
+
+def _with_fewshot_section(prompt, content: str):
+    section = PromptSection(
+        id="few_shot_examples",
+        type="few_shot_examples",
+        content=content,
+        name="Few-shot examples",
+        scope="framework",
+        priority="high",
+        compressibility="low",
+        mutability="limited",
+    )
+    prompt.prompt_ir = replace(
+        prompt.prompt_ir,
+        sections=[*prompt.prompt_ir.sections, section],
+        rendering_order=[*prompt.prompt_ir.rendering_order, "few_shot_examples"],
+    )
+    prompt.render()
+    return prompt
+
+
+def test_round_runner_replaces_fewshot_slot_when_capacity_full(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = _with_fewshot_section(
+        initialize_prompt_version("stable extraction", PromptType.EXTRACTION, extraction_contract),
+        "FEW_SHOT_SLOT:1\nFEW_SHOT_SAMPLE:old_sample\n分析过程示例:\n旧示例\n最终输出示例:\n{}",
+    )
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={"mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+        ),
+        Sample(
+            id="s2",
+            ground_truth_id="gt2",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {"contains": "FEW_SHOT_SAMPLE:s2", "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+                "fewshot_reasoning": "替换后的示例说明。",
+            },
+        ),
+    ]
+    gts = {
+        "gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "OK"}, primary_answer="OK"),
+        "gt2": GroundTruth(id="gt2", sample_id="s2", value={"result": "NG"}, primary_answer="NG"),
+    }
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={"s1": SampleState(sample_id="s1"), "s2": SampleState(sample_id="s2", difficulty_ema=0.9)},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0, max_text_rounds=0, fewshot_enabled=True, fewshot_max_slots=1),
+    )
+
+    round_record, metrics = runner.run_round(state, round_index=1)
+
+    rendered = state.active_extraction_prompt.render().text
+    assert metrics.fewshot_accepted
+    assert metrics.fewshot_replacement_count == 1
+    assert "FEW_SHOT_SAMPLE:s2" in rendered
+    assert "FEW_SHOT_SAMPLE:old_sample" not in rendered
+    report = JsonStore(tmp_path).read_json("round_000001/reports/fewshot_round_000001_extraction.json")
+    assert report["operation_type"] == "REPLACE_SLOT"
+    assert report["replaced_sample_id"] == "old_sample"
+    assert report["bundle_accuracy_delta"] == 0.5
+    pool = JsonStore(tmp_path).read_json("fewshot_candidate_pool.json")
+    assert pool["candidates"]["fewshot_candidate_s2"]["status"] == "accepted"
+    assert round_record.fewshot_report_ids == ["fewshot_round_000001_extraction"]
+
+
+def test_round_runner_generates_fewshot_reasoning_with_optimizer_client(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("stable extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {"contains": "FEW_SHOT_SAMPLE:s1", "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+                "mock_fewshot_reasoning": "由优化模型生成的分析过程示例。",
+            },
+        )
+    ]
+    gts = {"gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG")}
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={"s1": SampleState(sample_id="s1", difficulty_ema=0.9)},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0, max_text_rounds=0, fewshot_enabled=True, fewshot_max_slots=2),
+    )
+
+    _, metrics = runner.run_round(state, round_index=1)
+
+    assert metrics.fewshot_accepted
+    assert "由优化模型生成的分析过程示例。" in state.active_extraction_prompt.render().text
+    report = JsonStore(tmp_path).read_json("round_000001/reports/fewshot_round_000001_extraction.json")
+    assert report["operation_type"] == "ADD_SLOT"
+    assert report["bundle_accuracy_delta"] == 1.0

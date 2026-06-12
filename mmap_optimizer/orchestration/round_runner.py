@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from mmap_optimizer.compression.engine import CompressionEngine
 from mmap_optimizer.core.config import OptimizerConfig, model_config_to_request_dict
 from mmap_optimizer.fewshot.engine import FewShotOptimizationEngine
+from mmap_optimizer.fewshot.pool import FewShotCandidatePool
 from mmap_optimizer.core.enums import RunType
 from mmap_optimizer.analysis.evolution import AnalysisEvolutionEngine
 from mmap_optimizer.analysis.runner import AnalysisRunner
@@ -277,7 +278,11 @@ class RoundRunner:
                 evaluator=self.evaluator,
                 model_id=self.config.extraction_model.model,
                 model_config=self._extraction_model_config(),
+                reasoning_model_client=self.optimizer_client,
+                reasoning_model_config=self._optimizer_model_config(),
             )
+            pool_path = self.store.root / "fewshot_candidate_pool.json"
+            fewshot_pool = FewShotCandidatePool.from_mapping(self.store.read_json("fewshot_candidate_pool.json") if pool_path.exists() else None)
             fewshot_prompt, fewshot_report, fewshot_runs, fewshot_evals = fewshot_engine.optimize_once(
                 round_id=round_id,
                 prompt=state.active_extraction_prompt,
@@ -289,7 +294,9 @@ class RoundRunner:
                 base_evaluations=evals,
                 max_slots=self.config.fewshot_max_slots,
                 min_accuracy_delta=self.config.fewshot_min_accuracy_delta,
+                candidate_pool=fewshot_pool,
             )
+            self.store.write_json("fewshot_candidate_pool.json", fewshot_pool)
             fewshot_reports.append(fewshot_report)
             round_record.fewshot_report_ids = [report.id for report in fewshot_reports]
             if fewshot_report.accepted:
@@ -308,6 +315,11 @@ class RoundRunner:
         metrics.fewshot_triggered = any(report.triggered for report in fewshot_reports)
         metrics.fewshot_accepted = any(report.accepted for report in fewshot_reports)
         metrics.fewshot_accuracy_delta = sum(report.accuracy_delta for report in fewshot_reports)
+        metrics.fewshot_slot_count_before = max((report.slot_count_before for report in fewshot_reports), default=0)
+        metrics.fewshot_slot_count_after = max((report.slot_count_after for report in fewshot_reports), default=0)
+        metrics.fewshot_candidate_count = sum(report.candidate_count for report in fewshot_reports)
+        metrics.fewshot_replacement_count = sum(1 for report in fewshot_reports if report.operation_type == "REPLACE_SLOT" and report.accepted)
+        metrics.fewshot_rejected_candidate_count = sum(len(report.rejected_candidates) for report in fewshot_reports)
         if analysis_records:
             metrics.analysis_parse_success_rate = sum(1 for record in analysis_records if record.parse_success) / len(analysis_records)
             metrics.analysis_schema_valid_rate = sum(1 for record in analysis_records if record.schema_valid) / len(analysis_records)

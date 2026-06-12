@@ -48,6 +48,9 @@ class MetricsTrend:
     total_accepted_patches: int = 0
     total_rejected_patches: int = 0
     total_toxic_patches: int = 0
+    total_fewshot_replacements: int = 0
+    best_fewshot_accuracy_delta: float = 0.0
+    final_fewshot_slot_count: int = 0
     total_merge_conflicts: int = 0
     total_merge_duplicates: int = 0
     regression_round_ids: list[str] = field(default_factory=list)
@@ -138,6 +141,9 @@ def build_metrics_trend(metrics_records: list[RoundMetrics], *, min_regression_d
     trend.total_accepted_patches = sum(m.accepted_count for m in metrics_records)
     trend.total_rejected_patches = sum(m.rejected_count for m in metrics_records)
     trend.total_toxic_patches = sum(m.toxic_count for m in metrics_records)
+    trend.total_fewshot_replacements = sum(m.fewshot_replacement_count for m in metrics_records)
+    trend.best_fewshot_accuracy_delta = max((m.fewshot_accuracy_delta for m in metrics_records), default=0.0)
+    trend.final_fewshot_slot_count = final.fewshot_slot_count_after
     trend.total_merge_conflicts = sum(m.merge_conflict_count for m in metrics_records)
     trend.total_merge_duplicates = sum(m.merge_duplicate_count for m in metrics_records)
     trend.regression_round_ids = [p.round_id for p in trend.points if p.extraction_regressed or p.dynamic_validation_regressed]

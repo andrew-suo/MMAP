@@ -20,6 +20,9 @@ def metrics(round_id: str, batch_accuracy: float, dval_accuracy: float | None, a
         analysis_judgement_match_rate=analysis_rate,
         merge_conflict_count=1,
         merge_duplicate_count=3,
+        fewshot_accuracy_delta=0.1 if round_id == "round_000002" else 0.0,
+        fewshot_replacement_count=1 if round_id == "round_000003" else 0,
+        fewshot_slot_count_after=2 if round_id == "round_000003" else 1,
     )
 
 
@@ -41,6 +44,9 @@ def test_build_metrics_trend_tracks_best_rounds_and_regressions():
     assert trend.total_rejected_patches == 6
     assert trend.total_merge_conflicts == 3
     assert trend.total_merge_duplicates == 9
+    assert trend.total_fewshot_replacements == 1
+    assert trend.best_fewshot_accuracy_delta == 0.1
+    assert trend.final_fewshot_slot_count == 2
     assert trend.regression_round_ids == ["round_000003"]
     assert trend.analysis_regression_round_ids == ["round_000002"]
     assert trend.points[1].batch_accuracy_delta == 0.25

@@ -1,3 +1,23 @@
+run_dir: runs
+
+models:
+  extraction:
+    provider: mock
+    model: mock-model
+    # For real multimodal extraction:
+    # provider: openai_compatible
+    # base_url: https://api.example.com/v1
+    # api_key_env: EXTRACTION_API_KEY
+    # model: vision-model-name
+  optimizer:
+    provider: mock
+    model: mock-model
+    # For real optimization / analysis:
+    # provider: openai_compatible
+    # base_url: https://api.example.com/v1
+    # api_key_env: OPTIMIZER_API_KEY
+    # model: optimizer-model-name
+
 text_optimization:
   max_rounds: 10
   batch_size: 24

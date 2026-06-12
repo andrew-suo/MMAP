@@ -17,6 +17,7 @@ class ModelConfig:
     model: str = "mock-model"
     base_url: str | None = None
     api_key_env: str | None = None
+    api_key: str | None = None
     temperature: float = 0.0
     max_tokens: int = 2048
 
@@ -40,7 +41,101 @@ class OptimizerConfig:
 def load_mapping(path: str | Path) -> dict[str, Any]:
     p = Path(path)
     text = p.read_text(encoding="utf-8")
-    if p.suffix.lower() in {".yaml", ".yml"} and yaml is not None:
-        data = yaml.safe_load(text)
-        return data or {}
+    if p.suffix.lower() in {".yaml", ".yml"}:
+        if yaml is not None:
+            data = yaml.safe_load(text)
+            return data or {}
+        return _parse_simple_yaml_mapping(text)
     return json.loads(text)
+
+
+def _parse_scalar(value: str) -> Any:
+    if value in {"", "null", "None", "~"}:
+        return None
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def _parse_simple_yaml_mapping(text: str) -> dict[str, Any]:
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
+    for raw_line in text.splitlines():
+        line_without_comment = raw_line.split("#", 1)[0].rstrip()
+        if not line_without_comment.strip():
+            continue
+        indent = len(line_without_comment) - len(line_without_comment.lstrip(" "))
+        stripped = line_without_comment.strip()
+        if ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        current = stack[-1][1]
+        if value == "":
+            child: dict[str, Any] = {}
+            current[key] = child
+            stack.append((indent, child))
+        else:
+            current[key] = _parse_scalar(value)
+    return root
+
+
+def _bool_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def model_config_from_mapping(data: dict[str, Any] | None) -> ModelConfig:
+    data = data or {}
+    return ModelConfig(
+        provider=data.get("provider", "mock"),
+        model=data.get("model", "mock-model"),
+        base_url=data.get("base_url"),
+        api_key_env=data.get("api_key_env"),
+        api_key=data.get("api_key"),
+        temperature=float(data.get("temperature", 0.0)),
+        max_tokens=int(data.get("max_tokens", 2048)),
+    )
+
+
+def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfig:
+    data = data or {}
+    text = data.get("text_optimization", {}) or {}
+    dval = data.get("dynamic_validation", {}) or {}
+    compression = data.get("compression", {}) or {}
+    fewshot = data.get("fewshot", {}) or {}
+    models = data.get("models", {}) or {}
+    extraction_model_data = data.get("extraction_model") or models.get("extraction") or {}
+    optimizer_model_data = data.get("optimizer_model") or models.get("optimizer") or {}
+    return OptimizerConfig(
+        run_dir=data.get("run_dir", "runs"),
+        batch_size=int(text.get("batch_size", data.get("batch_size", 24))),
+        dynamic_validation_batch_size=int(dval.get("batch_size", data.get("dynamic_validation_batch_size", 48))),
+        max_text_rounds=int(text.get("max_rounds", data.get("max_text_rounds", 10))),
+        extraction_line_budget=compression.get("extraction_line_budget", data.get("extraction_line_budget")),
+        analysis_line_budget=compression.get("analysis_line_budget", data.get("analysis_line_budget")),
+        fewshot_enabled=_bool_value(fewshot.get("enabled", data.get("fewshot_enabled", False))),
+        fewshot_max_rounds=int(fewshot.get("max_rounds", data.get("fewshot_max_rounds", 5))),
+        fewshot_max_slots=int(fewshot.get("max_slots", data.get("fewshot_max_slots", 5))),
+        fewshot_min_accuracy_delta=float(fewshot.get("min_accuracy_delta", data.get("fewshot_min_accuracy_delta", 0.0))),
+        extraction_model=model_config_from_mapping(extraction_model_data),
+        optimizer_model=model_config_from_mapping(optimizer_model_data),
+    )

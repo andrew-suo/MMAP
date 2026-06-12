@@ -60,6 +60,11 @@ Each individually accepted patch is now re-tested as part of an accepted-patch b
 The MVP now promotes analysis prompt candidates from deterministic hard-failure signals rather than from self-certifying analysis text. Schema/frozen-target patch violations add schema-guard guidance, and toxic patch results add risk-policy self-check guidance. Candidate analysis prompts pass a simple shadow gate before becoming the active analysis prompt for subsequent rounds.
 
 
+## Configurable model clients
+
+Use `python -m mmap_optimizer.cli.main run --config configs/optimizer.yaml` for configurable model clients. The optimizer config has separate `models.extraction` and `models.optimizer` blocks, so the multimodal extraction model and backend analysis/optimization model can use different OpenAI-compatible URLs, API keys, and model names. Set `provider: openai_compatible`, `base_url`, `model`, and either `api_key_env` or `api_key`; keeping API keys in environment variables is recommended. The lower-level `RoundRunner` also accepts separate `extraction_client` and `optimizer_client` objects while retaining `model_client` as a backward-compatible single-client fallback.
+
+
 ## OpenAI-compatible multimodal calls
 
 `OpenAICompatibleClient.complete_multimodal()` now converts `SampleAsset` images into OpenAI-compatible `image_url` message parts. Local images are embedded as `data:<mime>;base64,...` URLs, remote `uri` values are passed through directly, and optional `asset.metadata["openai_image_detail"]` is forwarded as the image detail setting. Non-string user content is serialized as a text part so the existing structured sample context can be sent alongside one or more images.

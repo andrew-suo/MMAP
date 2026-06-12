@@ -745,3 +745,61 @@ def test_optimizer_loop_runs_configured_rounds_and_writes_summary(tmp_path: Path
     persisted = JsonStore(tmp_path).read_json("run_summary.json")
     assert persisted["round_ids"] == ["round_000001", "round_000002"]
     assert persisted["final_extraction_prompt_version_id"] == state.active_extraction_prompt.id
+
+
+class CountingMockClient(MockModelClient):
+    def __init__(self, default_output='{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'):
+        super().__init__(default_output=default_output)
+        self.complete_calls = 0
+        self.complete_multimodal_calls = 0
+        self._inside_multimodal = False
+
+    def complete(self, messages, model_config=None, response_format=None):
+        if not self._inside_multimodal:
+            self.complete_calls += 1
+        return super().complete(messages, model_config, response_format)
+
+    def complete_multimodal(self, messages, assets, model_config=None, response_format=None):
+        self.complete_multimodal_calls += 1
+        self._inside_multimodal = True
+        try:
+            return super().complete_multimodal(messages, assets, model_config, response_format)
+        finally:
+            self._inside_multimodal = False
+
+
+def test_round_runner_uses_separate_extraction_and_optimizer_clients(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("raw extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    samples = [
+        Sample(id="s1", ground_truth_id="gt1", metadata={"mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'}),
+    ]
+    gts = {"gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG")}
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    extraction_client = CountingMockClient()
+    optimizer_client = CountingMockClient(default_output='{"judgement":{"is_correct":false},"patch_candidates":[]}')
+    runner = RoundRunner(
+        extraction_client=extraction_client,
+        optimizer_client=optimizer_client,
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0),
+    )
+
+    runner.run_round(state, round_index=1)
+
+    assert extraction_client.complete_multimodal_calls >= 1
+    assert extraction_client.complete_calls == 0
+    assert optimizer_client.complete_calls == 1
+    assert optimizer_client.complete_multimodal_calls == 0

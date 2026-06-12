@@ -41,8 +41,22 @@ class OptimizerState:
 
 
 class RoundRunner:
-    def __init__(self, *, model_client: ModelClient, evaluator: Evaluator, store: JsonStore, config: OptimizerConfig | None = None):
-        self.model_client = model_client
+    def __init__(
+        self,
+        *,
+        evaluator: Evaluator,
+        store: JsonStore,
+        config: OptimizerConfig | None = None,
+        model_client: ModelClient | None = None,
+        extraction_client: ModelClient | None = None,
+        optimizer_client: ModelClient | None = None,
+    ):
+        fallback_client = model_client or extraction_client or optimizer_client
+        if fallback_client is None:
+            raise ValueError("RoundRunner requires model_client or extraction_client/optimizer_client")
+        self.extraction_client = extraction_client or fallback_client
+        self.optimizer_client = optimizer_client or fallback_client
+        self.model_client = fallback_client  # Backward-compatible alias for existing tests/extensions.
         self.evaluator = evaluator
         self.store = store
         self.config = config or OptimizerConfig()
@@ -107,7 +121,7 @@ class RoundRunner:
 
         wrong_evals = [evaluation for evaluation in evals if evaluation.overall_status != "correct"]
         if wrong_evals:
-            analysis_result = AnalysisRunner(self.model_client, model_id=self.config.optimizer_model.model).analyze_errors(
+            analysis_result = AnalysisRunner(self.optimizer_client, model_id=self.config.optimizer_model.model).analyze_errors(
                 round_id=round_id,
                 error_evaluations=wrong_evals,
                 extraction_runs=extraction_by_sample,
@@ -132,7 +146,7 @@ class RoundRunner:
             merged_patches = PatchMerger().merge(candidate_patches)
             accepted_patches: list[Patch] = []
             suite_builder = PatchTestSuiteBuilder()
-            patch_tester = PatchTester(model_client=self.model_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model)
+            patch_tester = PatchTester(model_client=self.extraction_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model)
             for patch in merged_patches:
                 suite = suite_builder.build_individual_suite(round_id=round_id, patch=patch, current_evaluations=evals)
                 base_suite_evals = [evaluation for evaluation in evals if evaluation.sample_id in set(suite.sample_ids)]
@@ -200,7 +214,7 @@ class RoundRunner:
             state.active_analysis_prompt = analysis_evolution_report.candidate_prompt
 
         compression_engine = CompressionEngine(
-            model_client=self.model_client,
+            model_client=self.extraction_client,
             evaluator=self.evaluator,
             model_id=self.config.extraction_model.model,
         )
@@ -222,7 +236,7 @@ class RoundRunner:
         fewshot_round_index = round_index - self.config.max_text_rounds
         if self.config.fewshot_enabled and 0 < fewshot_round_index <= self.config.fewshot_max_rounds:
             fewshot_engine = FewShotOptimizationEngine(
-                model_client=self.model_client,
+                model_client=self.extraction_client,
                 evaluator=self.evaluator,
                 model_id=self.config.extraction_model.model,
             )
@@ -342,7 +356,7 @@ class RoundRunner:
         return safe, runs, evaluations, results
 
     def _prompt_runner(self) -> PromptTestRunner:
-        return PromptTestRunner(model_client=self.model_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model)
+        return PromptTestRunner(model_client=self.extraction_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model)
 
     def _update_sample_state(self, state: OptimizerState, evals: list[EvaluationRecord], round_index: int) -> None:
         for evaluation in evals:

@@ -6,6 +6,12 @@ compression:
   extraction_line_budget: null
   analysis_line_budget: null
 
+fewshot:
+  enabled: false
+  max_rounds: 5
+  max_slots: 5
+  min_accuracy_delta: 0.0
+
 dynamic_validation:
   batch_size: 48
 

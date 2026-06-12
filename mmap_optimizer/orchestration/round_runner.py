@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from mmap_optimizer.compression.engine import CompressionEngine
 from mmap_optimizer.core.config import OptimizerConfig
+from mmap_optimizer.fewshot.engine import FewShotOptimizationEngine
 from mmap_optimizer.core.enums import RunType
 from mmap_optimizer.analysis.evolution import AnalysisEvolutionEngine
 from mmap_optimizer.analysis.runner import AnalysisRunner
@@ -100,6 +101,9 @@ class RoundRunner:
         compression_reports = []
         compression_runs = []
         compression_evals = []
+        fewshot_reports = []
+        fewshot_runs = []
+        fewshot_evals = []
 
         wrong_evals = [evaluation for evaluation in evals if evaluation.overall_status != "correct"]
         if wrong_evals:
@@ -215,6 +219,30 @@ class RoundRunner:
         if compression_report.accepted:
             state.active_extraction_prompt = compressed_prompt
 
+        fewshot_round_index = round_index - self.config.max_text_rounds
+        if self.config.fewshot_enabled and 0 < fewshot_round_index <= self.config.fewshot_max_rounds:
+            fewshot_engine = FewShotOptimizationEngine(
+                model_client=self.model_client,
+                evaluator=self.evaluator,
+                model_id=self.config.extraction_model.model,
+            )
+            fewshot_prompt, fewshot_report, fewshot_runs, fewshot_evals = fewshot_engine.optimize_once(
+                round_id=round_id,
+                prompt=state.active_extraction_prompt,
+                samples=optimization_batch,
+                assets=state.assets,
+                ground_truths=state.ground_truths,
+                sample_states=state.sample_states,
+                contract=state.extraction_output_schema_contract,
+                base_evaluations=evals,
+                max_slots=self.config.fewshot_max_slots,
+                min_accuracy_delta=self.config.fewshot_min_accuracy_delta,
+            )
+            fewshot_reports.append(fewshot_report)
+            round_record.fewshot_report_ids = [report.id for report in fewshot_reports]
+            if fewshot_report.accepted:
+                state.active_extraction_prompt = fewshot_prompt
+
         metrics = compute_round_metrics(round_id, evals, dval_evals)
         metrics.draft_count = len(draft_patches)
         metrics.candidate_count = len(candidate_patches)
@@ -225,6 +253,9 @@ class RoundRunner:
         metrics.compression_triggered = any(report.triggered for report in compression_reports)
         metrics.compression_accepted = any(report.accepted for report in compression_reports)
         metrics.compression_line_reduction = sum(report.line_reduction for report in compression_reports)
+        metrics.fewshot_triggered = any(report.triggered for report in fewshot_reports)
+        metrics.fewshot_accepted = any(report.accepted for report in fewshot_reports)
+        metrics.fewshot_accuracy_delta = sum(report.accuracy_delta for report in fewshot_reports)
         round_record.round_metrics_id = metrics.id
         round_record.status = "ROUND_COMPLETED"
         self._update_sample_state(state, evals, round_index)
@@ -234,14 +265,17 @@ class RoundRunner:
         self.store.append_jsonl(f"{round_id}/runs/analysis_runs.jsonl", analysis_runs)
         self.store.append_jsonl(f"{round_id}/runs/patch_test_runs.jsonl", patch_test_runs)
         self.store.append_jsonl(f"{round_id}/runs/compression_runs.jsonl", compression_runs)
-        self.store.append_jsonl(f"{round_id}/evaluations/evaluation_records.jsonl", evals + dval_evals + patch_test_evals + compression_evals)
+        self.store.append_jsonl(f"{round_id}/runs/fewshot_runs.jsonl", fewshot_runs)
+        self.store.append_jsonl(f"{round_id}/evaluations/evaluation_records.jsonl", evals + dval_evals + patch_test_evals + compression_evals + fewshot_evals)
         self.store.append_jsonl(f"{round_id}/analyses/analysis_records.jsonl", analysis_records)
         self.store.append_jsonl(f"{round_id}/patches/draft_patches.jsonl", draft_patches)
         self.store.append_jsonl(f"{round_id}/patches/patch_test_results.jsonl", patch_test_results)
         self.store.write_json(f"{round_id}/reports/analysis_evolution_report.json", analysis_evolution_report)
         for compression_report in compression_reports:
             self.store.write_json(f"{round_id}/reports/{compression_report.id}.json", compression_report)
-        if round_record.accepted_patch_ids or any(report.accepted for report in compression_reports):
+        for fewshot_report in fewshot_reports:
+            self.store.write_json(f"{round_id}/reports/{fewshot_report.id}.json", fewshot_report)
+        if round_record.accepted_patch_ids or any(report.accepted for report in compression_reports) or any(report.accepted for report in fewshot_reports):
             self.store.write_json(f"{round_id}/prompts/active_extraction_prompt.json", state.active_extraction_prompt)
         self.store.write_json(f"{round_id}/metrics/round_metrics.json", metrics)
         self.store.write_json(f"{round_id}/round.json", round_record)

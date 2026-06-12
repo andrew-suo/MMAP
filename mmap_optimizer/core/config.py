@@ -29,6 +29,10 @@ class OptimizerConfig:
     max_text_rounds: int = 10
     extraction_line_budget: int | None = None
     analysis_line_budget: int | None = None
+    fewshot_enabled: bool = False
+    fewshot_max_rounds: int = 5
+    fewshot_max_slots: int = 5
+    fewshot_min_accuracy_delta: float = 0.0
     extraction_model: ModelConfig = field(default_factory=ModelConfig)
     optimizer_model: ModelConfig = field(default_factory=ModelConfig)
 

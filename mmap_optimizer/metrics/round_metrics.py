@@ -24,6 +24,9 @@ class RoundMetrics:
     compression_triggered: bool = False
     compression_accepted: bool = False
     compression_line_reduction: int = 0
+    fewshot_triggered: bool = False
+    fewshot_accepted: bool = False
+    fewshot_accuracy_delta: float = 0.0
     extra: dict = field(default_factory=dict)
 
 

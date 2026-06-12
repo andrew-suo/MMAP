@@ -37,6 +37,7 @@ class RunType(str, Enum):
     ANALYSIS_SHADOW_CURRENT = "analysis_shadow_current"
     ANALYSIS_SHADOW_CANDIDATE = "analysis_shadow_candidate"
     COMPRESSION_BEHAVIOR_TEST = "compression_behavior_test"
+    FEW_SHOT_TEST = "few_shot_test"
 
 
 class EvaluationStatus(str, Enum):

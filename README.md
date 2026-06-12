@@ -9,7 +9,7 @@ This repository contains an MVP skeleton for a multimodal prompt optimization fr
 - Dynamic validation sampling instead of a fixed validation set.
 - A minimal text-patch loop: analysis-output parsing, patch validation, strict individual patch tests, and PromptVersion updates.
 - Conservative extraction prompt compression that runs after text optimization and accepts only behavior-preserving line reductions.
-- Few-shot data models for later optimization phases.
+- Greedy few-shot slot optimization for stable text prompts.
 - A smoke CLI that runs one round using mock outputs stored in sample metadata.
 
 ## Quick smoke run
@@ -20,7 +20,8 @@ python -m mmap_optimizer.cli.main run-smoke \
   --run-dir runs/smoke \
   --batch-size 2 \
   --dynamic-validation-batch-size 1 \
-  --extraction-line-budget 120
+  --extraction-line-budget 120 \
+  --fewshot-enabled
 ```
 
 The smoke command loads samples, prompts, and schemas; renders prompt IRs; runs mock extraction; evaluates outputs; optionally consumes mock analysis patch outputs; writes round logs; and prints basic metrics.
@@ -33,13 +34,13 @@ The smoke command loads samples, prompts, and schemas; renders prompt IRs; runs 
 - `mmap_optimizer/orchestration`: MVP round runner and run records.
 - `mmap_optimizer/patch`: patch schema, validation, merge, application, and strict update foundations.
 - `mmap_optimizer/testing`: strict fixed/broken transition summaries.
-- `mmap_optimizer/fewshot`: few-shot candidate/example/set schemas.
+- `mmap_optimizer/fewshot`: few-shot candidate/example/set schemas and greedy slot optimizer.
 - `mmap_optimizer/compression`: line-budget compression engine and compression report schema.
 - `mmap_optimizer/storage`: JSON/JSONL persistence.
 
 ## Current scope
 
-This implementation slice focuses on stable data models, logging, prompt rendering, evaluation, dynamic validation, and a runnable text-patch round skeleton. Analysis outputs can now be parsed into patch candidates, each candidate is applied to a temporary PromptVersion for model-backed testing, and accepted patches can update the active extraction PromptVersion after strict tests. If an extraction line budget is configured, the round then tries conservative compression on mutable sections and promotes only candidates that preserve baseline predictions/statuses on the behavior suite. Full production LLM prompt engineering for patch generation, analysis-prompt compression, and few-shot search remain next implementation steps.
+This implementation slice focuses on stable data models, logging, prompt rendering, evaluation, dynamic validation, and a runnable text-patch round skeleton. Analysis outputs can now be parsed into patch candidates, each candidate is applied to a temporary PromptVersion for model-backed testing, and accepted patches can update the active extraction PromptVersion after strict tests. If an extraction line budget is configured, the round then tries conservative compression on mutable sections and promotes only candidates that preserve baseline predictions/statuses on the behavior suite. Full production LLM prompt engineering for patch generation, analysis-prompt compression, and multi-round few-shot search remain next implementation steps.
 
 
 ## Mock prompt-dependent outputs
@@ -60,3 +61,8 @@ The MVP now promotes analysis prompt candidates from deterministic hard-failure 
 ## Compression protocol
 
 Set `OptimizerConfig.extraction_line_budget` or pass `--extraction-line-budget` to enable post-round extraction prompt compression. The MVP compressor skips frozen schema sections, ranks mutable compressible sections, removes blank and duplicate lines from one section at a time, and runs a behavior-preservation gate before promotion. A compression candidate is rejected if it introduces parse/schema errors, changes any normalized prediction, or changes the baseline evaluation status for the sampled behavior suite. Reports are written under `round_xxxxxx/reports/compression_<round>_extraction.json`, and behavior-test runs are written under `round_xxxxxx/runs/compression_runs.jsonl`.
+
+
+## Few-shot optimization protocol
+
+Set `OptimizerConfig.fewshot_enabled` or pass `--fewshot-enabled` to run few-shot optimization after text rounds have completed (`round_index > max_text_rounds`). The MVP miner ranks currently failed samples by difficulty, generates a schema-complete example from ground truth plus an analysis-process text, appends it to a `few_shot_examples` section, and tests the temporary prompt on the current behavior suite. A slot is promoted only when it improves accuracy by at least the configured delta, creates no schema violations, and breaks no sample that was already correct. Reports are written under `round_xxxxxx/reports/fewshot_<round>_extraction.json`, and few-shot test runs are written under `round_xxxxxx/runs/fewshot_runs.jsonl`.

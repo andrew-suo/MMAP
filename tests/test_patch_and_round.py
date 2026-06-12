@@ -586,3 +586,119 @@ def test_round_runner_rejects_compression_when_behavior_changes(tmp_path: Path):
     assert report["accepted"] is False
     assert report["failure_reason"] == "NO_SAFE_COMPRESSION_CANDIDATE"
     assert report["rejected_sections"][0]["reason"].startswith("PREDICTION_CHANGED")
+
+
+def test_round_runner_adds_fewshot_after_text_rounds(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("stable extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {"contains": "FEW_SHOT_SAMPLE:s1", "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+                "fewshot_reasoning": "示例说明：该样本存在应判定为 NG 的施工质量问题。",
+            },
+        ),
+        Sample(id="s2", ground_truth_id="gt2", metadata={"mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'}),
+    ]
+    gts = {
+        "gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG"),
+        "gt2": GroundTruth(id="gt2", sample_id="s2", value={"result": "OK"}, primary_answer="OK"),
+    }
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id, difficulty_ema=0.8) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0, max_text_rounds=0, fewshot_enabled=True, fewshot_max_slots=2),
+    )
+
+    round_record, metrics = runner.run_round(state, round_index=1)
+
+    assert metrics.fewshot_triggered
+    assert metrics.fewshot_accepted
+    assert metrics.fewshot_accuracy_delta == 0.5
+    assert round_record.fewshot_report_ids == ["fewshot_round_000001_extraction"]
+    rendered = state.active_extraction_prompt.render().text
+    assert "FEW_SHOT_SAMPLE:s1" in rendered
+    assert "示例说明：该样本存在应判定为 NG 的施工质量问题。" in rendered
+    assert state.active_extraction_prompt.version_type == "few_shot_optimization"
+    report = JsonStore(tmp_path).read_json("round_000001/reports/fewshot_round_000001_extraction.json")
+    assert report["accepted"] is True
+    assert report["selected_sample_id"] == "s1"
+    assert (tmp_path / "round_000001" / "runs" / "fewshot_runs.jsonl").exists()
+
+
+def test_round_runner_rejects_fewshot_when_it_breaks_correct_sample(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("stable extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {"contains": "FEW_SHOT_SAMPLE:s1", "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+            },
+        ),
+        Sample(
+            id="s2",
+            ground_truth_id="gt2",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {"contains": "FEW_SHOT_SAMPLE:s1", "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+            },
+        ),
+    ]
+    gts = {
+        "gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG"),
+        "gt2": GroundTruth(id="gt2", sample_id="s2", value={"result": "OK"}, primary_answer="OK"),
+    }
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0, max_text_rounds=0, fewshot_enabled=True, fewshot_max_slots=1),
+    )
+
+    round_record, metrics = runner.run_round(state, round_index=1)
+
+    assert metrics.fewshot_triggered
+    assert not metrics.fewshot_accepted
+    assert state.active_extraction_prompt.version == 1
+    assert round_record.fewshot_report_ids == ["fewshot_round_000001_extraction"]
+    report = JsonStore(tmp_path).read_json("round_000001/reports/fewshot_round_000001_extraction.json")
+    assert report["accepted"] is False
+    assert report["failure_reason"] == "NO_SAFE_FEWSHOT_CANDIDATE"
+    assert report["rejected_candidates"][0]["broken_sample_ids"] == ["s2"]

@@ -50,9 +50,9 @@ This implementation slice focuses on stable data models, logging, prompt renderi
 Tests and smoke data can keep model calls deterministic while still exercising temporary PromptVersion rendering. A sample may provide `metadata.mock_prompt_outputs` rules; `MockModelClient` returns the first rule whose `contains` text appears in the rendered system prompt, otherwise it falls back to `metadata.mock_output`. This allows patch tests to validate the real apply-render-run-evaluate path without external API calls.
 
 
-## Bundle safety
+## Tree-reduce patch merge and bundle safety
 
-Each individually accepted patch is now re-tested as part of an accepted-patch bundle before it can update the active extraction prompt. If the full bundle is toxic, the round runner performs greedy safe-subset selection: patches are tried in descending fixed-sample count order, and any patch that introduces bundle-level toxicity is rejected with a bundle rejection reason.
+Before patch testing, candidate patches are clustered by target prompt, section, and operation; duplicates and subsumed patches are removed while preserving source trace; obvious conflicts such as OK-vs-NG label bias, strict-vs-relaxed guidance, frozen targets, and delete/add operation conflicts are rejected. The merge report is written to `round_xxxxxx/patches/merge_report.json`. Each merged patch is then tested individually, and individually accepted patches are re-tested as a bundle before they can update the active extraction prompt. If the full bundle is toxic, the round runner performs greedy safe-subset selection: patches are tried in descending fixed-sample count order, and any patch that introduces bundle-level toxicity is rejected with a bundle rejection reason.
 
 
 ## Analysis output parsing and repair
@@ -88,3 +88,7 @@ Set `OptimizerConfig.extraction_line_budget` or pass `--extraction-line-budget` 
 ## Few-shot optimization protocol
 
 Set `OptimizerConfig.fewshot_enabled` or pass `--fewshot-enabled` to run few-shot optimization after text rounds have completed (`round_index > max_text_rounds`). The MVP miner ranks currently failed samples by difficulty, generates a schema-complete example from ground truth plus an analysis-process text, appends it to a `few_shot_examples` section, and tests the temporary prompt on the current behavior suite. A slot is promoted only when it improves accuracy by at least the configured delta, creates no schema violations, and breaks no sample that was already correct. Reports are written under `round_xxxxxx/reports/fewshot_<round>_extraction.json`, and few-shot test runs are written under `round_xxxxxx/runs/fewshot_runs.jsonl`.
+
+## Cross-round metrics trend
+
+Every `OptimizerLoop` run now writes a `metrics_trend.json` artifact next to `run_summary.json`. The trend report keeps one point per round with absolute metrics, deltas from the previous round, best extraction/dynamic-validation rounds, aggregate patch/merge counts, and regression round ids. This is designed for the non-fixed validation strategy: a dynamic-validation drop is reported separately from optimization-batch accuracy so later dashboards can distinguish sampled validation noise from direct batch regressions.

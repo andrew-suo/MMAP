@@ -31,6 +31,10 @@ class RoundMetrics:
     analysis_schema_valid_rate: float = 0.0
     analysis_judgement_match_rate: float = 0.0
     valid_patch_candidate_rate: float = 0.0
+    merge_input_count: int = 0
+    merge_output_count: int = 0
+    merge_conflict_count: int = 0
+    merge_duplicate_count: int = 0
     extra: dict = field(default_factory=dict)
 
 

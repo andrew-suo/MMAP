@@ -743,8 +743,13 @@ def test_optimizer_loop_runs_configured_rounds_and_writes_summary(tmp_path: Path
     assert summary.best_batch_accuracy == 0.5
     assert summary.total_rejected_patches >= 0
     persisted = JsonStore(tmp_path).read_json("run_summary.json")
+    trend = JsonStore(tmp_path).read_json("metrics_trend.json")
     assert persisted["round_ids"] == ["round_000001", "round_000002"]
     assert persisted["final_extraction_prompt_version_id"] == state.active_extraction_prompt.id
+    assert persisted["metrics_trend_id"] == "metrics_trend"
+    assert trend["round_count"] == 2
+    assert trend["points"][0]["round_id"] == "round_000001"
+    assert trend["best_batch_round_id"] == "round_000001"
 
 
 class CountingMockClient(MockModelClient):
@@ -872,3 +877,62 @@ def test_analysis_runner_repairs_markdown_and_filters_invalid_patch_candidates(t
     assert '"repaired": true' in line
     assert '"invalid_patch_candidate_count": 1' in line
     assert record["valid_patch_candidate_rate"] == 0.5
+
+
+def test_round_runner_tree_reduce_deduplicates_patches_and_writes_report(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("raw extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    duplicate_rule = "检查标签缺失。"
+    analysis_output = (
+        "{"
+        '"judgement":{"is_correct":false},'
+        '"confirmed_facts":[],"hypothesized_error_causes":[],"prompt_section_attribution":[],'
+        '"patch_candidates":['
+        f'{{"target_prompt":"extraction","target_section":"ambiguity_policy","operation":"ADD_RULE","intent":"fix_a","content":"{duplicate_rule}","risk":"low"}},'
+        f'{{"target_prompt":"extraction","target_section":"ambiguity_policy","operation":"ADD_RULE","intent":"fix_b","content":"{duplicate_rule}","risk":"low"}}'
+        "]}"
+    )
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_analysis_output": analysis_output,
+                "mock_prompt_outputs": [
+                    {"contains": duplicate_rule, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+            },
+        )
+    ]
+    gts = {"gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG")}
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0),
+    )
+
+    round_record, metrics = runner.run_round(state, round_index=1)
+
+    assert round_record.accepted_patch_ids == ["patch_round_000001_s1_00"]
+    assert "patch_round_000001_s1_01" in round_record.rejected_patch_ids
+    assert metrics.merge_input_count == 2
+    assert metrics.merge_output_count == 1
+    assert metrics.merge_duplicate_count == 1
+    report = JsonStore(tmp_path).read_json("round_000001/patches/merge_report.json")
+    assert report["duplicate_patch_ids"] == ["patch_round_000001_s1_01"]
+    assert report["final_patch_ids"] == ["patch_round_000001_s1_00"]
+    assert state.active_extraction_prompt.render().text.count(duplicate_rule) == 1

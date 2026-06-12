@@ -12,7 +12,8 @@ from mmap_optimizer.dataset.sample import GroundTruth, Sample, SampleAsset, Samp
 from mmap_optimizer.evaluation.evaluator import EvaluationRecord, Evaluator
 from mmap_optimizer.metrics.round_metrics import RoundMetrics, compute_round_metrics
 from mmap_optimizer.patch.applier import PatchApplier
-from mmap_optimizer.patch.merger import PatchMerger
+from mmap_optimizer.patch.merge_report import PatchMergeReport
+from mmap_optimizer.patch.tree_reduce import TreeReducePatchMerger
 from mmap_optimizer.patch.schema import Patch
 from mmap_optimizer.patch.validator import PatchValidator
 from mmap_optimizer.model.client import ModelClient
@@ -118,6 +119,7 @@ class RoundRunner:
         fewshot_reports = []
         fewshot_runs = []
         fewshot_evals = []
+        merge_report: PatchMergeReport | None = None
 
         wrong_evals = [evaluation for evaluation in evals if evaluation.overall_status != "correct"]
         if wrong_evals:
@@ -143,7 +145,10 @@ class RoundRunner:
                     patch.rejection_reason = validation.reason
                     rejected_patches.append(patch)
 
-            merged_patches = PatchMerger().merge(candidate_patches)
+            merge_result = TreeReducePatchMerger().merge(round_id=round_id, patches=candidate_patches, prompt_ir=state.active_extraction_prompt.prompt_ir)
+            merge_report = merge_result.merge_report
+            merged_patches = merge_result.final_patches
+            rejected_patches.extend(merge_result.rejected_patches)
             accepted_patches: list[Patch] = []
             suite_builder = PatchTestSuiteBuilder()
             patch_tester = PatchTester(model_client=self.extraction_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model, model_config=self._extraction_model_config())
@@ -278,6 +283,11 @@ class RoundRunner:
             metrics.analysis_judgement_match_rate = sum(1 for record in analysis_records if record.judgement_matches_evaluator) / len(analysis_records)
             total_patch_candidates = sum(record.generated_patch_count + record.invalid_patch_candidate_count for record in analysis_records)
             metrics.valid_patch_candidate_rate = (sum(record.generated_patch_count for record in analysis_records) / total_patch_candidates) if total_patch_candidates else 0.0
+        if merge_report is not None:
+            metrics.merge_input_count = len(merge_report.input_patch_ids)
+            metrics.merge_output_count = len(merge_report.final_patch_ids)
+            metrics.merge_conflict_count = len(merge_report.conflict_patch_ids)
+            metrics.merge_duplicate_count = len(merge_report.duplicate_patch_ids)
         round_record.round_metrics_id = metrics.id
         round_record.status = "ROUND_COMPLETED"
         self._update_sample_state(state, evals, round_index)
@@ -292,6 +302,8 @@ class RoundRunner:
         self.store.append_jsonl(f"{round_id}/analyses/analysis_records.jsonl", analysis_records)
         self.store.append_jsonl(f"{round_id}/patches/draft_patches.jsonl", draft_patches)
         self.store.append_jsonl(f"{round_id}/patches/patch_test_results.jsonl", patch_test_results)
+        if merge_report is not None:
+            self.store.write_json(f"{round_id}/patches/merge_report.json", merge_report)
         self.store.write_json(f"{round_id}/reports/analysis_evolution_report.json", analysis_evolution_report)
         for compression_report in compression_reports:
             self.store.write_json(f"{round_id}/reports/{compression_report.id}.json", compression_report)

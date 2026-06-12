@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from mmap_optimizer.core.config import OptimizerConfig
 from mmap_optimizer.metrics.round_metrics import RoundMetrics
+from mmap_optimizer.metrics.trend import MetricsTrend, build_metrics_trend
 from mmap_optimizer.storage.json_store import JsonStore
 from .records import OptimizationRound
 from .round_runner import OptimizerState, RoundRunner
@@ -29,6 +30,11 @@ class OptimizationRunSummary:
     total_compression_accepts: int = 0
     total_fewshot_accepts: int = 0
     stopped_reason: str | None = None
+    metrics_trend_id: str | None = None
+    regression_round_ids: list[str] = field(default_factory=list)
+    analysis_regression_round_ids: list[str] = field(default_factory=list)
+    batch_accuracy_delta_total: float | None = None
+    dynamic_validation_accuracy_delta_total: float | None = None
 
 
 class OptimizerLoop:
@@ -63,12 +69,23 @@ class OptimizerLoop:
             summary.round_ids = [record.id for record in rounds]
             summary.final_extraction_prompt_version_id = state.active_extraction_prompt.id
             summary.final_analysis_prompt_version_id = state.active_analysis_prompt.id
-            self.store.write_json("run_summary.json", summary)
+            self._write_trend_and_summary(summary, metrics_records)
 
         summary.status = "COMPLETED"
         summary.stopped_reason = "PLANNED_ROUNDS_COMPLETED"
-        self.store.write_json("run_summary.json", summary)
+        self._write_trend_and_summary(summary, metrics_records)
         return rounds, metrics_records, summary
+
+    def _write_trend_and_summary(self, summary: OptimizationRunSummary, metrics_records: list[RoundMetrics]) -> MetricsTrend:
+        trend = build_metrics_trend(metrics_records)
+        summary.metrics_trend_id = trend.id
+        summary.regression_round_ids = trend.regression_round_ids
+        summary.analysis_regression_round_ids = trend.analysis_regression_round_ids
+        summary.batch_accuracy_delta_total = trend.batch_accuracy_delta_total
+        summary.dynamic_validation_accuracy_delta_total = trend.dynamic_validation_accuracy_delta_total
+        self.store.write_json("metrics_trend.json", trend)
+        self.store.write_json("run_summary.json", summary)
+        return trend
 
     def _default_round_count(self) -> int:
         fewshot_rounds = self.config.fewshot_max_rounds if self.config.fewshot_enabled else 0
@@ -88,3 +105,4 @@ class OptimizerLoop:
         summary.total_toxic_patches += metrics.toxic_count
         summary.total_compression_accepts += 1 if metrics.compression_accepted else 0
         summary.total_fewshot_accepts += 1 if metrics.fewshot_accepted else 0
+

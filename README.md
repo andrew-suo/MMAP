@@ -10,7 +10,7 @@ This repository contains an MVP skeleton for a multimodal prompt optimization fr
 - A minimal text-patch loop: analysis-output parsing, patch validation, strict individual patch tests, and PromptVersion updates.
 - Conservative extraction prompt compression that runs after text optimization and accepts only behavior-preserving line reductions.
 - Greedy few-shot slot optimization for stable text prompts.
-- A smoke CLI that runs one round using mock outputs stored in sample metadata.
+- A smoke CLI that runs mock rounds and an OpenAI-compatible adapter that can send local or remote image assets as multimodal message parts.
 
 ## Quick smoke run
 
@@ -38,6 +38,7 @@ The smoke command loads samples, prompts, and schemas; renders prompt IRs; runs 
 - `mmap_optimizer/fewshot`: few-shot candidate/example/set schemas and greedy slot optimizer.
 - `mmap_optimizer/compression`: line-budget compression engine and compression report schema.
 - `mmap_optimizer/storage`: JSON/JSONL persistence.
+- `mmap_optimizer/model`: deterministic mock client and OpenAI-compatible multimodal client.
 
 ## Current scope
 
@@ -57,6 +58,11 @@ Each individually accepted patch is now re-tested as part of an accepted-patch b
 ## Analysis prompt evolution
 
 The MVP now promotes analysis prompt candidates from deterministic hard-failure signals rather than from self-certifying analysis text. Schema/frozen-target patch violations add schema-guard guidance, and toxic patch results add risk-policy self-check guidance. Candidate analysis prompts pass a simple shadow gate before becoming the active analysis prompt for subsequent rounds.
+
+
+## OpenAI-compatible multimodal calls
+
+`OpenAICompatibleClient.complete_multimodal()` now converts `SampleAsset` images into OpenAI-compatible `image_url` message parts. Local images are embedded as `data:<mime>;base64,...` URLs, remote `uri` values are passed through directly, and optional `asset.metadata["openai_image_detail"]` is forwarded as the image detail setting. Non-string user content is serialized as a text part so the existing structured sample context can be sent alongside one or more images.
 
 
 ## Serial optimization loop

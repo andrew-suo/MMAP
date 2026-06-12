@@ -26,10 +26,16 @@ class MockModelClient:
         self.default_output = default_output
 
     def complete(self, messages: list[dict[str, Any]], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:
+        prompt_text = "\n".join(str(message.get("content", "")) for message in messages if message.get("role") == "system")
         for message in reversed(messages):
             content = message.get("content")
-            if isinstance(content, dict) and content.get("mock_output") is not None:
-                return ModelResponse(raw_output=content["mock_output"])
+            if isinstance(content, dict):
+                for rule in content.get("mock_prompt_outputs", []) or []:
+                    contains = rule.get("contains")
+                    if contains and contains in prompt_text:
+                        return ModelResponse(raw_output=rule["output"])
+                if content.get("mock_output") is not None:
+                    return ModelResponse(raw_output=content["mock_output"])
         return ModelResponse(raw_output=self.default_output)
 
     def complete_multimodal(self, messages: list[dict[str, Any]], assets: list[Any], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:

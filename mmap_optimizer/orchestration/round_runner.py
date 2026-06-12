@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 from mmap_optimizer.core.config import OptimizerConfig
@@ -18,7 +17,9 @@ from mmap_optimizer.prompt.contract import OutputSchemaContract
 from mmap_optimizer.prompt.version import PromptVersion
 from mmap_optimizer.sampling.dynamic_validation_sampler import DynamicValidationBatch, select_dynamic_validation_batch
 from mmap_optimizer.sampling.optimization_sampler import select_optimization_batch
-from mmap_optimizer.testing.patch_tester import PatchTestResult, summarize_patch_test
+from mmap_optimizer.testing.patch_runner import PatchTester
+from mmap_optimizer.testing.patch_tester import PatchTestResult
+from mmap_optimizer.testing.prompt_test_runner import PromptTestRunner
 from mmap_optimizer.testing.suite_builder import PatchTestSuiteBuilder
 from mmap_optimizer.storage.json_store import JsonStore
 from .records import OptimizationRound, RunRecord
@@ -61,13 +62,27 @@ class RoundRunner:
         round_record.dynamic_validation_batch_id = dval_batch.id
         self.store.write_json(f"{round_id}/dynamic_validation_batch.json", dval_batch)
 
-        extraction_runs, evals = self._run_and_evaluate_batch(
-            round_id=round_id, run_type=RunType.EXTRACTION.value, samples=optimization_batch, state=state,
+        extraction_result = self._prompt_runner().run(
+            round_id=round_id,
+            run_type=RunType.EXTRACTION.value,
+            prompt=state.active_extraction_prompt,
+            samples=optimization_batch,
+            assets=state.assets,
+            ground_truths=state.ground_truths,
+            contract=state.extraction_output_schema_contract,
         )
+        extraction_runs, evals = extraction_result.runs, extraction_result.evaluations
         dynamic_samples = [s for s in state.samples if s.id in set(dval_batch.sample_ids)]
-        dval_runs, dval_evals = self._run_and_evaluate_batch(
-            round_id=round_id, run_type=RunType.DYNAMIC_VALIDATION_EXTRACTION.value, samples=dynamic_samples, state=state,
+        dval_result = self._prompt_runner().run(
+            round_id=round_id,
+            run_type=RunType.DYNAMIC_VALIDATION_EXTRACTION.value,
+            prompt=state.active_extraction_prompt,
+            samples=dynamic_samples,
+            assets=state.assets,
+            ground_truths=state.ground_truths,
+            contract=state.extraction_output_schema_contract,
         )
+        dval_runs, dval_evals = dval_result.runs, dval_result.evaluations
         round_record.extraction_run_ids = [r.id for r in extraction_runs]
         round_record.dynamic_validation_run_ids = [r.id for r in dval_runs]
 
@@ -78,6 +93,8 @@ class RoundRunner:
         candidate_patches: list[Patch] = []
         rejected_patches: list[Patch] = []
         patch_test_results: list[PatchTestResult] = []
+        patch_test_runs = []
+        patch_test_evals = []
 
         wrong_evals = [evaluation for evaluation in evals if evaluation.overall_status != "correct"]
         if wrong_evals:
@@ -106,11 +123,24 @@ class RoundRunner:
             merged_patches = PatchMerger().merge(candidate_patches)
             accepted_patches: list[Patch] = []
             suite_builder = PatchTestSuiteBuilder()
+            patch_tester = PatchTester(model_client=self.model_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model)
             for patch in merged_patches:
                 suite = suite_builder.build_individual_suite(round_id=round_id, patch=patch, current_evaluations=evals)
                 base_suite_evals = [evaluation for evaluation in evals if evaluation.sample_id in set(suite.sample_ids)]
-                patched_evals = self._evaluate_mock_patch_outputs(round_id=round_id, patch=patch, suite_sample_ids=suite.sample_ids, state=state)
-                test_result = summarize_patch_test(round_id, patch.id, suite.id, base_suite_evals, patched_evals)
+                patch_run = patch_tester.test_individual(
+                    round_id=round_id,
+                    patch=patch,
+                    base_prompt=state.active_extraction_prompt,
+                    base_evaluations=base_suite_evals,
+                    suite=suite,
+                    samples=state.samples,
+                    assets=state.assets,
+                    ground_truths=state.ground_truths,
+                    contract=state.extraction_output_schema_contract,
+                )
+                test_result = patch_run.test_result
+                patch_test_runs.extend(patch_run.runs)
+                patch_test_evals.extend(patch_run.evaluations)
                 patch_test_results.append(test_result)
                 patch.fixed_sample_ids = test_result.fixed_sample_ids
                 patch.broken_sample_ids = test_result.broken_sample_ids
@@ -125,11 +155,11 @@ class RoundRunner:
                     rejected_patches.append(patch)
 
             if accepted_patches:
-                new_version_number = state.active_extraction_prompt.version + 1
                 next_prompt = state.active_extraction_prompt
+                next_version = next_prompt.version + 1
                 for patch in accepted_patches:
-                    next_prompt = PatchApplier().apply(next_prompt, patch, new_version=new_version_number)
-                    new_version_number += 1
+                    next_prompt = PatchApplier().apply(next_prompt, patch, new_version=next_version)
+                    next_version += 1
                 state.active_extraction_prompt = next_prompt
                 round_record.accepted_patch_ids = [patch.id for patch in accepted_patches]
             round_record.rejected_patch_ids = [patch.id for patch in rejected_patches]
@@ -148,7 +178,8 @@ class RoundRunner:
         self.store.append_jsonl(f"{round_id}/runs/extraction_runs.jsonl", extraction_runs)
         self.store.append_jsonl(f"{round_id}/runs/dynamic_validation_runs.jsonl", dval_runs)
         self.store.append_jsonl(f"{round_id}/runs/analysis_runs.jsonl", analysis_runs)
-        self.store.append_jsonl(f"{round_id}/evaluations/evaluation_records.jsonl", evals + dval_evals)
+        self.store.append_jsonl(f"{round_id}/runs/patch_test_runs.jsonl", patch_test_runs)
+        self.store.append_jsonl(f"{round_id}/evaluations/evaluation_records.jsonl", evals + dval_evals + patch_test_evals)
         self.store.append_jsonl(f"{round_id}/analyses/analysis_records.jsonl", analysis_records)
         self.store.append_jsonl(f"{round_id}/patches/draft_patches.jsonl", draft_patches)
         self.store.append_jsonl(f"{round_id}/patches/patch_test_results.jsonl", patch_test_results)
@@ -158,48 +189,8 @@ class RoundRunner:
         self.store.write_json(f"{round_id}/round.json", round_record)
         return round_record, metrics
 
-    def _run_and_evaluate_batch(self, *, round_id: str, run_type: str, samples: list[Sample], state: OptimizerState) -> tuple[list[RunRecord], list[EvaluationRecord]]:
-        rendered = state.active_extraction_prompt.render()
-        runs: list[RunRecord] = []
-        evals: list[EvaluationRecord] = []
-        for sample in samples:
-            messages = [{"role": "system", "content": rendered.text}, {"role": "user", "content": {"sample_id": sample.id, "text_context": sample.text_context, "mock_output": sample.metadata.get("mock_output")}}]
-            response = self.model_client.complete_multimodal(messages, [state.assets[aid] for aid in sample.asset_ids if aid in state.assets], model_config={"model": self.config.extraction_model.model})
-            run = RunRecord(
-                id=f"run_{round_id}_{run_type}_{sample.id}", round_id=round_id, run_type=run_type, sample_id=sample.id,
-                prompt_version_id=state.active_extraction_prompt.id, rendered_prompt_hash=rendered.text_hash,
-                model_id=self.config.extraction_model.model, raw_output=response.raw_output,
-            )
-            try:
-                run.parsed_output = json.loads(response.raw_output)
-            except Exception:
-                run.parsed_output = None
-            gt = state.ground_truths[sample.ground_truth_id]
-            evaluation = self.evaluator.evaluate(
-                round_id=round_id, run_id=run.id, sample_id=sample.id, raw_output=response.raw_output, ground_truth=gt, contract=state.extraction_output_schema_contract,
-            )
-            runs.append(run)
-            evals.append(evaluation)
-        return runs, evals
-
-    def _evaluate_mock_patch_outputs(self, *, round_id: str, patch: Patch, suite_sample_ids: list[str], state: OptimizerState) -> list[EvaluationRecord]:
-        samples_by_id = {sample.id: sample for sample in state.samples}
-        evaluations: list[EvaluationRecord] = []
-        for sample_id in suite_sample_ids:
-            sample = samples_by_id[sample_id]
-            patch_outputs = sample.metadata.get("mock_patch_outputs", {})
-            raw_output = patch_outputs.get(patch.id) or patch_outputs.get(patch.section_id) or sample.metadata.get("mock_output")
-            evaluations.append(
-                self.evaluator.evaluate(
-                    round_id=round_id,
-                    run_id=f"run_{round_id}_patch_test_{patch.id}_{sample_id}",
-                    sample_id=sample_id,
-                    raw_output=raw_output,
-                    ground_truth=state.ground_truths[sample.ground_truth_id],
-                    contract=state.extraction_output_schema_contract,
-                )
-            )
-        return evaluations
+    def _prompt_runner(self) -> PromptTestRunner:
+        return PromptTestRunner(model_client=self.model_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model)
 
     def _update_sample_state(self, state: OptimizerState, evals: list[EvaluationRecord], round_index: int) -> None:
         for evaluation in evals:

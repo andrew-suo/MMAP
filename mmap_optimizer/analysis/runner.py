@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any
 
+from mmap_optimizer.analysis.parser import parse_analysis_output
 from mmap_optimizer.analysis.record import AnalysisRecord
 from mmap_optimizer.evaluation.evaluator import EvaluationRecord
 from mmap_optimizer.model.client import ModelClient
@@ -22,14 +22,15 @@ class AnalysisRunResult:
 class AnalysisRunner:
     """Runs/parses analysis prompt outputs and normalizes patch candidates.
 
-    The MVP runner supports deterministic tests by reading `mock_analysis_output` from
-    sample metadata; otherwise it calls the configured model client with the same
-    structured context shape.
+    The runner accepts deterministic mock analysis output from sample metadata, but
+    production outputs go through repair, schema checks, and per-candidate
+    validation so malformed analysis never aborts the round.
     """
 
-    def __init__(self, model_client: ModelClient, model_id: str = "mock-model"):
+    def __init__(self, model_client: ModelClient, model_id: str = "mock-model", model_config: dict[str, Any] | None = None):
         self.model_client = model_client
         self.model_id = model_id
+        self.model_config = model_config or {"model": model_id}
 
     def analyze_errors(
         self,
@@ -58,7 +59,7 @@ class AnalysisRunner:
                     },
                 },
             ]
-            response = self.model_client.complete(messages, model_config={"model": self.model_id})
+            response = self.model_client.complete(messages, model_config=self.model_config)
             analysis_run = RunRecord(
                 id=f"run_{round_id}_analysis_{evaluation.sample_id}",
                 round_id=round_id,
@@ -69,15 +70,17 @@ class AnalysisRunner:
                 model_id=self.model_id,
                 raw_output=response.raw_output,
             )
-            try:
-                parsed = json.loads(response.raw_output)
-            except json.JSONDecodeError:
-                parsed = {"judgement": {"is_correct": False}, "patch_candidates": []}
+            parse_result = parse_analysis_output(response.raw_output)
+            analysis_run.parsed_output = parse_result.parsed
+            if not parse_result.parse_success:
                 analysis_run.success = False
                 analysis_run.error_type = "PARSE_ERROR"
-            analysis_run.parsed_output = parsed
+            elif not parse_result.schema_valid:
+                analysis_run.success = False
+                analysis_run.error_type = "SCHEMA_ERROR"
             source_run = extraction_runs[evaluation.sample_id]
             analysis_id = f"analysis_{round_id}_{evaluation.sample_id}"
+            judgement = parse_result.parsed.get("judgement", {}) if isinstance(parse_result.parsed, dict) else {}
             record = AnalysisRecord(
                 id=analysis_id,
                 round_id=round_id,
@@ -85,10 +88,18 @@ class AnalysisRunner:
                 evaluation_record_id=evaluation.id,
                 sample_id=evaluation.sample_id,
                 analysis_prompt_version_id=analysis_prompt.id,
-                judgement=parsed.get("judgement", {}),
-                judgement_matches_evaluator=parsed.get("judgement", {}).get("is_correct") == (evaluation.overall_status == "correct"),
+                judgement=judgement,
+                judgement_matches_evaluator=judgement.get("is_correct") == (evaluation.overall_status == "correct"),
+                parse_success=parse_result.parse_success,
+                schema_valid=parse_result.schema_valid,
+                parse_error=";".join(parse_result.errors) if not parse_result.parse_success else None,
+                schema_errors=parse_result.errors if parse_result.parse_success and not parse_result.schema_valid else [],
+                repaired=parse_result.repaired,
+                repair_actions=parse_result.repair_actions,
+                invalid_patch_candidate_count=len(parse_result.invalid_patch_candidates),
+                invalid_patch_count=len(parse_result.invalid_patch_candidates),
             )
-            for idx, candidate in enumerate(parsed.get("patch_candidates", []) or []):
+            for idx, candidate in enumerate(parse_result.valid_patch_candidates):
                 patch = self._patch_from_candidate(
                     candidate=candidate,
                     round_id=round_id,

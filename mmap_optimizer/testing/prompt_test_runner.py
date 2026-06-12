@@ -26,10 +26,11 @@ class PromptTestRunner:
     actual temporary PromptVersion rendering path.
     """
 
-    def __init__(self, *, model_client: ModelClient, evaluator: Evaluator, model_id: str = "mock-model"):
+    def __init__(self, *, model_client: ModelClient, evaluator: Evaluator, model_id: str = "mock-model", model_config: dict | None = None):
         self.model_client = model_client
         self.evaluator = evaluator
         self.model_id = model_id
+        self.model_config = model_config or {"model": model_id}
 
     def run(
         self,
@@ -63,7 +64,7 @@ class PromptTestRunner:
             response = self.model_client.complete_multimodal(
                 messages,
                 [assets[asset_id] for asset_id in sample.asset_ids if asset_id in assets],
-                model_config={"model": self.model_id},
+                model_config=self.model_config,
             )
             run = RunRecord(
                 id=f"run_{round_id}_{run_type}{suffix}_{sample.id}",

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from mmap_optimizer.compression.engine import CompressionEngine
-from mmap_optimizer.core.config import OptimizerConfig
+from mmap_optimizer.core.config import OptimizerConfig, model_config_to_request_dict
 from mmap_optimizer.fewshot.engine import FewShotOptimizationEngine
 from mmap_optimizer.core.enums import RunType
 from mmap_optimizer.analysis.evolution import AnalysisEvolutionEngine
@@ -121,7 +121,7 @@ class RoundRunner:
 
         wrong_evals = [evaluation for evaluation in evals if evaluation.overall_status != "correct"]
         if wrong_evals:
-            analysis_result = AnalysisRunner(self.optimizer_client, model_id=self.config.optimizer_model.model).analyze_errors(
+            analysis_result = AnalysisRunner(self.optimizer_client, model_id=self.config.optimizer_model.model, model_config=self._optimizer_model_config()).analyze_errors(
                 round_id=round_id,
                 error_evaluations=wrong_evals,
                 extraction_runs=extraction_by_sample,
@@ -146,7 +146,7 @@ class RoundRunner:
             merged_patches = PatchMerger().merge(candidate_patches)
             accepted_patches: list[Patch] = []
             suite_builder = PatchTestSuiteBuilder()
-            patch_tester = PatchTester(model_client=self.extraction_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model)
+            patch_tester = PatchTester(model_client=self.extraction_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model, model_config=self._extraction_model_config())
             for patch in merged_patches:
                 suite = suite_builder.build_individual_suite(round_id=round_id, patch=patch, current_evaluations=evals)
                 base_suite_evals = [evaluation for evaluation in evals if evaluation.sample_id in set(suite.sample_ids)]
@@ -217,6 +217,7 @@ class RoundRunner:
             model_client=self.extraction_client,
             evaluator=self.evaluator,
             model_id=self.config.extraction_model.model,
+            model_config=self._extraction_model_config(),
         )
         compressed_prompt, compression_report, compression_runs, compression_evals = compression_engine.compress_if_needed(
             round_id=round_id,
@@ -239,6 +240,7 @@ class RoundRunner:
                 model_client=self.extraction_client,
                 evaluator=self.evaluator,
                 model_id=self.config.extraction_model.model,
+                model_config=self._extraction_model_config(),
             )
             fewshot_prompt, fewshot_report, fewshot_runs, fewshot_evals = fewshot_engine.optimize_once(
                 round_id=round_id,
@@ -270,6 +272,12 @@ class RoundRunner:
         metrics.fewshot_triggered = any(report.triggered for report in fewshot_reports)
         metrics.fewshot_accepted = any(report.accepted for report in fewshot_reports)
         metrics.fewshot_accuracy_delta = sum(report.accuracy_delta for report in fewshot_reports)
+        if analysis_records:
+            metrics.analysis_parse_success_rate = sum(1 for record in analysis_records if record.parse_success) / len(analysis_records)
+            metrics.analysis_schema_valid_rate = sum(1 for record in analysis_records if record.schema_valid) / len(analysis_records)
+            metrics.analysis_judgement_match_rate = sum(1 for record in analysis_records if record.judgement_matches_evaluator) / len(analysis_records)
+            total_patch_candidates = sum(record.generated_patch_count + record.invalid_patch_candidate_count for record in analysis_records)
+            metrics.valid_patch_candidate_rate = (sum(record.generated_patch_count for record in analysis_records) / total_patch_candidates) if total_patch_candidates else 0.0
         round_record.round_metrics_id = metrics.id
         round_record.status = "ROUND_COMPLETED"
         self._update_sample_state(state, evals, round_index)
@@ -356,7 +364,18 @@ class RoundRunner:
         return safe, runs, evaluations, results
 
     def _prompt_runner(self) -> PromptTestRunner:
-        return PromptTestRunner(model_client=self.extraction_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model)
+        return PromptTestRunner(
+            model_client=self.extraction_client,
+            evaluator=self.evaluator,
+            model_id=self.config.extraction_model.model,
+            model_config=self._extraction_model_config(),
+        )
+
+    def _extraction_model_config(self) -> dict:
+        return model_config_to_request_dict(self.config.extraction_model)
+
+    def _optimizer_model_config(self) -> dict:
+        return model_config_to_request_dict(self.config.optimizer_model)
 
     def _update_sample_state(self, state: OptimizerState, evals: list[EvaluationRecord], round_index: int) -> None:
         for evaluation in evals:

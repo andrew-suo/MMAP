@@ -55,6 +55,11 @@ Tests and smoke data can keep model calls deterministic while still exercising t
 Each individually accepted patch is now re-tested as part of an accepted-patch bundle before it can update the active extraction prompt. If the full bundle is toxic, the round runner performs greedy safe-subset selection: patches are tried in descending fixed-sample count order, and any patch that introduces bundle-level toxicity is rejected with a bundle rejection reason.
 
 
+## Analysis output parsing and repair
+
+Analysis model outputs are parsed through a production-oriented parser before any patch enters the patch workflow. The parser strips common markdown fences, extracts embedded JSON objects from surrounding text, validates the required analysis fields, and validates each patch candidate independently. Malformed analysis records are still persisted with parse/schema errors, while invalid patch candidates are counted and filtered out instead of aborting the round. Round metrics include analysis parse success rate, analysis schema valid rate, judgement-match rate, and valid patch candidate rate.
+
+
 ## Analysis prompt evolution
 
 The MVP now promotes analysis prompt candidates from deterministic hard-failure signals rather than from self-certifying analysis text. Schema/frozen-target patch violations add schema-guard guidance, and toxic patch results add risk-policy self-check guidance. Candidate analysis prompts pass a simple shadow gate before becoming the active analysis prompt for subsequent rounds.

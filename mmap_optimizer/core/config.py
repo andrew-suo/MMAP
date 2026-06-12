@@ -116,6 +116,15 @@ def model_config_from_mapping(data: dict[str, Any] | None) -> ModelConfig:
     )
 
 
+def model_config_to_request_dict(config: ModelConfig) -> dict[str, Any]:
+    request = {
+        "model": config.model,
+        "temperature": config.temperature,
+        "max_tokens": config.max_tokens,
+    }
+    return request
+
+
 def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfig:
     data = data or {}
     text = data.get("text_optimization", {}) or {}

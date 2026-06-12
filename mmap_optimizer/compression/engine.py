@@ -27,10 +27,11 @@ class CompressionEngine:
     EXCLUDED_SECTION_IDS = {"output_schema", "analysis_output_schema"}
     COMPRESSIBILITY_WEIGHT = {"high": 3, "medium": 2, "low": 1}
 
-    def __init__(self, *, model_client: ModelClient, evaluator: Evaluator, model_id: str = "mock-model"):
+    def __init__(self, *, model_client: ModelClient, evaluator: Evaluator, model_id: str = "mock-model", model_config: dict | None = None):
         self.model_client = model_client
         self.evaluator = evaluator
         self.model_id = model_id
+        self.model_config = model_config or {"model": model_id}
 
     def compress_if_needed(
         self,
@@ -105,6 +106,7 @@ class CompressionEngine:
                 model_client=self.model_client,
                 evaluator=self.evaluator,
                 model_id=self.model_id,
+                model_config=self.model_config,
             ).run(
                 round_id=round_id,
                 run_type=RunType.COMPRESSION_BEHAVIOR_TEST.value,

@@ -26,10 +26,11 @@ class FewShotOptimizationEngine:
 
     SECTION_ID = "few_shot_examples"
 
-    def __init__(self, *, model_client: ModelClient, evaluator: Evaluator, model_id: str = "mock-model"):
+    def __init__(self, *, model_client: ModelClient, evaluator: Evaluator, model_id: str = "mock-model", model_config: dict | None = None):
         self.model_client = model_client
         self.evaluator = evaluator
         self.model_id = model_id
+        self.model_config = model_config or {"model": model_id}
 
     def optimize_once(
         self,
@@ -95,6 +96,7 @@ class FewShotOptimizationEngine:
                 model_client=self.model_client,
                 evaluator=self.evaluator,
                 model_id=self.model_id,
+                model_config=self.model_config,
             ).run(
                 round_id=round_id,
                 run_type=RunType.FEW_SHOT_TEST.value,

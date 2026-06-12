@@ -25,8 +25,8 @@ class PatchRunResult:
 class PatchTester:
     """Applies a patch to a temporary PromptVersion and evaluates real model outputs."""
 
-    def __init__(self, *, model_client: ModelClient, evaluator: Evaluator, model_id: str = "mock-model"):
-        self.prompt_runner = PromptTestRunner(model_client=model_client, evaluator=evaluator, model_id=model_id)
+    def __init__(self, *, model_client: ModelClient, evaluator: Evaluator, model_id: str = "mock-model", model_config: dict | None = None):
+        self.prompt_runner = PromptTestRunner(model_client=model_client, evaluator=evaluator, model_id=model_id, model_config=model_config)
 
     def test_individual(
         self,

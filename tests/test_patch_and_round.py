@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mmap_optimizer.core.config import OptimizerConfig
+from mmap_optimizer.core.config import ModelConfig, OptimizerConfig
 from mmap_optimizer.core.enums import PromptType
 from mmap_optimizer.dataset.sample import GroundTruth, Sample, SampleState
 from mmap_optimizer.evaluation.evaluator import Evaluator
@@ -753,14 +753,18 @@ class CountingMockClient(MockModelClient):
         self.complete_calls = 0
         self.complete_multimodal_calls = 0
         self._inside_multimodal = False
+        self.complete_model_configs = []
+        self.multimodal_model_configs = []
 
     def complete(self, messages, model_config=None, response_format=None):
         if not self._inside_multimodal:
             self.complete_calls += 1
+            self.complete_model_configs.append(model_config)
         return super().complete(messages, model_config, response_format)
 
     def complete_multimodal(self, messages, assets, model_config=None, response_format=None):
         self.complete_multimodal_calls += 1
+        self.multimodal_model_configs.append(model_config)
         self._inside_multimodal = True
         try:
             return super().complete_multimodal(messages, assets, model_config, response_format)
@@ -794,7 +798,12 @@ def test_round_runner_uses_separate_extraction_and_optimizer_clients(tmp_path: P
         optimizer_client=optimizer_client,
         evaluator=Evaluator(),
         store=JsonStore(tmp_path),
-        config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0),
+        config=OptimizerConfig(
+            batch_size=1,
+            dynamic_validation_batch_size=0,
+            extraction_model=ModelConfig(provider="mock", model="extract-model", temperature=0.3, max_tokens=111),
+            optimizer_model=ModelConfig(provider="mock", model="optimizer-model", temperature=0.7, max_tokens=222),
+        ),
     )
 
     runner.run_round(state, round_index=1)
@@ -803,3 +812,63 @@ def test_round_runner_uses_separate_extraction_and_optimizer_clients(tmp_path: P
     assert extraction_client.complete_calls == 0
     assert optimizer_client.complete_calls == 1
     assert optimizer_client.complete_multimodal_calls == 0
+    assert extraction_client.multimodal_model_configs[0] == {"model": "extract-model", "temperature": 0.3, "max_tokens": 111}
+    assert optimizer_client.complete_model_configs[0] == {"model": "optimizer-model", "temperature": 0.7, "max_tokens": 222}
+
+
+def test_analysis_runner_repairs_markdown_and_filters_invalid_patch_candidates(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("raw extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    analysis_output = (
+        '```json\n'
+        '{'
+        '"judgement":{"is_correct":false},'
+        '"confirmed_facts":[],"hypothesized_error_causes":[],"prompt_section_attribution":[],'
+        '"patch_candidates":['
+        '{"target_prompt":"extraction","target_section":"ambiguity_policy","operation":"ADD_RULE","intent":"fix","content":"新增规则。","risk":"low"},'
+        '{"target_prompt":"extraction","target_section":"ambiguity_policy","operation":"ADD_RULE"}'
+        ']}'
+        '\n```'
+    )
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_analysis_output": analysis_output,
+            },
+        )
+    ]
+    gts = {"gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG")}
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0),
+    )
+
+    _, metrics = runner.run_round(state, round_index=1)
+
+    records_path = tmp_path / "round_000001" / "analyses" / "analysis_records.jsonl"
+    record = JsonStore(tmp_path).read_json("round_000001/metrics/round_metrics.json")
+    assert metrics.analysis_parse_success_rate == 1.0
+    assert metrics.analysis_schema_valid_rate == 0.0
+    assert metrics.valid_patch_candidate_rate == 0.5
+    assert records_path.exists()
+    line = records_path.read_text(encoding="utf-8").splitlines()[0]
+    assert '"repaired": true' in line
+    assert '"invalid_patch_candidate_count": 1' in line
+    assert record["valid_patch_candidate_rate"] == 0.5

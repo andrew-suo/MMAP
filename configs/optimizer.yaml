@@ -1,0 +1,9 @@
+text_optimization:
+  max_rounds: 10
+  batch_size: 24
+
+dynamic_validation:
+  batch_size: 48
+
+strict_mode:
+  allow_net_gain_tradeoff: false

@@ -246,6 +246,30 @@ class RoundRunner:
         if compression_report.accepted:
             state.active_extraction_prompt = compressed_prompt
 
+        if self.config.analysis_line_budget is not None and not analysis_evolution_report.promoted:
+            analysis_compression_engine = CompressionEngine(
+                model_client=self.optimizer_client,
+                evaluator=self.evaluator,
+                model_id=self.config.optimizer_model.model,
+                model_config=self._optimizer_model_config(),
+            )
+            compressed_analysis_prompt, analysis_compression_report, analysis_compression_runs, analysis_compression_evals = (
+                analysis_compression_engine.compress_analysis_if_needed(
+                    round_id=round_id,
+                    prompt=state.active_analysis_prompt,
+                    line_budget=self.config.analysis_line_budget,
+                    error_evaluations=wrong_evals,
+                    sample_metadata={sample.id: sample.metadata for sample in state.samples},
+                    base_runs=analysis_runs,
+                )
+            )
+            compression_reports.append(analysis_compression_report)
+            compression_runs.extend(analysis_compression_runs)
+            compression_evals.extend(analysis_compression_evals)
+            round_record.compression_report_ids = [report.id for report in compression_reports]
+            if analysis_compression_report.accepted:
+                state.active_analysis_prompt = compressed_analysis_prompt
+
         fewshot_round_index = round_index - self.config.max_text_rounds
         if self.config.fewshot_enabled and 0 < fewshot_round_index <= self.config.fewshot_max_rounds:
             fewshot_engine = FewShotOptimizationEngine(

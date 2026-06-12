@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
+from mmap_optimizer.analysis.parser import parse_analysis_output
 from mmap_optimizer.compression.report import CompressionReport
 from mmap_optimizer.core.enums import PromptVersionType, RunType
 from mmap_optimizer.dataset.sample import GroundTruth, Sample, SampleAsset
@@ -12,6 +14,7 @@ from mmap_optimizer.patch.schema import Patch
 from mmap_optimizer.prompt.contract import OutputSchemaContract
 from mmap_optimizer.prompt.ir import PromptSection
 from mmap_optimizer.prompt.version import PromptVersion
+from mmap_optimizer.orchestration.records import RunRecord
 from mmap_optimizer.testing.prompt_test_runner import PromptTestRunner
 
 
@@ -140,6 +143,102 @@ class CompressionEngine:
         report.failure_reason = "NO_SAFE_COMPRESSION_CANDIDATE"
         return prompt, report, all_runs, all_evaluations
 
+
+    def compress_analysis_if_needed(
+        self,
+        *,
+        round_id: str,
+        prompt: PromptVersion,
+        line_budget: int | None,
+        error_evaluations: list[EvaluationRecord],
+        sample_metadata: dict[str, dict[str, Any]],
+        base_runs: list[RunRecord],
+    ) -> tuple[PromptVersion, CompressionReport, list[RunRecord], list[EvaluationRecord]]:
+        prompt_type_value = getattr(prompt.prompt_type, "value", str(prompt.prompt_type))
+        before_lines = self._line_count(prompt.render().text)
+        report = CompressionReport(
+            id=f"compression_{round_id}_{prompt_type_value}",
+            round_id=round_id,
+            prompt_type=prompt_type_value,
+            prompt_version_before_id=prompt.id,
+            triggered=False,
+            reason="LINE_BUDGET_NOT_CONFIGURED" if line_budget is None else "WITHIN_LINE_BUDGET",
+            line_count_before=before_lines,
+            line_budget=line_budget,
+        )
+        if line_budget is None:
+            return prompt, report, [], []
+        if before_lines <= line_budget:
+            return prompt, report, [], []
+
+        report.triggered = True
+        report.reason = "LINE_BUDGET_EXCEEDED"
+        candidates = self._candidate_sections(prompt)
+        report.candidate_sections = [
+            {
+                "section_id": section.id,
+                "line_count": self._line_count(section.content),
+                "compressibility": section.compressibility,
+                "priority": section.priority,
+            }
+            for section in candidates
+        ]
+        if not candidates:
+            report.failure_reason = "NO_COMPRESSIBLE_SECTION"
+            return prompt, report, [], []
+
+        baseline_by_sample = {run.sample_id: run for run in base_runs if run.sample_id}
+        behavior_evaluations = [evaluation for evaluation in error_evaluations if evaluation.sample_id in baseline_by_sample]
+        if not behavior_evaluations:
+            report.failure_reason = "NO_BEHAVIOR_SUITE"
+            return prompt, report, [], []
+
+        all_runs: list[RunRecord] = []
+        for section in candidates:
+            compressed_content = self._compress_content(section.content)
+            if compressed_content.strip() == section.content.strip() or not compressed_content.strip():
+                continue
+            patch = self._build_patch(round_id, prompt, section, compressed_content, baseline_by_sample)
+            candidate_prompt = PatchApplier().apply(
+                prompt,
+                patch,
+                new_version=prompt.version + 1,
+                version_type=PromptVersionType.COMPRESSION,
+            )
+            candidate_prompt.prompt_ir = replace(
+                candidate_prompt.prompt_ir,
+                compression_patch_ids=[*prompt.prompt_ir.compression_patch_ids, patch.id],
+            )
+            candidate_prompt.version_type = PromptVersionType.COMPRESSION
+            candidate_runs = self._run_analysis_behavior_suite(
+                round_id=round_id,
+                prompt=candidate_prompt,
+                evaluations=behavior_evaluations,
+                sample_metadata=sample_metadata,
+                run_id_suffix=section.id,
+            )
+            all_runs.extend(candidate_runs)
+            behavior_failure = self._analysis_behavior_failure(baseline_by_sample, candidate_runs)
+            if behavior_failure is not None:
+                report.rejected_sections.append({"section_id": section.id, "reason": behavior_failure})
+                continue
+            after_lines = self._line_count(candidate_prompt.render().text)
+            if after_lines >= before_lines:
+                report.rejected_sections.append({"section_id": section.id, "reason": "NO_LINE_REDUCTION"})
+                continue
+            report.accepted = True
+            report.compression_patch_id = patch.id
+            report.prompt_version_after_id = candidate_prompt.id
+            report.compressed_section_id = section.id
+            report.line_count_after = after_lines
+            report.semantic_check_passed = True
+            report.behavior_check_passed = True
+            report.line_reduction = before_lines - after_lines
+            return candidate_prompt, report, all_runs, []
+
+        report.failure_reason = "NO_SAFE_COMPRESSION_CANDIDATE"
+        return prompt, report, all_runs, []
+
     def _candidate_sections(self, prompt: PromptVersion) -> list[PromptSection]:
         sections = []
         for section in prompt.prompt_ir.sections:
@@ -161,7 +260,7 @@ class CompressionEngine:
         prompt: PromptVersion,
         section: PromptSection,
         compressed_content: str,
-        baseline_by_sample: dict[str, EvaluationRecord],
+        baseline_by_sample: dict[str, Any],
     ) -> Patch:
         prompt_type_value = getattr(prompt.prompt_type, "value", str(prompt.prompt_type))
         return Patch(
@@ -193,6 +292,64 @@ class CompressionEngine:
                 return f"PREDICTION_CHANGED:{candidate.sample_id}"
             if candidate.overall_status != baseline.overall_status:
                 return f"STATUS_CHANGED:{candidate.sample_id}"
+        return None
+
+
+    def _run_analysis_behavior_suite(
+        self,
+        *,
+        round_id: str,
+        prompt: PromptVersion,
+        evaluations: list[EvaluationRecord],
+        sample_metadata: dict[str, dict[str, Any]],
+        run_id_suffix: str,
+    ) -> list[RunRecord]:
+        rendered = prompt.render()
+        runs: list[RunRecord] = []
+        for evaluation in evaluations:
+            metadata = sample_metadata.get(evaluation.sample_id, {})
+            messages = [
+                {"role": "system", "content": rendered.text},
+                {
+                    "role": "user",
+                    "content": {
+                        "sample_id": evaluation.sample_id,
+                        "evaluation": evaluation.__dict__,
+                        "mock_output": metadata.get("mock_analysis_output"),
+                    },
+                },
+            ]
+            response = self.model_client.complete(messages, model_config=self.model_config)
+            analysis_run = RunRecord(
+                id=f"run_{round_id}_analysis_compression_{run_id_suffix}_{evaluation.sample_id}",
+                round_id=round_id,
+                run_type="analysis_compression_behavior_test",
+                sample_id=evaluation.sample_id,
+                prompt_version_id=prompt.id,
+                rendered_prompt_hash=rendered.text_hash,
+                model_id=self.model_id,
+                raw_output=response.raw_output,
+            )
+            parse_result = parse_analysis_output(response.raw_output)
+            analysis_run.parsed_output = parse_result.parsed
+            if not parse_result.parse_success:
+                analysis_run.success = False
+                analysis_run.error_type = "PARSE_ERROR"
+            elif not parse_result.schema_valid:
+                analysis_run.success = False
+                analysis_run.error_type = "SCHEMA_ERROR"
+            runs.append(analysis_run)
+        return runs
+
+    def _analysis_behavior_failure(self, baseline_by_sample: dict[str, RunRecord], candidate_runs: list[RunRecord]) -> str | None:
+        for candidate in candidate_runs:
+            baseline = baseline_by_sample.get(candidate.sample_id)
+            if baseline is None:
+                return f"MISSING_BASELINE:{candidate.sample_id}"
+            if baseline.success and not candidate.success:
+                return f"ANALYSIS_FORMAT_REGRESSION:{candidate.sample_id}"
+            if candidate.parsed_output != baseline.parsed_output:
+                return f"ANALYSIS_OUTPUT_CHANGED:{candidate.sample_id}"
         return None
 
     def _compress_content(self, content: str) -> str:

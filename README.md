@@ -8,7 +8,7 @@ This repository contains an MVP skeleton for a multimodal prompt optimization fr
 - Extraction evaluation with parse, schema, and primary-answer checks.
 - Dynamic validation sampling instead of a fixed validation set.
 - A minimal text-patch loop: analysis-output parsing, patch validation, strict individual patch tests, and PromptVersion updates.
-- Conservative extraction prompt compression that runs after text optimization and accepts only behavior-preserving line reductions.
+- Conservative extraction and analysis prompt compression that runs after text optimization and accepts only behavior-preserving line reductions.
 - Greedy few-shot slot optimization for stable text prompts.
 - A smoke CLI that runs mock rounds and an OpenAI-compatible adapter that can send local or remote image assets as multimodal message parts.
 
@@ -42,7 +42,7 @@ The smoke command loads samples, prompts, and schemas; renders prompt IRs; runs 
 
 ## Current scope
 
-This implementation slice focuses on stable data models, logging, prompt rendering, evaluation, dynamic validation, and a runnable text-patch round skeleton. Analysis outputs can now be parsed into patch candidates, each candidate is applied to a temporary PromptVersion for model-backed testing, and accepted patches can update the active extraction PromptVersion after strict tests. If an extraction line budget is configured, the round then tries conservative compression on mutable sections and promotes only candidates that preserve baseline predictions/statuses on the behavior suite. Full production LLM prompt engineering for patch generation, analysis-prompt compression, and multi-round few-shot search remain next implementation steps.
+This implementation slice focuses on stable data models, logging, prompt rendering, evaluation, dynamic validation, and a runnable text-patch round skeleton. Analysis outputs can now be parsed into patch candidates, each candidate is applied to a temporary PromptVersion for model-backed testing, and accepted patches can update the active extraction PromptVersion after strict tests. If extraction or analysis line budgets are configured, the round then tries conservative compression on mutable sections and promotes only candidates that preserve baseline extraction predictions/statuses or parsed analysis outputs on the behavior suite. Full production LLM prompt engineering for patch generation and multi-round few-shot search remain next implementation steps.
 
 
 ## Mock prompt-dependent outputs
@@ -82,7 +82,7 @@ Use `python -m mmap_optimizer.cli.main run --config configs/optimizer.yaml` for 
 
 ## Compression protocol
 
-Set `OptimizerConfig.extraction_line_budget` or pass `--extraction-line-budget` to enable post-round extraction prompt compression. The MVP compressor skips frozen schema sections, ranks mutable compressible sections, removes blank and duplicate lines from one section at a time, and runs a behavior-preservation gate before promotion. A compression candidate is rejected if it introduces parse/schema errors, changes any normalized prediction, or changes the baseline evaluation status for the sampled behavior suite. Reports are written under `round_xxxxxx/reports/compression_<round>_extraction.json`, and behavior-test runs are written under `round_xxxxxx/runs/compression_runs.jsonl`.
+Set `OptimizerConfig.extraction_line_budget` / `OptimizerConfig.analysis_line_budget` or pass `--extraction-line-budget` / `--analysis-line-budget` in smoke mode to enable post-round prompt compression. The MVP compressor skips frozen schema sections, ranks mutable compressible sections, removes blank and duplicate lines from one section at a time, and runs a behavior-preservation gate before promotion. Extraction compression rejects candidates that introduce parse/schema errors, change normalized predictions, or change baseline evaluation statuses; analysis compression reruns the analysis behavior suite and rejects candidates whose parsed analysis output changes. Reports are written under `round_xxxxxx/reports/compression_<round>_<prompt_type>.json`, and behavior-test runs are written under `round_xxxxxx/runs/compression_runs.jsonl`.
 
 
 ## Few-shot optimization protocol

@@ -58,6 +58,7 @@ def run_smoke(args: argparse.Namespace) -> None:
         batch_size=args.batch_size,
         dynamic_validation_batch_size=args.dynamic_validation_batch_size,
         extraction_line_budget=args.extraction_line_budget,
+        analysis_line_budget=args.analysis_line_budget,
         fewshot_enabled=args.fewshot_enabled,
         fewshot_max_rounds=args.fewshot_max_rounds,
         fewshot_max_slots=args.fewshot_max_slots,
@@ -102,6 +103,7 @@ def main() -> None:
     smoke.add_argument("--dynamic-validation-batch-size", type=int, default=48)
     smoke.add_argument("--rounds", type=int, default=1)
     smoke.add_argument("--extraction-line-budget", type=int, default=None)
+    smoke.add_argument("--analysis-line-budget", type=int, default=None)
     smoke.add_argument("--fewshot-enabled", action="store_true")
     smoke.add_argument("--fewshot-max-rounds", type=int, default=5)
     smoke.add_argument("--fewshot-max-slots", type=int, default=5)

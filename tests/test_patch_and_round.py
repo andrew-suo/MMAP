@@ -936,3 +936,59 @@ def test_round_runner_tree_reduce_deduplicates_patches_and_writes_report(tmp_pat
     assert report["duplicate_patch_ids"] == ["patch_round_000001_s1_01"]
     assert report["final_patch_ids"] == ["patch_round_000001_s1_00"]
     assert state.active_extraction_prompt.render().text.count(duplicate_rule) == 1
+
+def test_round_runner_compresses_analysis_prompt_when_budget_exceeded(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("stable extraction", PromptType.EXTRACTION, extraction_contract)
+    repeated_analysis_prompt = "保留分析规则。\n保留分析规则。\n保留分析规则。\n"
+    analysis_prompt = initialize_prompt_version(repeated_analysis_prompt, PromptType.ANALYSIS, analysis_contract)
+    before_lines = len(analysis_prompt.render().text.splitlines())
+    analysis_output = (
+        '{'
+        '"judgement":{"is_correct":false},'
+        '"confirmed_facts":[],"hypothesized_error_causes":[],"prompt_section_attribution":[],'
+        '"patch_candidates":[]'
+        '}'
+    )
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_analysis_output": analysis_output,
+            },
+        )
+    ]
+    gts = {"gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG")}
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0, analysis_line_budget=1),
+    )
+
+    round_record, metrics = runner.run_round(state, round_index=1)
+
+    assert metrics.compression_triggered
+    assert metrics.compression_accepted
+    assert state.active_analysis_prompt.version == 2
+    assert state.active_analysis_prompt.version_type == "compression"
+    assert len(state.active_analysis_prompt.render().text.splitlines()) < before_lines
+    assert "compression_round_000001_analysis" in round_record.compression_report_ids
+    report = JsonStore(tmp_path).read_json("round_000001/reports/compression_round_000001_analysis.json")
+    assert report["accepted"] is True
+    assert report["compressed_section_id"] == "legacy_unmapped"
+    runs_path = tmp_path / "round_000001" / "runs" / "compression_runs.jsonl"
+    assert "analysis_compression_behavior_test" in runs_path.read_text(encoding="utf-8")

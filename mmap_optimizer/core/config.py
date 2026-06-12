@@ -27,6 +27,10 @@ class OptimizerConfig:
     run_dir: str = "runs"
     batch_size: int = 24
     dynamic_validation_batch_size: int = 48
+    dynamic_validation_min_label_count: int = 1
+    dynamic_validation_cover_difficulty_bins: bool = True
+    dynamic_validation_recent_window_rounds: int = 3
+    dynamic_validation_max_recent_selections: int = 1
     max_text_rounds: int = 10
     extraction_line_budget: int | None = None
     analysis_line_budget: int | None = None
@@ -138,6 +142,18 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
         run_dir=data.get("run_dir", "runs"),
         batch_size=int(text.get("batch_size", data.get("batch_size", 24))),
         dynamic_validation_batch_size=int(dval.get("batch_size", data.get("dynamic_validation_batch_size", 48))),
+        dynamic_validation_min_label_count=int(
+            dval.get("min_label_count", data.get("dynamic_validation_min_label_count", 1))
+        ),
+        dynamic_validation_cover_difficulty_bins=_bool_value(
+            dval.get("cover_difficulty_bins", data.get("dynamic_validation_cover_difficulty_bins", True))
+        ),
+        dynamic_validation_recent_window_rounds=int(
+            dval.get("recent_window_rounds", data.get("dynamic_validation_recent_window_rounds", 3))
+        ),
+        dynamic_validation_max_recent_selections=int(
+            dval.get("max_recent_selections", data.get("dynamic_validation_max_recent_selections", 1))
+        ),
         max_text_rounds=int(text.get("max_rounds", data.get("max_text_rounds", 10))),
         extraction_line_budget=compression.get("extraction_line_budget", data.get("extraction_line_budget")),
         analysis_line_budget=compression.get("analysis_line_budget", data.get("analysis_line_budget")),

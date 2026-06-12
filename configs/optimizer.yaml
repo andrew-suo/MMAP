@@ -34,6 +34,10 @@ fewshot:
 
 dynamic_validation:
   batch_size: 48
+  min_label_count: 1
+  cover_difficulty_bins: true
+  recent_window_rounds: 3
+  max_recent_selections: 1
 
 strict_mode:
   allow_net_gain_tradeoff: false

@@ -58,7 +58,7 @@ def test_optimizer_config_from_mapping_reads_dual_model_config():
                 },
             },
             "text_optimization": {"batch_size": 7, "max_rounds": 3},
-            "dynamic_validation": {"batch_size": 11},
+            "dynamic_validation": {"batch_size": 11, "min_label_count": 2, "cover_difficulty_bins": False, "recent_window_rounds": 4, "max_recent_selections": 2},
             "fewshot": {"enabled": True, "max_rounds": 2, "max_slots": 4, "min_accuracy_delta": 0.2},
         }
     )
@@ -66,6 +66,10 @@ def test_optimizer_config_from_mapping_reads_dual_model_config():
     assert config.run_dir == "runs/prod"
     assert config.batch_size == 7
     assert config.dynamic_validation_batch_size == 11
+    assert config.dynamic_validation_min_label_count == 2
+    assert config.dynamic_validation_cover_difficulty_bins is False
+    assert config.dynamic_validation_recent_window_rounds == 4
+    assert config.dynamic_validation_max_recent_selections == 2
     assert config.max_text_rounds == 3
     assert config.fewshot_enabled is True
     assert config.fewshot_max_rounds == 2

@@ -75,7 +75,14 @@ class RoundRunner:
         round_record.optimization_batch_ids = [s.id for s in optimization_batch]
         dval_batch = select_dynamic_validation_batch(
             round_id=round_id, samples=state.samples, ground_truths=state.ground_truths, sample_states=state.sample_states,
-            batch_size=self.config.dynamic_validation_batch_size, exclude_sample_ids=set(round_record.optimization_batch_ids), seed=round_index,
+            batch_size=self.config.dynamic_validation_batch_size,
+            exclude_sample_ids=set(round_record.optimization_batch_ids),
+            seed=round_index,
+            round_index=round_index,
+            min_label_count=self.config.dynamic_validation_min_label_count,
+            cover_difficulty_bins=self.config.dynamic_validation_cover_difficulty_bins,
+            recent_window_rounds=self.config.dynamic_validation_recent_window_rounds,
+            max_recent_selections=self.config.dynamic_validation_max_recent_selections,
         )
         round_record.dynamic_validation_batch_id = dval_batch.id
         self.store.write_json(f"{round_id}/dynamic_validation_batch.json", dval_batch)
@@ -290,7 +297,7 @@ class RoundRunner:
             metrics.merge_duplicate_count = len(merge_report.duplicate_patch_ids)
         round_record.round_metrics_id = metrics.id
         round_record.status = "ROUND_COMPLETED"
-        self._update_sample_state(state, evals, round_index)
+        self._update_sample_state(state, evals + dval_evals, round_index)
 
         self.store.append_jsonl(f"{round_id}/runs/extraction_runs.jsonl", extraction_runs)
         self.store.append_jsonl(f"{round_id}/runs/dynamic_validation_runs.jsonl", dval_runs)
@@ -394,6 +401,12 @@ class RoundRunner:
             sample_state = state.sample_states.setdefault(evaluation.sample_id, SampleState(sample_id=evaluation.sample_id))
             error = 0.0 if evaluation.overall_status == "correct" else 1.0
             sample_state.difficulty_ema = 0.2 * error + 0.8 * sample_state.difficulty_ema
+            window_expired = (
+                sample_state.last_selected_round is None
+                or round_index - sample_state.last_selected_round > self.config.dynamic_validation_recent_window_rounds
+            )
+            if window_expired:
+                sample_state.selected_count_recent_window = 0
             sample_state.last_selected_round = round_index
             sample_state.selected_count_recent_window += 1
             if error:

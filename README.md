@@ -92,3 +92,8 @@ Set `OptimizerConfig.fewshot_enabled` or pass `--fewshot-enabled` to run few-sho
 ## Cross-round metrics trend
 
 Every `OptimizerLoop` run now writes a `metrics_trend.json` artifact next to `run_summary.json`. The trend report keeps one point per round with absolute metrics, deltas from the previous round, best extraction/dynamic-validation rounds, aggregate patch/merge counts, and regression round ids. This is designed for the non-fixed validation strategy: a dynamic-validation drop is reported separately from optimization-batch accuracy so later dashboards can distinguish sampled validation noise from direct batch regressions.
+
+
+## Dynamic validation sampling
+
+The dynamic-validation set is intentionally not fixed. Each round excludes the optimization batch, then fills a validation batch with label coverage, optional easy/medium/hard difficulty-bin coverage, and a recent-selection penalty. The persisted `dynamic_validation_batch.json` records label/difficulty composition, target coverage, coverage warnings, recent sample ids, and recent-overlap ratio so the run can be audited without pinning a permanent validation set. Configure this through `dynamic_validation.min_label_count`, `dynamic_validation.cover_difficulty_bins`, `dynamic_validation.recent_window_rounds`, and `dynamic_validation.max_recent_selections`.

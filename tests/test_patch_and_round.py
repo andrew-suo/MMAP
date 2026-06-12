@@ -369,3 +369,118 @@ def test_round_runner_uses_greedy_safe_subset_when_bundle_is_toxic(tmp_path: Pat
     assert metrics.toxic_count >= 1
     assert safe_rule in rendered
     assert interaction_rule not in rendered
+
+
+def test_schema_or_frozen_target_violation_promotes_analysis_schema_guard(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("raw extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    analysis_output = (
+        '{'
+        '"judgement":{"is_correct":false},'
+        '"confirmed_facts":[],"hypothesized_error_causes":[],"prompt_section_attribution":[],'
+        '"patch_candidates":[{"target_prompt":"extraction","target_section":"output_schema","operation":"ADD_RULE","intent":"bad_schema","content":"bad","risk":"high"}]'
+        '}'
+    )
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_analysis_output": analysis_output,
+            },
+        )
+    ]
+    gts = {"gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG")}
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0),
+    )
+
+    round_record, _ = runner.run_round(state, round_index=1)
+
+    rendered_analysis = state.active_analysis_prompt.render().text
+    assert round_record.analysis_evolution_report_id == "analysis_evolution_round_000001"
+    assert state.active_analysis_prompt.version == 2
+    assert "外部输出契约与 frozen section 不可作为 patch 目标" in rendered_analysis
+    assert (tmp_path / "round_000001" / "reports" / "analysis_evolution_report.json").exists()
+
+
+def test_toxic_patch_promotes_analysis_risk_policy(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("raw extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    toxic_rule = "风险规则：过度判定 NG。"
+    analysis_output = (
+        '{'
+        '"judgement":{"is_correct":false},'
+        '"confirmed_facts":[],"hypothesized_error_causes":[],"prompt_section_attribution":[],'
+        f'"patch_candidates":[{{"target_prompt":"extraction","target_section":"ambiguity_policy","operation":"ADD_RULE","intent":"toxic_rule","content":"{toxic_rule}","risk":"medium"}}]'
+        '}'
+    )
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_analysis_output": analysis_output,
+                "mock_prompt_outputs": [
+                    {"contains": toxic_rule, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'}
+                ],
+            },
+        ),
+        Sample(
+            id="s2",
+            ground_truth_id="gt2",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {"contains": toxic_rule, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'}
+                ],
+            },
+        ),
+    ]
+    gts = {
+        "gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG"),
+        "gt2": GroundTruth(id="gt2", sample_id="s2", value={"result": "OK"}, primary_answer="OK"),
+    }
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
+    )
+
+    round_record, metrics = runner.run_round(state, round_index=1)
+
+    rendered_analysis = state.active_analysis_prompt.render().text
+    assert not round_record.accepted_patch_ids
+    assert metrics.toxic_count >= 1
+    assert state.active_analysis_prompt.version == 2
+    assert "生成 patch 前必须说明它可能破坏的原正确样本类型" in rendered_analysis

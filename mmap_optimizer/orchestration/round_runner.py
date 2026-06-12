@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from mmap_optimizer.core.config import OptimizerConfig
 from mmap_optimizer.core.enums import RunType
+from mmap_optimizer.analysis.evolution import AnalysisEvolutionEngine
 from mmap_optimizer.analysis.runner import AnalysisRunner
 from mmap_optimizer.dataset.sample import GroundTruth, Sample, SampleAsset, SampleState
 from mmap_optimizer.evaluation.evaluator import EvaluationRecord, Evaluator
@@ -180,6 +181,16 @@ class RoundRunner:
                 round_record.accepted_patch_ids = [patch.id for patch in final_patches]
             round_record.rejected_patch_ids = [patch.id for patch in rejected_patches]
 
+        analysis_evolution_report = AnalysisEvolutionEngine().evolve(
+            round_id=round_id,
+            current_prompt=state.active_analysis_prompt,
+            rejected_patches=rejected_patches,
+            patch_test_results=patch_test_results,
+        )
+        round_record.analysis_evolution_report_id = analysis_evolution_report.id
+        if analysis_evolution_report.promoted and analysis_evolution_report.candidate_prompt is not None:
+            state.active_analysis_prompt = analysis_evolution_report.candidate_prompt
+
         metrics = compute_round_metrics(round_id, evals, dval_evals)
         metrics.draft_count = len(draft_patches)
         metrics.candidate_count = len(candidate_patches)
@@ -199,6 +210,7 @@ class RoundRunner:
         self.store.append_jsonl(f"{round_id}/analyses/analysis_records.jsonl", analysis_records)
         self.store.append_jsonl(f"{round_id}/patches/draft_patches.jsonl", draft_patches)
         self.store.append_jsonl(f"{round_id}/patches/patch_test_results.jsonl", patch_test_results)
+        self.store.write_json(f"{round_id}/reports/analysis_evolution_report.json", analysis_evolution_report)
         if round_record.accepted_patch_ids:
             self.store.write_json(f"{round_id}/prompts/active_extraction_prompt.json", state.active_extraction_prompt)
         self.store.write_json(f"{round_id}/metrics/round_metrics.json", metrics)

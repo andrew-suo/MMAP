@@ -37,7 +37,7 @@ The smoke command loads samples, prompts, and schemas; renders prompt IRs; runs 
 
 ## Current scope
 
-This implementation slice focuses on stable data models, logging, prompt rendering, evaluation, dynamic validation, and a runnable text-patch round skeleton. Analysis outputs can now be parsed into patch candidates, each candidate is applied to a temporary PromptVersion for model-backed testing, and accepted patches can update the active extraction PromptVersion after strict tests. Full production LLM prompt engineering for patch generation, analysis shadow evolution, compression execution, and few-shot search remain next implementation steps.
+This implementation slice focuses on stable data models, logging, prompt rendering, evaluation, dynamic validation, and a runnable text-patch round skeleton. Analysis outputs can now be parsed into patch candidates, each candidate is applied to a temporary PromptVersion for model-backed testing, and accepted patches can update the active extraction PromptVersion after strict tests. Full production LLM prompt engineering for patch generation, compression execution, and few-shot search remain next implementation steps.
 
 
 ## Mock prompt-dependent outputs
@@ -48,3 +48,8 @@ Tests and smoke data can keep model calls deterministic while still exercising t
 ## Bundle safety
 
 Each individually accepted patch is now re-tested as part of an accepted-patch bundle before it can update the active extraction prompt. If the full bundle is toxic, the round runner performs greedy safe-subset selection: patches are tried in descending fixed-sample count order, and any patch that introduces bundle-level toxicity is rejected with a bundle rejection reason.
+
+
+## Analysis prompt evolution
+
+The MVP now promotes analysis prompt candidates from deterministic hard-failure signals rather than from self-certifying analysis text. Schema/frozen-target patch violations add schema-guard guidance, and toxic patch results add risk-policy self-check guidance. Candidate analysis prompts pass a simple shadow gate before becoming the active analysis prompt for subsequent rounds.

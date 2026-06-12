@@ -5,6 +5,7 @@ from mmap_optimizer.core.enums import PromptType
 from mmap_optimizer.dataset.sample import GroundTruth, Sample, SampleState
 from mmap_optimizer.evaluation.evaluator import Evaluator
 from mmap_optimizer.model.client import MockModelClient
+from mmap_optimizer.orchestration.optimizer_loop import OptimizerLoop
 from mmap_optimizer.orchestration.round_runner import OptimizerState, RoundRunner
 from mmap_optimizer.patch.schema import Patch
 from mmap_optimizer.patch.validator import PatchValidator
@@ -702,3 +703,45 @@ def test_round_runner_rejects_fewshot_when_it_breaks_correct_sample(tmp_path: Pa
     assert report["accepted"] is False
     assert report["failure_reason"] == "NO_SAFE_FEWSHOT_CANDIDATE"
     assert report["rejected_candidates"][0]["broken_sample_ids"] == ["s2"]
+
+
+def test_optimizer_loop_runs_configured_rounds_and_writes_summary(tmp_path: Path):
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("stable extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    samples = [
+        Sample(id="s1", ground_truth_id="gt1", metadata={"mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'}),
+        Sample(id="s2", ground_truth_id="gt2", metadata={"mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'}),
+    ]
+    gts = {
+        "gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "OK"}, primary_answer="OK"),
+        "gt2": GroundTruth(id="gt2", sample_id="s2", value={"result": "NG"}, primary_answer="NG"),
+    }
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    config = OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0, max_text_rounds=2)
+    store = JsonStore(tmp_path)
+    runner = RoundRunner(model_client=MockModelClient(), evaluator=Evaluator(), store=store, config=config)
+
+    rounds, metrics_records, summary = OptimizerLoop(runner=runner, store=store, config=config).run(state)
+
+    assert [round_record.id for round_record in rounds] == ["round_000001", "round_000002"]
+    assert len(metrics_records) == 2
+    assert summary.status == "COMPLETED"
+    assert summary.completed_round_count == 2
+    assert summary.first_batch_accuracy == 0.5
+    assert summary.final_batch_accuracy == 0.5
+    assert summary.best_batch_accuracy == 0.5
+    assert summary.total_rejected_patches >= 0
+    persisted = JsonStore(tmp_path).read_json("run_summary.json")
+    assert persisted["round_ids"] == ["round_000001", "round_000002"]
+    assert persisted["final_extraction_prompt_version_id"] == state.active_extraction_prompt.id

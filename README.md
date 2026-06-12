@@ -4,7 +4,7 @@ This repository contains an MVP skeleton for a multimodal prompt optimization fr
 
 - Prompt IR with frozen external output-schema contracts.
 - Prompt rendering with section markers.
-- JSON/JSONL file-based logging for reproducible optimization rounds.
+- JSON/JSONL file-based logging for reproducible optimization rounds and run-level summaries.
 - Extraction evaluation with parse, schema, and primary-answer checks.
 - Dynamic validation sampling instead of a fixed validation set.
 - A minimal text-patch loop: analysis-output parsing, patch validation, strict individual patch tests, and PromptVersion updates.
@@ -20,18 +20,19 @@ python -m mmap_optimizer.cli.main run-smoke \
   --run-dir runs/smoke \
   --batch-size 2 \
   --dynamic-validation-batch-size 1 \
+  --rounds 2 \
   --extraction-line-budget 120 \
   --fewshot-enabled
 ```
 
-The smoke command loads samples, prompts, and schemas; renders prompt IRs; runs mock extraction; evaluates outputs; optionally consumes mock analysis patch outputs; writes round logs; and prints basic metrics.
+The smoke command loads samples, prompts, and schemas; renders prompt IRs; runs mock extraction; evaluates outputs; optionally consumes mock analysis patch outputs; writes per-round logs plus `run_summary.json`; and prints final-round metrics.
 
 ## MVP module map
 
 - `mmap_optimizer/prompt`: Prompt IR, immutable schema contracts, rendering, initialization.
 - `mmap_optimizer/evaluation`: schema validation and primary-answer evaluation.
 - `mmap_optimizer/sampling`: optimization and dynamic-validation samplers.
-- `mmap_optimizer/orchestration`: MVP round runner and run records.
+- `mmap_optimizer/orchestration`: MVP round runner, serial optimizer loop, and run records.
 - `mmap_optimizer/patch`: patch schema, validation, merge, application, and strict update foundations.
 - `mmap_optimizer/testing`: strict fixed/broken transition summaries.
 - `mmap_optimizer/fewshot`: few-shot candidate/example/set schemas and greedy slot optimizer.
@@ -56,6 +57,11 @@ Each individually accepted patch is now re-tested as part of an accepted-patch b
 ## Analysis prompt evolution
 
 The MVP now promotes analysis prompt candidates from deterministic hard-failure signals rather than from self-certifying analysis text. Schema/frozen-target patch violations add schema-guard guidance, and toxic patch results add risk-policy self-check guidance. Candidate analysis prompts pass a simple shadow gate before becoming the active analysis prompt for subsequent rounds.
+
+
+## Serial optimization loop
+
+`OptimizerLoop` runs `RoundRunner` for the configured lifecycle instead of requiring callers to invoke one round at a time. By default it plans `max_text_rounds` plus configured few-shot rounds when few-shot is enabled; callers can override this with `--rounds` in the smoke CLI or `max_rounds` in code. The loop deliberately does not early-stop when a text round accepts no extraction patches, because analysis-prompt evolution, difficulty updates, compression, and later few-shot phases still need deterministic round accounting. It persists aggregate progress to `run_summary.json`, including round ids, final prompt versions, first/final/best accuracies, and total accepted/rejected/toxic/compression/few-shot counts.
 
 
 ## Compression protocol

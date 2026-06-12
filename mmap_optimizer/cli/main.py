@@ -9,6 +9,7 @@ from mmap_optimizer.core.enums import PromptType
 from mmap_optimizer.dataset.loader import initial_sample_states, load_assets, load_ground_truths, load_samples
 from mmap_optimizer.evaluation.evaluator import Evaluator
 from mmap_optimizer.model.client import MockModelClient
+from mmap_optimizer.orchestration.optimizer_loop import OptimizerLoop
 from mmap_optimizer.orchestration.round_runner import OptimizerState, RoundRunner
 from mmap_optimizer.prompt.contract import OutputSchemaContract
 from mmap_optimizer.prompt.initializer import initialize_prompt_from_file
@@ -44,9 +45,17 @@ def run_smoke(args: argparse.Namespace) -> None:
         fewshot_max_slots=args.fewshot_max_slots,
         fewshot_min_accuracy_delta=args.fewshot_min_accuracy_delta,
     )
-    runner = RoundRunner(model_client=MockModelClient(), evaluator=Evaluator(), store=JsonStore(args.run_dir), config=config)
-    _, metrics = runner.run_round(state, round_index=1)
-    print(json.dumps({"round_id": metrics.round_id, "batch_accuracy": metrics.batch_accuracy, "dynamic_validation_raw_accuracy": metrics.dynamic_validation_raw_accuracy}, ensure_ascii=False))
+    store = JsonStore(args.run_dir)
+    runner = RoundRunner(model_client=MockModelClient(), evaluator=Evaluator(), store=store, config=config)
+    _, metrics_records, summary = OptimizerLoop(runner=runner, store=store, config=config).run(state, max_rounds=args.rounds)
+    final_metrics = metrics_records[-1]
+    print(json.dumps({
+        "round_id": final_metrics.round_id,
+        "completed_round_count": summary.completed_round_count,
+        "batch_accuracy": final_metrics.batch_accuracy,
+        "dynamic_validation_raw_accuracy": final_metrics.dynamic_validation_raw_accuracy,
+        "final_extraction_prompt_version_id": summary.final_extraction_prompt_version_id,
+    }, ensure_ascii=False))
 
 
 def main() -> None:
@@ -61,6 +70,7 @@ def main() -> None:
     smoke.add_argument("--analysis-schema", default="schemas/analysis_output_schema.json")
     smoke.add_argument("--batch-size", type=int, default=24)
     smoke.add_argument("--dynamic-validation-batch-size", type=int, default=48)
+    smoke.add_argument("--rounds", type=int, default=1)
     smoke.add_argument("--extraction-line-budget", type=int, default=None)
     smoke.add_argument("--fewshot-enabled", action="store_true")
     smoke.add_argument("--fewshot-max-rounds", type=int, default=5)

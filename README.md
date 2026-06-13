@@ -54,6 +54,10 @@ Tests and smoke data can keep model calls deterministic while still exercising t
 
 Before patch testing, candidate patches are clustered by target prompt, section, and operation; duplicates and subsumed patches are removed while preserving source trace; obvious conflicts such as OK-vs-NG label bias, strict-vs-relaxed guidance, frozen targets, and delete/add operation conflicts are rejected. The merge report is written to `round_xxxxxx/patches/merge_report.json`. Each merged patch is then tested individually, and individually accepted patches are re-tested as a bundle before they can update the active extraction prompt. If the full bundle is toxic, the round runner performs greedy safe-subset selection: patches are tried in descending fixed-sample count order, and any patch that introduces bundle-level toxicity is rejected with a bundle rejection reason.
 
+## Prompt template registry and patch locator alignment
+
+The optimizer now has a versioned prompt-template registry for production LLM-assisted steps that remain gated by deterministic parsing, validation, and behavior tests. The bundled templates cover patch locator translation, text matching, JSON repair fallback, semantic patch merge/root audit, section rewrite, LLM pruning and prune validation, numbering-only refactor, prompt format repair, and lossless prompt standardization. A deterministic patch alignment helper can calibrate legacy/free-form locator fields (`target_section`, `section_id`, `old_text`, and `target_text`) against the current PromptIR while preserving payload fields such as `content`, `patch_text`, `new_text`, and `reasoning` byte-for-byte.
+
 
 ## Analysis output parsing and repair
 

@@ -1,0 +1,12 @@
+id: default
+description: Deterministic smoke-test scenario bundled with MMAP.
+task_type: extraction
+optimizer_config: optimizer.yaml
+data_dir: data
+prompts_dir: prompts
+schemas_dir: schemas
+schema_paths:
+  - schemas/extraction_output_schema.json
+  - schemas/analysis_output_schema.json
+default_config:
+  run_dir: runs/default-scenario

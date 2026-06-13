@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": ["judgement", "confirmed_facts", "hypothesized_error_causes", "prompt_section_attribution", "patch_candidates"],
+  "properties": {
+    "judgement": {"type": "object"},
+    "confirmed_facts": {"type": "array"},
+    "hypothesized_error_causes": {"type": "array"},
+    "prompt_section_attribution": {"type": "array"},
+    "patch_candidates": {"type": "array"}
+  },
+  "x-primary-answer-fields": ["judgement"]
+}

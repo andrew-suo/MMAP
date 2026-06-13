@@ -1,0 +1,18 @@
+run_dir: runs/default-scenario
+models:
+  extraction:
+    provider: mock
+    model: mock-model
+  optimizer:
+    provider: mock
+    model: mock-model
+text_optimization:
+  batch_size: 24
+  max_rounds: 1
+dynamic_validation:
+  batch_size: 48
+compression:
+  extraction_line_budget: null
+  analysis_line_budget: null
+fewshot:
+  enabled: false

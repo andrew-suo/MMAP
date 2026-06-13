@@ -6,7 +6,15 @@ from pathlib import Path
 
 from mmap_optimizer.core.config import OptimizerConfig, load_mapping, optimizer_config_from_mapping, validate_optimizer_config_mapping
 from mmap_optimizer.core.enums import PromptType
-from mmap_optimizer.core.scenario import load_scenario
+from mmap_optimizer.core.scenario import (
+    DEFAULT_SCENARIOS_DIR,
+    list_scenarios,
+    load_scenario,
+    run_artifact_metadata,
+    validate_scenario,
+    write_run_artifacts,
+    ScenarioValidationError,
+)
 from mmap_optimizer.dataset.loader import initial_sample_states, load_assets, load_ground_truths, load_samples
 from mmap_optimizer.evaluation.evaluator import Evaluator
 from mmap_optimizer.model.client import MockModelClient
@@ -152,9 +160,98 @@ def rollback_prompt(args: argparse.Namespace) -> None:
     print(json.dumps({"rolled_back": True, "snapshot_id": args.snapshot_id, "active_prompt_path": str(destination)}, ensure_ascii=False))
 
 
+def scenario_list(args: argparse.Namespace) -> None:
+    scenarios_dir = getattr(args, "scenarios_dir", DEFAULT_SCENARIOS_DIR)
+    scenarios = list_scenarios(scenarios_dir)
+    if getattr(args, "json", False):
+        print(json.dumps({"scenarios": scenarios, "count": len(scenarios)}, ensure_ascii=False))
+    else:
+        if not scenarios:
+            print(f"No valid scenarios found in {scenarios_dir}")
+        else:
+            print(f"Valid scenarios in {scenarios_dir}:")
+            for s in scenarios:
+                print(f"  - {s['id']}")
+
+
+def scenario_validate(args: argparse.Namespace) -> None:
+    scenarios_dir = getattr(args, "scenarios_dir", DEFAULT_SCENARIOS_DIR)
+    scenario_id = args.scenario_id
+    try:
+        config = validate_scenario(scenario_id, scenarios_dir=scenarios_dir)
+        result = {
+            "valid": True,
+            "scenario_id": config.id,
+            "root": str(config.root),
+            "data_dir": str(config.data_dir),
+            "prompts_dir": str(config.prompts_dir),
+            "schemas_dir": str(config.schemas_dir),
+        }
+        if getattr(args, "json", False):
+            print(json.dumps(result, ensure_ascii=False))
+        else:
+            print(f"Scenario '{config.id}' is valid")
+            print(f"  Root: {config.root}")
+            print(f"  Data: {config.data_dir}")
+            print(f"  Prompts: {config.prompts_dir}")
+            print(f"  Schemas: {config.schemas_dir}")
+    except ScenarioValidationError as e:
+        result = {"valid": False, "scenario_id": scenario_id, "error": str(e)}
+        if getattr(args, "json", False):
+            print(json.dumps(result, ensure_ascii=False))
+        else:
+            print(f"Scenario '{scenario_id}' is invalid: {e}")
+        raise SystemExit(2)
+
+
+def scenario_info(args: argparse.Namespace) -> None:
+    scenarios_dir = getattr(args, "scenarios_dir", DEFAULT_SCENARIOS_DIR)
+    scenario_id = args.scenario_id
+    config = load_scenario(Path(scenarios_dir) / scenario_id)
+    metadata = run_artifact_metadata(config)
+    print(json.dumps(metadata, ensure_ascii=False, indent=2))
+
+
+def scenario_write_artifacts(args: argparse.Namespace) -> None:
+    scenarios_dir = getattr(args, "scenarios_dir", DEFAULT_SCENARIOS_DIR)
+    scenario_id = args.scenario_id
+    artifact_dir = args.artifact_dir
+    config = load_scenario(Path(scenarios_dir) / scenario_id)
+    artifacts = write_run_artifacts(artifact_dir, config)
+    result = {name: str(path) for name, path in artifacts.items()}
+    print(json.dumps(result, ensure_ascii=False))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="MMAP prompt optimizer MVP CLI")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    # Scenario subcommand group
+    scenario_parser = sub.add_parser("scenario", help="Scenario management commands")
+    scenario_sub = scenario_parser.add_subparsers(dest="scenario_command", required=True)
+
+    list_parser = scenario_sub.add_parser("list", help="List all valid scenarios")
+    list_parser.add_argument("--scenarios-dir", default=DEFAULT_SCENARIOS_DIR)
+    list_parser.add_argument("--json", action="store_true")
+    list_parser.set_defaults(func=scenario_list)
+
+    validate_parser = scenario_sub.add_parser("validate", help="Validate a scenario")
+    validate_parser.add_argument("scenario_id")
+    validate_parser.add_argument("--scenarios-dir", default=DEFAULT_SCENARIOS_DIR)
+    validate_parser.add_argument("--json", action="store_true")
+    validate_parser.set_defaults(func=scenario_validate)
+
+    info_parser = scenario_sub.add_parser("info", help="Show scenario info and metadata")
+    info_parser.add_argument("scenario_id")
+    info_parser.add_argument("--scenarios-dir", default=DEFAULT_SCENARIOS_DIR)
+    info_parser.set_defaults(func=scenario_info)
+
+    write_parser = scenario_sub.add_parser("write-artifacts", help="Write scenario artifacts to a directory")
+    write_parser.add_argument("scenario_id")
+    write_parser.add_argument("artifact_dir")
+    write_parser.add_argument("--scenarios-dir", default=DEFAULT_SCENARIOS_DIR)
+    write_parser.set_defaults(func=scenario_write_artifacts)
+
     smoke = sub.add_parser("run-smoke", help="Run a no-patch MVP round with mock model outputs from sample metadata.")
     smoke.add_argument("--scenario", default=None)
     smoke.add_argument("--data-dir", default="data")
@@ -204,6 +301,7 @@ def main() -> None:
     rollback_parser.add_argument("--snapshot-id", required=True)
     rollback_parser.add_argument("--prompt-name", default=None)
     rollback_parser.set_defaults(func=rollback_prompt)
+
     args = parser.parse_args()
     args.func(args)
 

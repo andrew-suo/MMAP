@@ -1,0 +1,21 @@
+run_dir: runs
+batch_size: 24
+dynamic_validation:
+  batch_size: 48
+  min_label_count: 1
+  cover_difficulty_bins: true
+  recent_window_rounds: 3
+  max_recent_selections: 1
+text_optimization:
+  max_rounds: 10
+models:
+  extraction:
+    provider: mock
+    model: mock-model
+    temperature: 0.0
+    max_tokens: 2048
+  optimizer:
+    provider: mock
+    model: mock-model
+    temperature: 0.0
+    max_tokens: 2048

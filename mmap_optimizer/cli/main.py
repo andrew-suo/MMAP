@@ -98,7 +98,7 @@ def run_smoke(args: argparse.Namespace) -> None:
     )
     store = JsonStore(args.run_dir)
     runner = RoundRunner(model_client=MockModelClient(), evaluator=Evaluator(), store=store, config=config)
-    _, metrics_records, summary = OptimizerLoop(runner=runner, store=store, config=config).run(state, max_rounds=args.rounds)
+    _, metrics_records, summary = OptimizerLoop(runner=runner, store=store, config=config, resume=getattr(args, "resume", False)).run(state, max_rounds=args.rounds)
     _print_run_result(metrics_records, summary)
 
 
@@ -269,6 +269,7 @@ def main() -> None:
     smoke.add_argument("--fewshot-max-rounds", type=int, default=5)
     smoke.add_argument("--fewshot-max-slots", type=int, default=5)
     smoke.add_argument("--fewshot-min-accuracy-delta", type=float, default=0.0)
+    smoke.add_argument("--resume", action="store_true", help="Resume from existing checkpoint.json in run-dir")
     smoke.set_defaults(func=run_smoke)
 
     run_parser = sub.add_parser("run", help="Run optimization with model clients from an optimizer config file.")

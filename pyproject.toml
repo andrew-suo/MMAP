@@ -1,0 +1,9 @@
+[project]
+name = "mmap-optimizer"
+version = "0.1.0"
+description = "MMAP optimizer orchestration utilities"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

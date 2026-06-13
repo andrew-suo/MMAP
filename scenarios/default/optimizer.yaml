@@ -1,0 +1,14 @@
+model:
+  name: gpt-5.5
+sampling:
+  temperature: 0.2
+  top_p: 0.95
+compression:
+  enabled: true
+fewshot:
+  enabled: true
+  examples:
+    - default
+patch_merge:
+  strategy: three_way
+run_dir: runs/default

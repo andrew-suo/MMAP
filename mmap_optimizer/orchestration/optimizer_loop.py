@@ -7,6 +7,7 @@ from mmap_optimizer.metrics.round_metrics import RoundMetrics
 from mmap_optimizer.metrics.trend import MetricsTrend, build_metrics_trend
 from mmap_optimizer.storage.json_store import JsonStore
 from .records import OptimizationRound
+from .run_state import RunState, RunStateStore
 from .round_runner import OptimizerState, RoundRunner
 
 
@@ -49,6 +50,7 @@ class OptimizerLoop:
         self.runner = runner
         self.store = store
         self.config = config or runner.config
+        self.run_state_store = RunStateStore(store)
 
     def run(self, state: OptimizerState, *, start_round: int = 1, max_rounds: int | None = None) -> tuple[list[OptimizationRound], list[RoundMetrics], OptimizationRunSummary]:
         planned_rounds = max_rounds if max_rounds is not None else self._default_round_count()
@@ -58,9 +60,11 @@ class OptimizerLoop:
         rounds: list[OptimizationRound] = []
         metrics_records: list[RoundMetrics] = []
         self.store.write_json("run_summary.json", summary)
+        self.run_state_store.save(RunState(run_id=summary.id, iteration=start_round - 1, stage="initialized", completed_round_ids=[]))
 
         for offset in range(planned_rounds):
             round_index = start_round + offset
+            self.run_state_store.save(RunState(run_id=summary.id, iteration=round_index, stage="round_started", completed_round_ids=[record.id for record in rounds]))
             round_record, metrics = self.runner.run_round(state, round_index=round_index)
             rounds.append(round_record)
             metrics_records.append(metrics)
@@ -70,10 +74,12 @@ class OptimizerLoop:
             summary.final_extraction_prompt_version_id = state.active_extraction_prompt.id
             summary.final_analysis_prompt_version_id = state.active_analysis_prompt.id
             self._write_trend_and_summary(summary, metrics_records)
+            self.run_state_store.save(RunState(run_id=summary.id, iteration=round_index, stage="round_completed", completed_round_ids=summary.round_ids))
 
         summary.status = "COMPLETED"
         summary.stopped_reason = "PLANNED_ROUNDS_COMPLETED"
         self._write_trend_and_summary(summary, metrics_records)
+        self.run_state_store.save(RunState(run_id=summary.id, iteration=start_round + planned_rounds - 1, stage="completed", completed_round_ids=summary.round_ids))
         return rounds, metrics_records, summary
 
     def _write_trend_and_summary(self, summary: OptimizationRunSummary, metrics_records: list[RoundMetrics]) -> MetricsTrend:

@@ -47,7 +47,7 @@ def build_section_contribution(
         contribution.broken_count += len(patch.broken_sample_ids)
 
     for record in analysis_records or []:
-        for attribution in record.prompt_section_attribution:
+        for attribution in getattr(record, "prompt_section_attribution", []):
             if isinstance(attribution, dict):
                 section_id = attribution.get("section_id") or attribution.get("target_section")
             else:
@@ -61,8 +61,8 @@ def build_section_contribution(
         if patch is None:
             continue
         contribution = get(patch.section_id)
-        contribution.fixed_count += result.fixed_count
-        contribution.broken_count += result.broken_count
+        contribution.fixed_count += len(result.fixed_sample_ids)
+        contribution.broken_count += len(result.broken_sample_ids)
         if result.toxicity_result == "toxic":
             contribution.parasite_count += 1
 

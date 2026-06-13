@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from mmap_optimizer.compression.engine import CompressionEngine
 from mmap_optimizer.core.config import OptimizerConfig, model_config_to_request_dict
@@ -10,16 +10,21 @@ from mmap_optimizer.core.enums import RunType
 from mmap_optimizer.analysis.evolution import AnalysisEvolutionEngine
 from mmap_optimizer.analysis.runner import AnalysisRunner
 from mmap_optimizer.dataset.sample import GroundTruth, Sample, SampleAsset, SampleState
+from mmap_optimizer.debug.logger import DebugEventLogger
 from mmap_optimizer.evaluation.evaluator import EvaluationRecord, Evaluator
 from mmap_optimizer.metrics.round_metrics import RoundMetrics, compute_round_metrics
+from mmap_optimizer.metrics.section_contribution import build_section_contribution
 from mmap_optimizer.patch.applier import PatchApplier
 from mmap_optimizer.patch.merge_report import PatchMergeReport
+from mmap_optimizer.patch.repair import PatchRepairEngine
 from mmap_optimizer.patch.semantic import SemanticPatchProcessor
 from mmap_optimizer.patch.tree_reduce import TreeReducePatchMerger
 from mmap_optimizer.patch.schema import Patch
 from mmap_optimizer.patch.validator import PatchValidator
 from mmap_optimizer.model.client import ModelClient
 from mmap_optimizer.prompt.contract import OutputSchemaContract
+from mmap_optimizer.prompt.health import check_prompt_health
+from mmap_optimizer.prompt.snapshot import save_prompt_snapshot
 from mmap_optimizer.prompt.version import PromptVersion
 from mmap_optimizer.sampling.dynamic_validation_sampler import DynamicValidationBatch, select_dynamic_validation_batch
 from mmap_optimizer.sampling.optimization_sampler import select_optimization_batch
@@ -63,6 +68,7 @@ class RoundRunner:
         self.evaluator = evaluator
         self.store = store
         self.config = config or OptimizerConfig()
+        self.debug_logger = DebugEventLogger(self.store) if self.config.debug_enabled else None
 
     def run_round(self, state: OptimizerState, *, round_index: int) -> tuple[OptimizationRound, RoundMetrics]:
         round_id = f"round_{round_index:06d}"
@@ -72,6 +78,16 @@ class RoundRunner:
             base_analysis_prompt_version_id=state.active_analysis_prompt.id,
         )
         self.store.write_json(f"{round_id}/round.json", round_record)
+        if self.config.prompt_health_check_enabled:
+            for prompt_name, prompt in [("extraction", state.active_extraction_prompt), ("analysis", state.active_analysis_prompt)]:
+                health_report = check_prompt_health(prompt.prompt_ir)
+                self.store.write_json(f"{round_id}/health/{prompt_name}_prompt_health.json", health_report)
+                if not health_report.ok:
+                    round_record.status = "ROUND_ABORTED"
+                    round_record.failure_reason = f"{prompt_name.upper()}_PROMPT_HEALTH_ERROR"
+                    self.store.write_json(f"{round_id}/round.json", round_record)
+                    self._debug("guardrail_detention", round_id=round_id, prompt=prompt_name, issues=[issue.__dict__ for issue in health_report.issues])
+                    raise ValueError(round_record.failure_reason)
 
         optimization_batch = select_optimization_batch(state.samples, state.sample_states, self.config.batch_size, round_index=round_index)
         round_record.optimization_batch_ids = [s.id for s in optimization_batch]
@@ -151,8 +167,27 @@ class RoundRunner:
             draft_patches = analysis_result.draft_patches
 
             validator = PatchValidator()
+            repair_engine = PatchRepairEngine(
+                model_client=self.optimizer_client if self.config.patch_repair_enabled else None,
+                model_config=self._optimizer_model_config(),
+            )
             for patch in draft_patches:
                 validation = validator.validate(patch, state.active_extraction_prompt.prompt_ir)
+                if not validation.valid and self.config.patch_repair_enabled:
+                    repair_result = repair_engine.repair_locator(
+                        patch=asdict(patch),
+                        prompt_ir=state.active_extraction_prompt.prompt_ir,
+                        failure_info=validation.reason or "validation_failed",
+                    )
+                    repaired_patch = Patch(**repair_result.repaired_patch)
+                    repaired_validation = validator.validate(repaired_patch, state.active_extraction_prompt.prompt_ir)
+                    repaired_patch.extra["repair_attempts"] = 1
+                    repaired_patch.extra["repair_unresolved_fields"] = repair_result.unresolved_fields
+                    repaired_patch.extra["original_patch_id"] = patch.id
+                    self._debug("patch_repair", round_id=round_id, patch_id=patch.id, repaired=repaired_validation.valid, reason=repaired_validation.reason, unresolved_fields=repair_result.unresolved_fields)
+                    if repaired_validation.valid:
+                        patch = repaired_patch
+                        validation = repaired_validation
                 if validation.valid:
                     patch.status = "candidate"
                     candidate_patches.append(patch)
@@ -160,6 +195,7 @@ class RoundRunner:
                     patch.status = "rejected"
                     patch.rejection_reason = validation.reason
                     rejected_patches.append(patch)
+                    self._debug("guardrail_detention", round_id=round_id, patch_id=patch.id, reason=validation.reason)
 
             merge_result = TreeReducePatchMerger().merge(round_id=round_id, patches=candidate_patches, prompt_ir=state.active_extraction_prompt.prompt_ir)
             merge_report = merge_result.merge_report
@@ -234,6 +270,9 @@ class RoundRunner:
                 next_prompt = state.active_extraction_prompt
                 next_version = next_prompt.version + 1
                 for patch in final_patches:
+                    if self.config.prompt_snapshot_enabled:
+                        snapshot = save_prompt_snapshot(self.store, next_prompt, f"{round_id}_before_{patch.id}")
+                        patch.extra["pre_apply_snapshot_id"] = snapshot.id
                     next_prompt = PatchApplier().apply(next_prompt, patch, new_version=next_version)
                     next_version += 1
                 state.active_extraction_prompt = next_prompt
@@ -331,6 +370,16 @@ class RoundRunner:
             round_record.fewshot_report_ids = [report.id for report in fewshot_reports]
             if fewshot_report.accepted:
                 state.active_extraction_prompt = fewshot_prompt
+
+        contribution = build_section_contribution(
+            patches=self._unique_patches([*draft_patches, *candidate_patches, *rejected_patches]),
+            analysis_records=analysis_records,
+            patch_results=patch_test_results,
+        )
+        if contribution:
+            self.store.write_json(f"{round_id}/metrics/section_contribution.json", contribution)
+            if self.config.contribution_feedback_enabled:
+                self._apply_contribution_feedback(state, evals + dval_evals, contribution)
 
         metrics = compute_round_metrics(round_id, evals, dval_evals)
         metrics.draft_count = len(draft_patches)
@@ -454,6 +503,9 @@ class RoundRunner:
             evaluator=self.evaluator,
             model_id=self.config.extraction_model.model,
             model_config=self._extraction_model_config(),
+            max_workers=self.config.execution_max_workers,
+            vote_rounds=self.config.eval_vote_rounds,
+            enable_voting=self.config.eval_voting_enabled,
         )
 
     def _extraction_model_config(self) -> dict:
@@ -461,6 +513,32 @@ class RoundRunner:
 
     def _optimizer_model_config(self) -> dict:
         return model_config_to_request_dict(self.config.optimizer_model)
+
+    def _debug(self, event_type: str, **payload) -> None:
+        if self.debug_logger is not None:
+            self.debug_logger.log(event_type, payload)
+
+    def _unique_patches(self, patches: list[Patch]) -> list[Patch]:
+        by_id: dict[str, Patch] = {}
+        for patch in patches:
+            by_id[patch.id] = patch
+        return list(by_id.values())
+
+    def _apply_contribution_feedback(self, state: OptimizerState, evaluations: list[EvaluationRecord], contribution) -> None:
+        for evaluation in evaluations:
+            section_scores: list[float] = []
+            for attribution in evaluation.used_prompt_sections:
+                if isinstance(attribution, dict):
+                    section_id = attribution.get("section_id") or attribution.get("target_section")
+                else:
+                    section_id = str(attribution)
+                if section_id and section_id in contribution:
+                    section_scores.append(max(0.0, -contribution[section_id].score))
+            if not section_scores:
+                continue
+            sample_state = state.sample_states.setdefault(evaluation.sample_id, SampleState(sample_id=evaluation.sample_id))
+            signal = min(1.0, sum(section_scores) / max(1, len(section_scores)) / 5.0)
+            sample_state.fragility_score = 0.2 * signal + 0.8 * sample_state.fragility_score
 
     def _update_sample_state(self, state: OptimizerState, evals: list[EvaluationRecord], round_index: int) -> None:
         for evaluation in evals:

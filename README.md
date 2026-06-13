@@ -101,3 +101,13 @@ Every `OptimizerLoop` run now writes a `metrics_trend.json` artifact next to `ru
 ## Dynamic validation sampling
 
 The dynamic-validation set is intentionally not fixed. Each round excludes the optimization batch, then fills a validation batch with label coverage, optional easy/medium/hard difficulty-bin coverage, and a recent-selection penalty. The persisted `dynamic_validation_batch.json` records label/difficulty composition, target coverage, coverage warnings, recent sample ids, and recent-overlap ratio so the run can be audited without pinning a permanent validation set. Configure this through `dynamic_validation.min_label_count`, `dynamic_validation.cover_difficulty_bins`, `dynamic_validation.recent_window_rounds`, and `dynamic_validation.max_recent_selections`.
+
+## Production-readiness integrations
+
+The command line and round runner now wire several previously standalone helpers into the main flow:
+
+- `run` and `run-smoke` accept `--scenario <dir>`; a scenario directory can provide `optimizer.yaml`, `data/`, `prompts/`, and `schemas/` so task-specific runs do not need long path lists.
+- `check-prompt` performs prompt health validation without starting a run, and every optimization round writes extraction/analysis health reports before sampling. ERROR-level health issues abort the round before any model calls or prompt mutations.
+- Prompt snapshots are saved automatically before accepted patches mutate the active extraction prompt, and run progress is checkpointed to `run_state.json` at initialization, round start, round completion, and final completion.
+- No-GT samples can be evaluated through the integrated voting path: the prompt runner executes multiple extraction calls, and `Evaluator.evaluate_without_ground_truth()` records the majority result and confidence in the evaluation `extra` payload.
+- `execution.max_workers` controls ordered concurrent sample execution for extraction and validation batches. Section contribution reports are persisted per round and feed high-risk section signals back into sample fragility scores for later dynamic-validation sampling.

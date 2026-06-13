@@ -6,6 +6,7 @@ from pathlib import Path
 
 from mmap_optimizer.core.config import OptimizerConfig, load_mapping, optimizer_config_from_mapping
 from mmap_optimizer.core.enums import PromptType
+from mmap_optimizer.core.scenario import load_scenario
 from mmap_optimizer.dataset.loader import initial_sample_states, load_assets, load_ground_truths, load_samples
 from mmap_optimizer.evaluation.evaluator import Evaluator
 from mmap_optimizer.model.client import MockModelClient
@@ -13,8 +14,29 @@ from mmap_optimizer.model.factory import build_model_client
 from mmap_optimizer.orchestration.optimizer_loop import OptimizerLoop
 from mmap_optimizer.orchestration.round_runner import OptimizerState, RoundRunner
 from mmap_optimizer.prompt.contract import OutputSchemaContract
+from mmap_optimizer.prompt.health import check_prompt_health
 from mmap_optimizer.prompt.initializer import initialize_prompt_from_file
 from mmap_optimizer.storage.json_store import JsonStore
+
+
+def _apply_scenario_args(args: argparse.Namespace) -> None:
+    scenario_path = getattr(args, "scenario", None)
+    if not scenario_path:
+        return
+    scenario = load_scenario(scenario_path)
+    if getattr(args, "config", None) == "configs/optimizer.yaml":
+        args.config = str(scenario.root / "optimizer.yaml")
+    if args.data_dir == "data":
+        args.data_dir = str(scenario.data_dir)
+    if args.extraction_prompt == "prompts/raw/extraction.txt":
+        args.extraction_prompt = str(scenario.prompts_dir / "extraction.txt")
+    if args.analysis_prompt == "prompts/raw/analysis.txt":
+        args.analysis_prompt = str(scenario.prompts_dir / "analysis.txt")
+    if args.extraction_schema == "schemas/extraction_output_schema.json":
+        args.extraction_schema = str(scenario.schemas_dir / "extraction_output_schema.json")
+    if args.analysis_schema == "schemas/analysis_output_schema.json":
+        args.analysis_schema = str(scenario.schemas_dir / "analysis_output_schema.json")
+    args.loaded_scenario_id = scenario.id
 
 
 def _load_contract(path: Path, prompt_type: PromptType, contract_id: str) -> OutputSchemaContract:
@@ -53,6 +75,7 @@ def _print_run_result(metrics_records, summary) -> None:
 
 
 def run_smoke(args: argparse.Namespace) -> None:
+    _apply_scenario_args(args)
     state, _, _ = _build_state(args)
     config = OptimizerConfig(
         batch_size=args.batch_size,
@@ -71,10 +94,13 @@ def run_smoke(args: argparse.Namespace) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
+    _apply_scenario_args(args)
     state, _, _ = _build_state(args)
     config = optimizer_config_from_mapping(load_mapping(args.config))
     if args.run_dir is not None:
         config.run_dir = args.run_dir
+    if getattr(args, "loaded_scenario_id", None):
+        config.scenario_id = args.loaded_scenario_id
     store = JsonStore(config.run_dir)
     extraction_client = build_model_client(config.extraction_model)
     optimizer_client = build_model_client(config.optimizer_model)
@@ -89,10 +115,25 @@ def run(args: argparse.Namespace) -> None:
     _print_run_result(metrics_records, summary)
 
 
+def check_prompt(args: argparse.Namespace) -> None:
+    _apply_scenario_args(args)
+    extraction_contract = _load_contract(Path(args.extraction_schema), PromptType.EXTRACTION, "extraction_output_schema_v1")
+    analysis_contract = _load_contract(Path(args.analysis_schema), PromptType.ANALYSIS, "analysis_output_schema_v1")
+    prompts = {
+        "extraction": initialize_prompt_from_file(args.extraction_prompt, PromptType.EXTRACTION, extraction_contract),
+        "analysis": initialize_prompt_from_file(args.analysis_prompt, PromptType.ANALYSIS, analysis_contract),
+    }
+    reports = {name: check_prompt_health(prompt.prompt_ir) for name, prompt in prompts.items()}
+    print(json.dumps(reports, default=lambda item: item.__dict__, ensure_ascii=False))
+    if any(not report.ok for report in reports.values()):
+        raise SystemExit(2)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="MMAP prompt optimizer MVP CLI")
     sub = parser.add_subparsers(dest="command", required=True)
     smoke = sub.add_parser("run-smoke", help="Run a no-patch MVP round with mock model outputs from sample metadata.")
+    smoke.add_argument("--scenario", default=None)
     smoke.add_argument("--data-dir", default="data")
     smoke.add_argument("--run-dir", default="runs")
     smoke.add_argument("--extraction-prompt", default="prompts/raw/extraction.txt")
@@ -111,6 +152,7 @@ def main() -> None:
     smoke.set_defaults(func=run_smoke)
 
     run_parser = sub.add_parser("run", help="Run optimization with model clients from an optimizer config file.")
+    run_parser.add_argument("--scenario", default=None)
     run_parser.add_argument("--config", default="configs/optimizer.yaml")
     run_parser.add_argument("--data-dir", default="data")
     run_parser.add_argument("--run-dir", default=None)
@@ -120,6 +162,15 @@ def main() -> None:
     run_parser.add_argument("--analysis-schema", default="schemas/analysis_output_schema.json")
     run_parser.add_argument("--rounds", type=int, default=None)
     run_parser.set_defaults(func=run)
+
+    check_parser = sub.add_parser("check-prompt", help="Validate prompt health before running optimization.")
+    check_parser.add_argument("--scenario", default=None)
+    check_parser.add_argument("--extraction-prompt", default="prompts/raw/extraction.txt")
+    check_parser.add_argument("--analysis-prompt", default="prompts/raw/analysis.txt")
+    check_parser.add_argument("--extraction-schema", default="schemas/extraction_output_schema.json")
+    check_parser.add_argument("--analysis-schema", default="schemas/analysis_output_schema.json")
+    check_parser.add_argument("--data-dir", default="data")
+    check_parser.set_defaults(func=check_prompt)
     args = parser.parse_args()
     args.func(args)
 

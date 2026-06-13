@@ -43,6 +43,16 @@ class OptimizerConfig:
     patch_semantic_merge_enabled: bool = False
     patch_root_audit_enabled: bool = False
     llm_compression_enabled: bool = False
+    patch_repair_enabled: bool = False
+    patch_repair_max_attempts: int = 1
+    prompt_health_check_enabled: bool = True
+    prompt_snapshot_enabled: bool = True
+    eval_voting_enabled: bool = True
+    eval_vote_rounds: int = 3
+    execution_max_workers: int = 1
+    contribution_feedback_enabled: bool = True
+    debug_enabled: bool = True
+    scenario_id: str | None = None
     extraction_model: ModelConfig = field(default_factory=ModelConfig)
     optimizer_model: ModelConfig = field(default_factory=ModelConfig)
 
@@ -142,6 +152,13 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
     fewshot = data.get("fewshot", {}) or {}
     analysis = data.get("analysis", {}) or {}
     patch_merge = data.get("patch_merge", {}) or {}
+    patch_repair = data.get("patch_repair", {}) or {}
+    health = data.get("health", {}) or {}
+    snapshots = data.get("snapshots", {}) or {}
+    evaluation = data.get("evaluation", {}) or {}
+    execution = data.get("execution", {}) or {}
+    contribution = data.get("contribution", {}) or {}
+    debug = data.get("debug", {}) or {}
     models = data.get("models", {}) or {}
     extraction_model_data = data.get("extraction_model") or models.get("extraction") or {}
     optimizer_model_data = data.get("optimizer_model") or models.get("optimizer") or {}
@@ -173,6 +190,16 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
         patch_semantic_merge_enabled=_bool_value(patch_merge.get("semantic_enabled", data.get("patch_semantic_merge_enabled", False))),
         patch_root_audit_enabled=_bool_value(patch_merge.get("root_audit_enabled", data.get("patch_root_audit_enabled", False))),
         llm_compression_enabled=_bool_value(compression.get("llm_enabled", data.get("llm_compression_enabled", False))),
+        patch_repair_enabled=_bool_value(patch_repair.get("enabled", data.get("patch_repair_enabled", False))),
+        patch_repair_max_attempts=int(patch_repair.get("max_attempts", data.get("patch_repair_max_attempts", 1))),
+        prompt_health_check_enabled=_bool_value(health.get("enabled", data.get("prompt_health_check_enabled", True))),
+        prompt_snapshot_enabled=_bool_value(snapshots.get("enabled", data.get("prompt_snapshot_enabled", True))),
+        eval_voting_enabled=_bool_value(evaluation.get("voting_enabled", data.get("eval_voting_enabled", True))),
+        eval_vote_rounds=int(evaluation.get("vote_rounds", data.get("eval_vote_rounds", 3))),
+        execution_max_workers=int(execution.get("max_workers", data.get("execution_max_workers", 1))),
+        contribution_feedback_enabled=_bool_value(contribution.get("feedback_enabled", data.get("contribution_feedback_enabled", True))),
+        debug_enabled=_bool_value(debug.get("enabled", data.get("debug_enabled", True))),
+        scenario_id=data.get("scenario_id"),
         extraction_model=model_config_from_mapping(extraction_model_data),
         optimizer_model=model_config_from_mapping(optimizer_model_data),
     )

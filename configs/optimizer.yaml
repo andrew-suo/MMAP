@@ -50,3 +50,20 @@ dynamic_validation:
 
 strict_mode:
   allow_net_gain_tradeoff: false
+
+patch_repair:
+  enabled: false
+  max_attempts: 1
+health:
+  enabled: true
+snapshots:
+  enabled: true
+evaluation:
+  voting_enabled: true
+  vote_rounds: 3
+execution:
+  max_workers: 1
+contribution:
+  feedback_enabled: true
+debug:
+  enabled: true

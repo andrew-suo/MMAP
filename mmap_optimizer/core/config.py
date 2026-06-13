@@ -57,6 +57,57 @@ class OptimizerConfig:
     optimizer_model: ModelConfig = field(default_factory=ModelConfig)
 
 
+@dataclass
+class ExecutionConfig:
+    """Execution controls shared by CLI, runners, and executor adapters."""
+
+    mode: str = "serial"
+    max_workers: int = 1
+    timeout_seconds: float | None = None
+    retry_attempts: int = 0
+    retry_backoff_seconds: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"serial", "thread_pool"}:
+            raise ValueError("ExecutionConfig.mode must be 'serial' or 'thread_pool'")
+        if self.max_workers < 1:
+            raise ValueError("ExecutionConfig.max_workers must be >= 1")
+        if self.retry_attempts < 0:
+            raise ValueError("ExecutionConfig.retry_attempts must be >= 0")
+
+
+def execution_config_from_mapping(data: dict[str, Any] | None) -> ExecutionConfig:
+    data = data or {}
+    return ExecutionConfig(
+        mode=str(data.get("mode", "thread_pool" if int(data.get("max_workers", 1)) > 1 else "serial")),
+        max_workers=int(data.get("max_workers", 1)),
+        timeout_seconds=(None if data.get("timeout_seconds") is None else float(data.get("timeout_seconds"))),
+        retry_attempts=int(data.get("retry_attempts", data.get("retries", 0))),
+        retry_backoff_seconds=float(data.get("retry_backoff_seconds", data.get("retry_backoff", 0.0))),
+    )
+
+
+def validate_optimizer_config_mapping(data: dict[str, Any] | None) -> list[str]:
+    """Return human-readable config validation errors without raising."""
+
+    errors: list[str] = []
+    try:
+        config = optimizer_config_from_mapping(data)
+    except Exception as exc:  # validation entry point intentionally reports all parse failures
+        return [f"CONFIG_PARSE_ERROR: {exc}"]
+    if config.batch_size < 1:
+        errors.append("text_optimization.batch_size must be >= 1")
+    if config.dynamic_validation_batch_size < 1:
+        errors.append("dynamic_validation.batch_size must be >= 1")
+    if config.max_text_rounds < 0:
+        errors.append("text_optimization.max_rounds must be >= 0")
+    if config.execution_max_workers < 1:
+        errors.append("execution.max_workers must be >= 1")
+    if config.eval_vote_rounds < 1:
+        errors.append("evaluation.vote_rounds must be >= 1")
+    return errors
+
+
 def load_mapping(path: str | Path) -> dict[str, Any]:
     p = Path(path)
     text = p.read_text(encoding="utf-8")

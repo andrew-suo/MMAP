@@ -51,3 +51,31 @@ def check_prompt_health(prompt_ir: PromptIR) -> PromptHealthReport:
 
 def _headings(text: str) -> list[str]:
     return [match.group(0).strip() for match in re.finditer(r"^#{1,6}\s+.+$", text, flags=re.MULTILINE)]
+
+
+def safe_autofix_prompt_ir(prompt_ir: PromptIR) -> PromptIR:
+    """Apply conservative prompt-health fixes that do not change semantics."""
+
+    changed = False
+    seen: set[str] = set()
+    sections = []
+    for index, section in enumerate(prompt_ir.sections, start=1):
+        section_id = section.id or f"section_{index}"
+        if section_id in seen:
+            section_id = f"{section_id}_{index}"
+        seen.add(section_id)
+        content = section.content.rstrip()
+        if section_id != section.id or content != section.content:
+            changed = True
+            section = section.clone_with_content(content, rendering_enabled=section.rendering_enabled)
+            section.id = section_id
+        if section.id in {"output_schema", "analysis_output_schema"} and section.mutability != "frozen":
+            changed = True
+            section.mutability = "frozen"
+            section.compressibility = "none"
+        sections.append(section)
+    if not changed:
+        return prompt_ir
+    from dataclasses import replace
+    rendering_order = [sid for sid in prompt_ir.rendering_order if sid in seen] or [section.id for section in sections]
+    return replace(prompt_ir, sections=sections, rendering_order=rendering_order)

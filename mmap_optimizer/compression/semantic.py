@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from mmap_optimizer.model.client import ModelClient
@@ -13,12 +13,34 @@ class SemanticCompressionCandidate:
     content: str
     semantic_valid: bool
     reason: str | None = None
+    retry_count: int = 0
+    validation_errors: list[str] = field(default_factory=list)
+
+
+@dataclass
+class OutputConstraintCheck:
+    valid: bool
+    violations: list[str] = field(default_factory=list)
+
+
+def check_output_constraints(text: str, *, required_terms: list[str] | None = None, forbidden_terms: list[str] | None = None, max_lines: int | None = None) -> OutputConstraintCheck:
+    violations: list[str] = []
+    for term in required_terms or []:
+        if term not in text:
+            violations.append(f"missing required term: {term}")
+    for term in forbidden_terms or []:
+        if term in text:
+            violations.append(f"contains forbidden term: {term}")
+    if max_lines is not None and len(text.splitlines()) > max_lines:
+        violations.append(f"line count exceeds max_lines={max_lines}")
+    return OutputConstraintCheck(valid=not violations, violations=violations)
 
 
 class SemanticCompressionEngine:
-    def __init__(self, model_client: ModelClient, model_config: dict[str, Any] | None = None):
+    def __init__(self, model_client: ModelClient, model_config: dict[str, Any] | None = None, max_validation_retries: int = 0):
         self.model_client = model_client
         self.model_config = model_config or {}
+        self.max_validation_retries = max(0, max_validation_retries)
         self.registry = build_default_template_registry()
 
     def prune_section(self, *, section_header: str, section_content: str) -> SemanticCompressionCandidate:
@@ -33,9 +55,15 @@ class SemanticCompressionEngine:
         if not pruned or pruned.strip() == section_content.strip():
             return SemanticCompressionCandidate(content=section_content, semantic_valid=False, reason="NO_SEMANTIC_PRUNE_CHANGE")
         validation = self.validate_prune(original_section=section_content, pruned_section=pruned)
+        retry_count = 0
+        while not validation.semantic_valid and retry_count < self.max_validation_retries:
+            retry_count += 1
+            validation = self.validate_prune(original_section=section_content, pruned_section=pruned)
         if not validation.semantic_valid:
+            validation.retry_count = retry_count
+            validation.validation_errors.append(validation.reason or "SEMANTIC_VALIDATION_FAILED")
             return validation
-        return SemanticCompressionCandidate(content=pruned, semantic_valid=True, reason=validation.reason)
+        return SemanticCompressionCandidate(content=pruned, semantic_valid=True, reason=validation.reason, retry_count=retry_count)
 
     def validate_prune(self, *, original_section: str, pruned_section: str) -> SemanticCompressionCandidate:
         validation_template = self.registry.get("llm_prune_validation")

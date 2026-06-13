@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from mmap_optimizer.core.config import OptimizerConfig, load_mapping, optimizer_config_from_mapping
+from mmap_optimizer.core.config import OptimizerConfig, load_mapping, optimizer_config_from_mapping, validate_optimizer_config_mapping
 from mmap_optimizer.core.enums import PromptType
 from mmap_optimizer.core.scenario import load_scenario
 from mmap_optimizer.dataset.loader import initial_sample_states, load_assets, load_ground_truths, load_samples
@@ -16,6 +16,7 @@ from mmap_optimizer.orchestration.round_runner import OptimizerState, RoundRunne
 from mmap_optimizer.prompt.contract import OutputSchemaContract
 from mmap_optimizer.prompt.health import check_prompt_health
 from mmap_optimizer.prompt.initializer import initialize_prompt_from_file
+from mmap_optimizer.prompt.snapshot import load_prompt_snapshot
 from mmap_optimizer.storage.json_store import JsonStore
 
 
@@ -129,6 +130,28 @@ def check_prompt(args: argparse.Namespace) -> None:
         raise SystemExit(2)
 
 
+def validate_config(args: argparse.Namespace) -> None:
+    errors = validate_optimizer_config_mapping(load_mapping(args.config))
+    payload = {"config": args.config, "valid": not errors, "errors": errors}
+    print(json.dumps(payload, ensure_ascii=False))
+    if errors:
+        raise SystemExit(2)
+
+
+def active_prompt_path(run_dir: str | Path, prompt_name: str) -> Path:
+    return Path(run_dir) / "active_prompts" / f"{prompt_name}.json"
+
+
+def rollback_prompt(args: argparse.Namespace) -> None:
+    store = JsonStore(args.run_dir)
+    snapshot = load_prompt_snapshot(store, args.snapshot_id)
+    prompt_name = args.prompt_name or snapshot.get("prompt_type") or snapshot.get("prompt_payload", {}).get("prompt_type", "prompt")
+    destination = active_prompt_path(args.run_dir, str(prompt_name))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(snapshot.get("prompt_payload", snapshot), ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"rolled_back": True, "snapshot_id": args.snapshot_id, "active_prompt_path": str(destination)}, ensure_ascii=False))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="MMAP prompt optimizer MVP CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -171,6 +194,16 @@ def main() -> None:
     check_parser.add_argument("--analysis-schema", default="schemas/analysis_output_schema.json")
     check_parser.add_argument("--data-dir", default="data")
     check_parser.set_defaults(func=check_prompt)
+
+    validate_parser = sub.add_parser("validate-config", help="Validate optimizer configuration without running optimization.")
+    validate_parser.add_argument("--config", default="configs/optimizer.yaml")
+    validate_parser.set_defaults(func=validate_config)
+
+    rollback_parser = sub.add_parser("rollback-prompt", help="Restore an active prompt from a saved snapshot.")
+    rollback_parser.add_argument("--run-dir", default="runs")
+    rollback_parser.add_argument("--snapshot-id", required=True)
+    rollback_parser.add_argument("--prompt-name", default=None)
+    rollback_parser.set_defaults(func=rollback_prompt)
     args = parser.parse_args()
     args.func(args)
 

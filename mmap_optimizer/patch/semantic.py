@@ -90,4 +90,8 @@ def _patch_from_dict(data: dict[str, Any], fallback: Patch) -> Patch:
         source_analysis_ids=list(data.get("source_analysis_ids") or fallback.source_analysis_ids),
         risk_level=str(data.get("risk_level") or fallback.risk_level),
         possible_side_effects=list(data.get("possible_side_effects") or fallback.possible_side_effects),
+        old_text=data.get("old_text") or fallback.old_text,
+        target_text=data.get("target_text") or fallback.target_text,
+        new_text=data.get("new_text") or fallback.new_text,
+        extra={**fallback.extra, "semantic_template_id": data.get("semantic_template_id"), "semantic_processed": True},
     )

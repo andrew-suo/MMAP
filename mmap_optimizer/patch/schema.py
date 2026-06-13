@@ -18,6 +18,9 @@ class Patch:
     intent_description: str
     patch_text: str
     rationale: str
+    old_text: str | None = None
+    target_text: str | None = None
+    new_text: str | None = None
     source_sample_ids: list[str] = field(default_factory=list)
     source_analysis_ids: list[str] = field(default_factory=list)
     risk_level: str = "unknown"

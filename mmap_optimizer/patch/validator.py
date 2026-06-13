@@ -39,4 +39,12 @@ class PatchValidator:
         schema_words = ["新增字段", "删除字段", "修改字段", "output schema", "analysis_output_schema"]
         if any(word in patch.patch_text for word in schema_words):
             return PatchValidationResult(False, "SCHEMA_IMMUTABILITY_VIOLATION")
+        if patch.operation_mode == "replace_in_section":
+            old_text = patch.old_text or patch.extra.get("old_text")
+            if not old_text or old_text not in section.content:
+                return PatchValidationResult(False, "PATCH_LOCATOR_NOT_FOUND")
+        if patch.operation_mode in {"insert_after", "insert_before"}:
+            target_text = patch.target_text or patch.extra.get("target_text")
+            if not target_text or target_text not in section.content:
+                return PatchValidationResult(False, "PATCH_LOCATOR_NOT_FOUND")
         return PatchValidationResult(True)

@@ -5,6 +5,8 @@ from pathlib import Path
 
 from mmap_optimizer.core.enums import PromptType
 from .contract import OutputSchemaContract
+from .refactor import fix_ordered_list_numbering
+from .standardizer import normalize_markdown_spacing, unique_heading_titles
 from .ir import PromptIR, PromptSection
 from .version import PromptVersion
 
@@ -21,7 +23,21 @@ ANALYSIS_SECTIONS = [
 ]
 
 
-def initialize_prompt_version(raw_prompt: str, prompt_type: PromptType, contract: OutputSchemaContract) -> PromptVersion:
+def initialize_prompt_version(
+    raw_prompt: str,
+    prompt_type: PromptType,
+    contract: OutputSchemaContract,
+    *,
+    fix_numbering: bool = False,
+    normalize_spacing: bool = False,
+    unique_headings: bool = False,
+) -> PromptVersion:
+    if fix_numbering:
+        raw_prompt = fix_ordered_list_numbering(raw_prompt)
+    if normalize_spacing:
+        raw_prompt = normalize_markdown_spacing(raw_prompt)
+    if unique_headings:
+        raw_prompt = unique_heading_titles(raw_prompt)
     section_ids = ANALYSIS_SECTIONS if prompt_type == PromptType.ANALYSIS else EXTRACTION_SECTIONS
     output_section_id = contract.target_section_id
     sections: list[PromptSection] = []
@@ -52,5 +68,20 @@ def initialize_prompt_version(raw_prompt: str, prompt_type: PromptType, contract
     return version
 
 
-def initialize_prompt_from_file(path: str | Path, prompt_type: PromptType, contract: OutputSchemaContract) -> PromptVersion:
-    return initialize_prompt_version(Path(path).read_text(encoding="utf-8"), prompt_type, contract)
+def initialize_prompt_from_file(
+    path: str | Path,
+    prompt_type: PromptType,
+    contract: OutputSchemaContract,
+    *,
+    fix_numbering: bool = False,
+    normalize_spacing: bool = False,
+    unique_headings: bool = False,
+) -> PromptVersion:
+    return initialize_prompt_version(
+        Path(path).read_text(encoding="utf-8"),
+        prompt_type,
+        contract,
+        fix_numbering=fix_numbering,
+        normalize_spacing=normalize_spacing,
+        unique_headings=unique_headings,
+    )

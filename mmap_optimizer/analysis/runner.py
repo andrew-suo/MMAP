@@ -157,4 +157,7 @@ class AnalysisRunner:
             source_analysis_ids=[analysis_id],
             risk_level=candidate.get("risk_level", "unknown"),
             possible_side_effects=[candidate["risk"]] if isinstance(candidate.get("risk"), str) else candidate.get("possible_side_effects", []),
+            old_text=candidate.get("old_text"),
+            target_text=candidate.get("target_text"),
+            new_text=candidate.get("new_text"),
         )

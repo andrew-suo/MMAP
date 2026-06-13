@@ -23,6 +23,22 @@ class PatchApplier:
             new_content = (section.content.rstrip() + "\n" + patch.patch_text.strip()).strip()
         elif patch.operation_mode == "replace_section":
             new_content = patch.patch_text.strip()
+        elif patch.operation_mode == "replace_in_section":
+            old_text = patch.old_text or patch.extra.get("old_text")
+            new_text = patch.new_text or patch.extra.get("new_text") or patch.patch_text
+            if not old_text or old_text not in section.content:
+                raise ValueError(f"Patch locator not found for replace_in_section: {patch.id}")
+            new_content = section.content.replace(old_text, new_text, 1)
+        elif patch.operation_mode == "insert_after":
+            target_text = patch.target_text or patch.extra.get("target_text")
+            if not target_text or target_text not in section.content:
+                raise ValueError(f"Patch locator not found for insert_after: {patch.id}")
+            new_content = section.content.replace(target_text, target_text + "\n" + patch.patch_text.strip(), 1)
+        elif patch.operation_mode == "insert_before":
+            target_text = patch.target_text or patch.extra.get("target_text")
+            if not target_text or target_text not in section.content:
+                raise ValueError(f"Patch locator not found for insert_before: {patch.id}")
+            new_content = section.content.replace(target_text, patch.patch_text.strip() + "\n" + target_text, 1)
         else:
             new_content = (section.content.rstrip() + "\n" + patch.patch_text.strip()).strip()
         new_ir = base_prompt.prompt_ir.with_replaced_section(patch.section_id, new_content)

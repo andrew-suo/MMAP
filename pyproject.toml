@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mmap-optimizer"
+version = "0.1.0"
+description = "MVP framework for multimodal prompt optimization with prompt IR, strict patch testing, dynamic validation, and few-shot slots."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+mmap-optimizer = "mmap_optimizer.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["mmap_optimizer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,3 @@
+{"id":"gt_001","sample_id":"sample_001","value":{"result":"OK"},"primary_answer":"OK"}
+{"id":"gt_002","sample_id":"sample_002","value":{"result":"NG"},"primary_answer":"NG"}
+{"id":"gt_003","sample_id":"sample_003","value":{"result":"UNCERTAIN"},"primary_answer":"UNCERTAIN"}

@@ -38,6 +38,11 @@ class OptimizerConfig:
     fewshot_max_rounds: int = 5
     fewshot_max_slots: int = 5
     fewshot_min_accuracy_delta: float = 0.0
+    analysis_json_repair_enabled: bool = False
+    analysis_json_repair_max_attempts: int = 1
+    patch_semantic_merge_enabled: bool = False
+    patch_root_audit_enabled: bool = False
+    llm_compression_enabled: bool = False
     extraction_model: ModelConfig = field(default_factory=ModelConfig)
     optimizer_model: ModelConfig = field(default_factory=ModelConfig)
 
@@ -135,6 +140,8 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
     dval = data.get("dynamic_validation", {}) or {}
     compression = data.get("compression", {}) or {}
     fewshot = data.get("fewshot", {}) or {}
+    analysis = data.get("analysis", {}) or {}
+    patch_merge = data.get("patch_merge", {}) or {}
     models = data.get("models", {}) or {}
     extraction_model_data = data.get("extraction_model") or models.get("extraction") or {}
     optimizer_model_data = data.get("optimizer_model") or models.get("optimizer") or {}
@@ -161,6 +168,11 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
         fewshot_max_rounds=int(fewshot.get("max_rounds", data.get("fewshot_max_rounds", 5))),
         fewshot_max_slots=int(fewshot.get("max_slots", data.get("fewshot_max_slots", 5))),
         fewshot_min_accuracy_delta=float(fewshot.get("min_accuracy_delta", data.get("fewshot_min_accuracy_delta", 0.0))),
+        analysis_json_repair_enabled=_bool_value(analysis.get("json_repair_enabled", data.get("analysis_json_repair_enabled", False))),
+        analysis_json_repair_max_attempts=int(analysis.get("json_repair_max_attempts", data.get("analysis_json_repair_max_attempts", 1))),
+        patch_semantic_merge_enabled=_bool_value(patch_merge.get("semantic_enabled", data.get("patch_semantic_merge_enabled", False))),
+        patch_root_audit_enabled=_bool_value(patch_merge.get("root_audit_enabled", data.get("patch_root_audit_enabled", False))),
+        llm_compression_enabled=_bool_value(compression.get("llm_enabled", data.get("llm_compression_enabled", False))),
         extraction_model=model_config_from_mapping(extraction_model_data),
         optimizer_model=model_config_from_mapping(optimizer_model_data),
     )

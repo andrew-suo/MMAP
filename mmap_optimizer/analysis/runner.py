@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from mmap_optimizer.analysis.parser import parse_analysis_output
+from mmap_optimizer.analysis.parser import parse_analysis_output_with_repair
 from mmap_optimizer.analysis.record import AnalysisRecord
 from mmap_optimizer.evaluation.evaluator import EvaluationRecord
 from mmap_optimizer.model.client import ModelClient
 from mmap_optimizer.orchestration.records import RunRecord
+from mmap_optimizer.patch.alignment import PatchAlignmentEngine
 from mmap_optimizer.patch.schema import Patch
 from mmap_optimizer.prompt.version import PromptVersion
 
@@ -27,10 +28,20 @@ class AnalysisRunner:
     validation so malformed analysis never aborts the round.
     """
 
-    def __init__(self, model_client: ModelClient, model_id: str = "mock-model", model_config: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        model_client: ModelClient,
+        model_id: str = "mock-model",
+        model_config: dict[str, Any] | None = None,
+        *,
+        enable_json_repair: bool = False,
+        json_repair_max_attempts: int = 1,
+    ):
         self.model_client = model_client
         self.model_id = model_id
         self.model_config = model_config or {"model": model_id}
+        self.enable_json_repair = enable_json_repair
+        self.json_repair_max_attempts = json_repair_max_attempts
 
     def analyze_errors(
         self,
@@ -40,6 +51,7 @@ class AnalysisRunner:
         extraction_runs: dict[str, RunRecord],
         sample_metadata: dict[str, dict[str, Any]],
         analysis_prompt: PromptVersion,
+        target_prompt: PromptVersion | None = None,
     ) -> AnalysisRunResult:
         rendered = analysis_prompt.render()
         records: list[AnalysisRecord] = []
@@ -70,7 +82,13 @@ class AnalysisRunner:
                 model_id=self.model_id,
                 raw_output=response.raw_output,
             )
-            parse_result = parse_analysis_output(response.raw_output)
+            parse_result = parse_analysis_output_with_repair(
+                response.raw_output,
+                repair_client=self.model_client,
+                repair_model_config=self.model_config,
+                enable_llm_repair=self.enable_json_repair,
+                max_attempts=self.json_repair_max_attempts,
+            )
             analysis_run.parsed_output = parse_result.parsed
             if not parse_result.parse_success:
                 analysis_run.success = False
@@ -100,8 +118,12 @@ class AnalysisRunner:
                 invalid_patch_count=len(parse_result.invalid_patch_candidates),
             )
             for idx, candidate in enumerate(parse_result.valid_patch_candidates):
+                normalized_candidate = candidate
+                if target_prompt is not None:
+                    alignment = PatchAlignmentEngine().align_patch_location(candidate, target_prompt.prompt_ir)
+                    normalized_candidate = alignment.aligned_patch
                 patch = self._patch_from_candidate(
-                    candidate=candidate,
+                    candidate=normalized_candidate,
                     round_id=round_id,
                     index=idx,
                     base_version_id=source_run.prompt_version_id,
@@ -116,7 +138,7 @@ class AnalysisRunner:
         return AnalysisRunResult(records, patches, runs)
 
     def _patch_from_candidate(self, *, candidate: dict[str, Any], round_id: str, index: int, base_version_id: str, sample_id: str, analysis_id: str) -> Patch:
-        section_id = candidate.get("target_section") or candidate.get("section_id") or "legacy_unmapped"
+        section_id = candidate.get("section_id") or candidate.get("target_section") or "legacy_unmapped"
         operation = candidate.get("operation") or "ADD_RULE"
         return Patch(
             id=f"patch_{round_id}_{sample_id}_{index:02d}",

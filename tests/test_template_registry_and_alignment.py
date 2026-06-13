@@ -64,6 +64,6 @@ def test_patch_alignment_keeps_unmatched_text_for_manual_review():
 
     result = PatchAlignmentEngine().align_patch_location(patch, prompt_ir())
 
-    assert result.status == "unresolved"
+    assert result.status == "partial"
     assert result.aligned_patch["target_text"] == "完全不存在的定位文本"
     assert result.unresolved_fields == ["target_text"]

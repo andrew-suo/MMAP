@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from mmap_optimizer.model.client import ModelClient
+
 from mmap_optimizer.analysis.repair import repair_json_text
 from mmap_optimizer.analysis.schema import ANALYSIS_OUTPUT_REQUIRED_FIELDS, PATCH_CANDIDATE_REQUIRED_FIELDS
 
@@ -71,6 +73,31 @@ def parse_analysis_output(raw_output: str | None) -> AnalysisParseResult:
         valid_patch_candidates=valid_candidates,
         invalid_patch_candidates=invalid_candidates,
     )
+
+
+def parse_analysis_output_with_repair(
+    raw_output: str | None,
+    *,
+    repair_client: ModelClient | None = None,
+    repair_model_config: dict[str, Any] | None = None,
+    enable_llm_repair: bool = False,
+    max_attempts: int = 1,
+) -> AnalysisParseResult:
+    initial = parse_analysis_output(raw_output)
+    if initial.parse_success or not enable_llm_repair or repair_client is None:
+        return initial
+    from mmap_optimizer.analysis.llm_repair import repair_json_with_model
+
+    last = initial
+    for attempt in range(max(0, max_attempts)):
+        repaired_text = repair_json_with_model(raw_output or "", repair_client, repair_model_config)
+        repaired = parse_analysis_output(repaired_text)
+        repaired.repaired = True
+        repaired.repair_actions = [*initial.repair_actions, f"LLM_JSON_REPAIR_ATTEMPT_{attempt + 1}", *repaired.repair_actions]
+        if repaired.parse_success:
+            return repaired
+        last = repaired
+    return last
 
 
 def _analysis_schema_errors(parsed: dict[str, Any]) -> list[str]:

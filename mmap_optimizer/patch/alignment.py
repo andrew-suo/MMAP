@@ -47,7 +47,7 @@ class PatchAlignmentEngine:
         if aligned.get("target_section") != section_label:
             aligned["target_section"] = section_label
             changes.append("target_section")
-        if "section_id" in aligned and aligned.get("section_id") != section.id:
+        if aligned.get("section_id") != section.id:
             aligned["section_id"] = section.id
             changes.append("section_id")
 

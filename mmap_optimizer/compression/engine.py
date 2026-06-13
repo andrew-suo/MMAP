@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from mmap_optimizer.analysis.parser import parse_analysis_output
+from mmap_optimizer.analysis.parser import parse_analysis_output_with_repair
 from mmap_optimizer.compression.report import CompressionReport
+from mmap_optimizer.compression.semantic import SemanticCompressionEngine
 from mmap_optimizer.core.enums import PromptVersionType, RunType
 from mmap_optimizer.dataset.sample import GroundTruth, Sample, SampleAsset
 from mmap_optimizer.evaluation.evaluator import EvaluationRecord, Evaluator
@@ -30,11 +31,24 @@ class CompressionEngine:
     EXCLUDED_SECTION_IDS = {"output_schema", "analysis_output_schema"}
     COMPRESSIBILITY_WEIGHT = {"high": 3, "medium": 2, "low": 1}
 
-    def __init__(self, *, model_client: ModelClient, evaluator: Evaluator, model_id: str = "mock-model", model_config: dict | None = None):
+    def __init__(
+        self,
+        *,
+        model_client: ModelClient,
+        evaluator: Evaluator,
+        model_id: str = "mock-model",
+        model_config: dict | None = None,
+        enable_llm_compression: bool = False,
+        enable_json_repair: bool = False,
+        json_repair_max_attempts: int = 1,
+    ):
         self.model_client = model_client
         self.evaluator = evaluator
         self.model_id = model_id
         self.model_config = model_config or {"model": model_id}
+        self.enable_llm_compression = enable_llm_compression
+        self.enable_json_repair = enable_json_repair
+        self.json_repair_max_attempts = json_repair_max_attempts
 
     def compress_if_needed(
         self,
@@ -90,7 +104,10 @@ class CompressionEngine:
         all_runs = []
         all_evaluations: list[EvaluationRecord] = []
         for section in candidates:
-            compressed_content = self._compress_content(section.content)
+            compressed_content, semantic_failure = self._compression_candidate_content(section)
+            if semantic_failure is not None:
+                report.rejected_sections.append({"section_id": section.id, "reason": semantic_failure})
+                continue
             if compressed_content.strip() == section.content.strip() or not compressed_content.strip():
                 continue
             patch = self._build_patch(round_id, prompt, section, compressed_content, baseline_by_sample)
@@ -195,7 +212,10 @@ class CompressionEngine:
 
         all_runs: list[RunRecord] = []
         for section in candidates:
-            compressed_content = self._compress_content(section.content)
+            compressed_content, semantic_failure = self._compression_candidate_content(section)
+            if semantic_failure is not None:
+                report.rejected_sections.append({"section_id": section.id, "reason": semantic_failure})
+                continue
             if compressed_content.strip() == section.content.strip() or not compressed_content.strip():
                 continue
             patch = self._build_patch(round_id, prompt, section, compressed_content, baseline_by_sample)
@@ -279,6 +299,20 @@ class CompressionEngine:
             source_sample_ids=list(baseline_by_sample),
         )
 
+    def _compression_candidate_content(self, section: PromptSection) -> tuple[str, str | None]:
+        deterministic = self._compress_content(section.content)
+        if deterministic.strip() != section.content.strip() and deterministic.strip():
+            return deterministic, None
+        if not self.enable_llm_compression:
+            return deterministic, None
+        semantic = SemanticCompressionEngine(self.model_client, self.model_config).prune_section(
+            section_header=section.name or section.id,
+            section_content=section.content,
+        )
+        if not semantic.semantic_valid:
+            return section.content, semantic.reason or "SEMANTIC_COMPRESSION_REJECTED"
+        return semantic.content, None
+
     def _behavior_failure(self, baseline_by_sample: dict[str, EvaluationRecord], candidate_evaluations: list[EvaluationRecord]) -> str | None:
         for candidate in candidate_evaluations:
             baseline = baseline_by_sample.get(candidate.sample_id)
@@ -330,7 +364,13 @@ class CompressionEngine:
                 model_id=self.model_id,
                 raw_output=response.raw_output,
             )
-            parse_result = parse_analysis_output(response.raw_output)
+            parse_result = parse_analysis_output_with_repair(
+                response.raw_output,
+                repair_client=self.model_client,
+                repair_model_config=self.model_config,
+                enable_llm_repair=self.enable_json_repair,
+                max_attempts=self.json_repair_max_attempts,
+            )
             analysis_run.parsed_output = parse_result.parsed
             if not parse_result.parse_success:
                 analysis_run.success = False

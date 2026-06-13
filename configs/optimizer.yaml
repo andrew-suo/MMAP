@@ -25,6 +25,15 @@ text_optimization:
 compression:
   extraction_line_budget: null
   analysis_line_budget: null
+  llm_enabled: false
+
+analysis:
+  json_repair_enabled: false
+  json_repair_max_attempts: 1
+
+patch_merge:
+  semantic_enabled: false
+  root_audit_enabled: false
 
 fewshot:
   enabled: false

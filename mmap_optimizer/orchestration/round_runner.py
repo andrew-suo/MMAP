@@ -14,6 +14,7 @@ from mmap_optimizer.evaluation.evaluator import EvaluationRecord, Evaluator
 from mmap_optimizer.metrics.round_metrics import RoundMetrics, compute_round_metrics
 from mmap_optimizer.patch.applier import PatchApplier
 from mmap_optimizer.patch.merge_report import PatchMergeReport
+from mmap_optimizer.patch.semantic import SemanticPatchProcessor
 from mmap_optimizer.patch.tree_reduce import TreeReducePatchMerger
 from mmap_optimizer.patch.schema import Patch
 from mmap_optimizer.patch.validator import PatchValidator
@@ -131,12 +132,19 @@ class RoundRunner:
 
         wrong_evals = [evaluation for evaluation in evals if evaluation.overall_status != "correct"]
         if wrong_evals:
-            analysis_result = AnalysisRunner(self.optimizer_client, model_id=self.config.optimizer_model.model, model_config=self._optimizer_model_config()).analyze_errors(
+            analysis_result = AnalysisRunner(
+                self.optimizer_client,
+                model_id=self.config.optimizer_model.model,
+                model_config=self._optimizer_model_config(),
+                enable_json_repair=self.config.analysis_json_repair_enabled,
+                json_repair_max_attempts=self.config.analysis_json_repair_max_attempts,
+            ).analyze_errors(
                 round_id=round_id,
                 error_evaluations=wrong_evals,
                 extraction_runs=extraction_by_sample,
                 sample_metadata={sample.id: sample.metadata for sample in state.samples},
                 analysis_prompt=state.active_analysis_prompt,
+                target_prompt=state.active_extraction_prompt,
             )
             analysis_records = analysis_result.analysis_records
             analysis_runs = analysis_result.analysis_runs
@@ -157,6 +165,22 @@ class RoundRunner:
             merge_report = merge_result.merge_report
             merged_patches = merge_result.final_patches
             rejected_patches.extend(merge_result.rejected_patches)
+            if merged_patches and (self.config.patch_semantic_merge_enabled or self.config.patch_root_audit_enabled):
+                semantic_processor = SemanticPatchProcessor(self.optimizer_client, self._optimizer_model_config())
+                if self.config.patch_semantic_merge_enabled:
+                    merged_patches = semantic_processor.merge(merged_patches, state.active_extraction_prompt.prompt_ir)
+                if self.config.patch_root_audit_enabled:
+                    merged_patches = semantic_processor.root_audit(merged_patches, state.active_extraction_prompt.prompt_ir)
+                semantic_validated: list[Patch] = []
+                for patch in merged_patches:
+                    validation = validator.validate(patch, state.active_extraction_prompt.prompt_ir)
+                    if validation.valid:
+                        semantic_validated.append(patch)
+                    else:
+                        patch.status = "rejected"
+                        patch.rejection_reason = validation.reason
+                        rejected_patches.append(patch)
+                merged_patches = semantic_validated
             accepted_patches: list[Patch] = []
             suite_builder = PatchTestSuiteBuilder()
             patch_tester = PatchTester(model_client=self.extraction_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model, model_config=self._extraction_model_config())
@@ -231,6 +255,9 @@ class RoundRunner:
             evaluator=self.evaluator,
             model_id=self.config.extraction_model.model,
             model_config=self._extraction_model_config(),
+            enable_llm_compression=self.config.llm_compression_enabled,
+            enable_json_repair=self.config.analysis_json_repair_enabled,
+            json_repair_max_attempts=self.config.analysis_json_repair_max_attempts,
         )
         compressed_prompt, compression_report, compression_runs, compression_evals = compression_engine.compress_if_needed(
             round_id=round_id,
@@ -253,6 +280,9 @@ class RoundRunner:
                 evaluator=self.evaluator,
                 model_id=self.config.optimizer_model.model,
                 model_config=self._optimizer_model_config(),
+                enable_llm_compression=self.config.llm_compression_enabled,
+                enable_json_repair=self.config.analysis_json_repair_enabled,
+                json_repair_max_attempts=self.config.analysis_json_repair_max_attempts,
             )
             compressed_analysis_prompt, analysis_compression_report, analysis_compression_runs, analysis_compression_evals = (
                 analysis_compression_engine.compress_analysis_if_needed(

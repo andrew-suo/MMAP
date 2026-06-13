@@ -67,3 +67,36 @@ def test_patch_alignment_keeps_unmatched_text_for_manual_review():
     assert result.status == "partial"
     assert result.aligned_patch["target_text"] == "完全不存在的定位文本"
     assert result.unresolved_fields == ["target_text"]
+
+
+def test_enhanced_templates_include_generation_self_check_and_examples():
+    registry = build_default_template_registry()
+
+    assert "patch_generation" in registry.ids()
+    assert "prompt_self_check" in registry.ids()
+    assert registry.get("patch_semantic_merge").examples
+    assert registry.get("patch_root_audit").examples
+    assert registry.get("llm_prune_validation").output_contract["required"] == ["valid", "reason"]
+    rendered = registry.get("patch_generation").render(
+        prompt_structure="sections",
+        current_prompt="prompt",
+        round_context="context",
+        evaluation_summary="summary",
+    )
+    assert "Be Specific" in rendered
+    assert "append_to_section" in rendered
+
+
+def test_alignment_reports_match_positions_and_unresolved_extra():
+    patch = {"target_section": "## 4. Constraints & Rules", "old_text": "检查标签缺失", "new_text": "payload"}
+
+    result = PatchAlignmentEngine().align_patch_location(patch, prompt_ir())
+
+    assert result.match_details["old_text"]["start"] == 0
+    assert result.match_details["old_text"]["end"] == len("请检查设备标签是否缺失。")
+    assert result.match_details["old_text"]["score"] >= 0.58
+
+    missing = PatchAlignmentEngine().align_patch_location(
+        {"target_section": "## 4. Constraints & Rules", "old_text": "不存在"}, prompt_ir()
+    )
+    assert missing.aligned_patch["extra"]["unresolved_locators"] == ["old_text"]

@@ -111,3 +111,9 @@ The command line and round runner now wire several previously standalone helpers
 - Prompt snapshots are saved automatically before accepted patches mutate the active extraction prompt, and run progress is checkpointed to `run_state.json` at initialization, round start, round completion, and final completion.
 - No-GT samples can be evaluated through the integrated voting path: the prompt runner executes multiple extraction calls, and `Evaluator.evaluate_without_ground_truth()` records the majority result and confidence in the evaluation `extra` payload.
 - `execution.max_workers` controls ordered concurrent sample execution for extraction and validation batches. Section contribution reports are persisted per round and feed high-risk section signals back into sample fragility scores for later dynamic-validation sampling.
+
+## Prompt quality and template hardening
+
+The bundled raw prompts now provide stronger extraction and analysis instructions, including explicit role/task scope, CORRECT/INCORRECT/UNCERTAIN definitions, no-hallucination rules, boundary-case handling, schema-oriented output guidance, and patch quality criteria. Optimizer templates are versioned with richer output contracts, embedded examples for semantic merge/root audit/prune validation/JSON repair, a dedicated patch-generation template, and a prompt self-check template for placeholder, contradiction, and schema-alignment audits. Patch locator alignment also records fuzzy-match score and character positions while marking unresolved locators in `extra.unresolved_locators` for manual or LLM-assisted follow-up.
+
+For candidate prompt upgrades, `mmap_optimizer.prompt.ab_test.run_prompt_ab_test()` runs old/new PromptVersions over the same sample slice and promotes only non-regressing candidates that meet the configured accuracy delta.

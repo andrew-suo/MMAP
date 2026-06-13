@@ -1,0 +1,6 @@
+name: Default Scenario
+description: A default scenario for testing MMAP optimizer
+optimizer_config: optimizer.yaml
+data_dir: data
+prompts_dir: prompts
+schemas_dir: schemas

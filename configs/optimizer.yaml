@@ -1,0 +1,7 @@
+models:
+  extraction:
+    provider: mock
+    model: mock-extraction
+  optimizer:
+    provider: mock
+    model: mock-optimizer

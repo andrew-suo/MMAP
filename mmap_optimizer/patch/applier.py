@@ -7,6 +7,10 @@ from mmap_optimizer.prompt.version import PromptVersion
 from .schema import Patch
 
 
+class PatchApplyError(ValueError):
+    """Raised when a patch cannot be applied exactly."""
+
+
 class PatchApplier:
     def apply(
         self,
@@ -18,27 +22,49 @@ class PatchApplier:
     ) -> PromptVersion:
         section = base_prompt.prompt_ir.section_by_id(patch.section_id)
         if section is None:
-            raise ValueError(f"Section not found: {patch.section_id}")
-        if patch.operation_mode in {"append", "merge_into_section"}:
+            raise PatchApplyError(f"Section not found: {patch.section_id}")
+        if section.mutability == "frozen":
+            raise PatchApplyError(f"Cannot patch frozen section: {patch.section_id}")
+        mode = patch.effective_operation_mode
+        if mode in {"append", "merge_into_section"}:
             new_content = (section.content.rstrip() + "\n" + patch.patch_text.strip()).strip()
-        elif patch.operation_mode == "replace_section":
+        elif mode == "replace_section":
             new_content = patch.patch_text.strip()
-        elif patch.operation_mode == "replace_in_section":
-            old_text = patch.old_text or patch.extra.get("old_text")
-            new_text = patch.new_text or patch.extra.get("new_text") or patch.patch_text
+        elif mode == "replace_in_section":
+            old_text = patch.locator_value("old_text")
+            new_text = patch.payload_value("new_text") or patch.new_text or patch.patch_text
             if not old_text or old_text not in section.content:
-                raise ValueError(f"Patch locator not found for replace_in_section: {patch.id}")
+                raise PatchApplyError(f"Patch locator not found for replace_in_section: {patch.id}")
+            occurrences = section.content.count(old_text)
+            if occurrences > 1:
+                raise PatchApplyError(f"Ambiguous locator for replace_in_section: {old_text!r} appears {occurrences} times")
             new_content = section.content.replace(old_text, new_text, 1)
-        elif patch.operation_mode == "insert_after":
-            target_text = patch.target_text or patch.extra.get("target_text")
+        elif mode == "insert_after":
+            target_text = patch.locator_value("target_text")
+            insert_text = patch.payload_value("insert_text") or patch.insert_text or patch.patch_text
             if not target_text or target_text not in section.content:
-                raise ValueError(f"Patch locator not found for insert_after: {patch.id}")
-            new_content = section.content.replace(target_text, target_text + "\n" + patch.patch_text.strip(), 1)
-        elif patch.operation_mode == "insert_before":
-            target_text = patch.target_text or patch.extra.get("target_text")
+                raise PatchApplyError(f"Patch locator not found for insert_after: {patch.id}")
+            occurrences = section.content.count(target_text)
+            if occurrences > 1:
+                raise PatchApplyError(f"Ambiguous locator for insert_after: {target_text!r} appears {occurrences} times")
+            new_content = section.content.replace(target_text, target_text + "\n" + insert_text.strip(), 1)
+        elif mode == "insert_before":
+            target_text = patch.locator_value("target_text")
+            insert_text = patch.payload_value("insert_text") or patch.insert_text or patch.patch_text
             if not target_text or target_text not in section.content:
-                raise ValueError(f"Patch locator not found for insert_before: {patch.id}")
-            new_content = section.content.replace(target_text, patch.patch_text.strip() + "\n" + target_text, 1)
+                raise PatchApplyError(f"Patch locator not found for insert_before: {patch.id}")
+            occurrences = section.content.count(target_text)
+            if occurrences > 1:
+                raise PatchApplyError(f"Ambiguous locator for insert_before: {target_text!r} appears {occurrences} times")
+            new_content = section.content.replace(target_text, insert_text.strip() + "\n" + target_text, 1)
+        elif mode == "delete":
+            target_text = patch.locator_value("old_text") or patch.locator_value("target_text")
+            if not target_text or target_text not in section.content:
+                raise PatchApplyError(f"Patch locator not found for delete: {patch.id}")
+            occurrences = section.content.count(target_text)
+            if occurrences > 1:
+                raise PatchApplyError(f"Ambiguous locator for delete: {target_text!r} appears {occurrences} times")
+            new_content = section.content.replace(target_text, "", 1)
         else:
             new_content = (section.content.rstrip() + "\n" + patch.patch_text.strip()).strip()
         new_ir = base_prompt.prompt_ir.with_replaced_section(patch.section_id, new_content)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from mmap_optimizer.prompt.ir import PromptIR
-from .schema import Patch
+from .schema import TEXT_LEVEL_OPERATION_MODES, Patch
 
 FORBIDDEN_SECTIONS = {"output_schema", "analysis_output_schema"}
 DISABLED_OPERATIONS = {"DELETE_RULE", "ADD_SECTION"}
@@ -12,6 +12,10 @@ ALLOWED_BY_SECTION = {
     "format_compliance_policy": {"STRENGTHEN_FORMAT_COMPLIANCE", "ADD_SELF_CHECK", "REFINE_RULE", "ADD_RULE"},
     "schema_guard_policy": {"STRENGTHEN_FORMAT_COMPLIANCE", "ADD_RULE", "REFINE_RULE"},
 }
+
+
+class PatchValidationError(ValueError):
+    """Raised when a patch is invalid and cannot be applied safely."""
 
 
 @dataclass
@@ -29,7 +33,7 @@ class PatchValidator:
             return PatchValidationResult(False, "TARGET_SECTION_FROZEN")
         if patch.operation_type in DISABLED_OPERATIONS:
             return PatchValidationResult(False, "OPERATION_DISABLED")
-        if not patch.patch_text.strip():
+        if not patch.patch_text.strip() and patch.operation_mode != "delete":
             return PatchValidationResult(False, "EMPTY_PATCH_TEXT")
         if patch.target_prompt_type == "extraction" and not patch.source_sample_ids:
             return PatchValidationResult(False, "MISSING_SOURCE_SAMPLE")
@@ -39,12 +43,26 @@ class PatchValidator:
         schema_words = ["新增字段", "删除字段", "修改字段", "output schema", "analysis_output_schema"]
         if any(word in patch.patch_text for word in schema_words):
             return PatchValidationResult(False, "SCHEMA_IMMUTABILITY_VIOLATION")
-        if patch.operation_mode == "replace_in_section":
-            old_text = patch.old_text or patch.extra.get("old_text")
-            if not old_text or old_text not in section.content:
+        mode = patch.effective_operation_mode
+        if mode == "replace_in_section":
+            old_text = patch.locator_value("old_text")
+            if not old_text or not isinstance(old_text, str) or old_text not in section.content:
                 return PatchValidationResult(False, "PATCH_LOCATOR_NOT_FOUND")
-        if patch.operation_mode in {"insert_after", "insert_before"}:
-            target_text = patch.target_text or patch.extra.get("target_text")
-            if not target_text or target_text not in section.content:
+            occurrences = section.content.count(old_text)
+            if occurrences > 1:
+                return PatchValidationResult(False, "AMBIGUOUS_LOCATOR")
+        elif mode in {"insert_after", "insert_before"}:
+            target_text = patch.locator_value("target_text")
+            if not target_text or not isinstance(target_text, str) or target_text not in section.content:
                 return PatchValidationResult(False, "PATCH_LOCATOR_NOT_FOUND")
+            occurrences = section.content.count(target_text)
+            if occurrences > 1:
+                return PatchValidationResult(False, "AMBIGUOUS_LOCATOR")
+        elif mode == "delete":
+            target_text = patch.locator_value("old_text") or patch.locator_value("target_text")
+            if not target_text or not isinstance(target_text, str) or target_text not in section.content:
+                return PatchValidationResult(False, "PATCH_LOCATOR_NOT_FOUND")
+            occurrences = section.content.count(target_text)
+            if occurrences > 1:
+                return PatchValidationResult(False, "AMBIGUOUS_LOCATOR")
         return PatchValidationResult(True)

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from mmap_optimizer.core.config import OptimizerConfig
 from mmap_optimizer.metrics.round_metrics import RoundMetrics
 from mmap_optimizer.metrics.trend import MetricsTrend, build_metrics_trend
 from mmap_optimizer.storage.json_store import JsonStore
+from .checkpoint import OptimizerCheckpoint
 from .records import OptimizationRound
 from .run_state import RunState, RunStateStore
 from .round_runner import OptimizerState, RoundRunner
@@ -46,24 +48,30 @@ class OptimizerLoop:
     later few-shot rounds still need deterministic round accounting.
     """
 
-    def __init__(self, *, runner: RoundRunner, store: JsonStore, config: OptimizerConfig | None = None):
+    def __init__(self, *, runner: RoundRunner, store: JsonStore, config: OptimizerConfig | None = None, resume: bool = False):
         self.runner = runner
         self.store = store
         self.config = config or runner.config
         self.run_state_store = RunStateStore(store)
+        self.resume = resume
 
     def run(self, state: OptimizerState, *, start_round: int = 1, max_rounds: int | None = None) -> tuple[list[OptimizationRound], list[RoundMetrics], OptimizationRunSummary]:
         planned_rounds = max_rounds if max_rounds is not None else self._default_round_count()
         if planned_rounds < 1:
             raise ValueError("planned round count must be at least 1")
+        effective_start = start_round
+        if self.resume:
+            existing = self._load_existing_checkpoint()
+            if existing is not None:
+                effective_start = existing.round_index + 1
         summary = OptimizationRunSummary(id="optimization_run_summary", status="RUNNING", planned_round_count=planned_rounds)
         rounds: list[OptimizationRound] = []
         metrics_records: list[RoundMetrics] = []
         self.store.write_json("run_summary.json", summary)
-        self.run_state_store.save(RunState(run_id=summary.id, iteration=start_round - 1, stage="initialized", completed_round_ids=[]))
+        self.run_state_store.save(RunState(run_id=summary.id, iteration=effective_start - 1, stage="initialized", completed_round_ids=[]))
 
         for offset in range(planned_rounds):
-            round_index = start_round + offset
+            round_index = effective_start + offset
             self.run_state_store.save(RunState(run_id=summary.id, iteration=round_index, stage="round_started", completed_round_ids=[record.id for record in rounds]))
             round_record, metrics = self.runner.run_round(state, round_index=round_index)
             rounds.append(round_record)
@@ -75,12 +83,57 @@ class OptimizerLoop:
             summary.final_analysis_prompt_version_id = state.active_analysis_prompt.id
             self._write_trend_and_summary(summary, metrics_records)
             self.run_state_store.save(RunState(run_id=summary.id, iteration=round_index, stage="round_completed", completed_round_ids=summary.round_ids))
+            self._save_checkpoint(round_index, state, metrics, fewshot_pool_path=None)
 
         summary.status = "COMPLETED"
         summary.stopped_reason = "PLANNED_ROUNDS_COMPLETED"
         self._write_trend_and_summary(summary, metrics_records)
-        self.run_state_store.save(RunState(run_id=summary.id, iteration=start_round + planned_rounds - 1, stage="completed", completed_round_ids=summary.round_ids))
+        self.run_state_store.save(RunState(run_id=summary.id, iteration=effective_start + planned_rounds - 1, stage="completed", completed_round_ids=summary.round_ids))
         return rounds, metrics_records, summary
+
+    def _save_checkpoint(self, round_index: int, state: OptimizerState, metrics: RoundMetrics, *, fewshot_pool_path: str | None) -> None:
+        checkpoint = OptimizerCheckpoint(
+            round_index=round_index,
+            active_prompts={
+                "extraction": {
+                    "id": state.active_extraction_prompt.id,
+                    "version": state.active_extraction_prompt.version,
+                    "output_schema_contract_id": state.active_extraction_prompt.output_schema_contract_id,
+                    "version_type": str(state.active_extraction_prompt.version_type),
+                    "parent_version_id": state.active_extraction_prompt.parent_version_id,
+                },
+                "analysis": {
+                    "id": state.active_analysis_prompt.id,
+                    "version": state.active_analysis_prompt.version,
+                    "output_schema_contract_id": state.active_analysis_prompt.output_schema_contract_id,
+                    "version_type": str(state.active_analysis_prompt.version_type),
+                    "parent_version_id": state.active_analysis_prompt.parent_version_id,
+                },
+            },
+            sample_states=[
+                {
+                    "sample_id": sample_state.sample_id,
+                    "difficulty_ema": sample_state.difficulty_ema,
+                    "fragility_score": sample_state.fragility_score,
+                    "last_selected_round": sample_state.last_selected_round,
+                }
+                for sample_state in state.sample_states.values()
+            ],
+            fewshot_pool_path=fewshot_pool_path,
+            metrics_summary={
+                "round_id": round_index,
+                "batch_accuracy": metrics.batch_accuracy,
+                "accepted_count": metrics.accepted_count,
+                "rejected_count": metrics.rejected_count,
+            },
+        )
+        checkpoint.save(self.store.root / "checkpoint.json")
+
+    def _load_existing_checkpoint(self) -> OptimizerCheckpoint | None:
+        checkpoint_path = self.store.root / "checkpoint.json"
+        if not Path(checkpoint_path).exists():
+            raise FileNotFoundError(f"cannot resume without checkpoint: {checkpoint_path}")
+        return OptimizerCheckpoint.load(checkpoint_path)
 
     def _write_trend_and_summary(self, summary: OptimizationRunSummary, metrics_records: list[RoundMetrics]) -> MetricsTrend:
         trend = build_metrics_trend(metrics_records)
@@ -111,4 +164,3 @@ class OptimizerLoop:
         summary.total_toxic_patches += metrics.toxic_count
         summary.total_compression_accepts += 1 if metrics.compression_accepted else 0
         summary.total_fewshot_accepts += 1 if metrics.fewshot_accepted else 0
-

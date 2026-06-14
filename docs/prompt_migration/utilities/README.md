@@ -19,6 +19,7 @@ scenario pipeline. They are tools for humans / CI pipelines.**
 | **immutable-payload** | `mmap_optimizer.prompt.immutable_payload` | Validate that a rewrite preserves `{placeholders}`, field names, heading text, and rule text |
 | **audit-checklist** | `mmap_optimizer.prompt.audit_checklist` | Build structured `AuditChecklistReport` with pass/warning/fail semantics and blocker/major/minor severity |
 | **prompt-rewrite-safety-report** | `mmap_optimizer.prompt.rewrite_safety` | **Wrapper** that composes the above four into a single `PromptRewriteSafetyReport`; optionally includes JSON repair stage (`apply_json_repair=False` by default) |
+| **scenario-gated-utility-runner** | `mmap_optimizer.prompt.utility_runner` | Explicit report-only orchestrator for prompt utilities; `enabled=False` by default; runs one or more utilities and returns a combined `PromptUtilityRunResult` |
 
 ---
 
@@ -31,6 +32,7 @@ scenario pipeline. They are tools for humans / CI pipelines.**
 | "Did this proposed rewrite accidentally drop a placeholder?" | `immutable_payload` |
 | "I need a structured audit trail for a review meeting / CI" | `audit_checklist` |
 | "I want one report combining the four" | `rewrite_safety` (composes them; `apply_json_repair=False` by default) |
+| "I want to run multiple utilities in one call and get a combined report" | `utility_runner` (explicit, `enabled=False` by default) |
 
 ---
 

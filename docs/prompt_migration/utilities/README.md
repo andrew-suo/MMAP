@@ -51,3 +51,23 @@ Every utility in this directory must satisfy:
 
 If a future utility violates any of these, it must be fixed *before*
 shipped — not after.
+
+---
+
+## Example workflow
+
+A non-default, manual, report-only example is available at:
+
+    examples/prompt_utility_runner/
+
+It demonstrates how to explicitly invoke the prompt utility runner on
+two sample prompt files. The example:
+
+- Is **non-default**: must be run by hand.
+- Is **manual-only**: `python -m examples.prompt_utility_runner.run_prompt_utility_example`
+  or `python examples/prompt_utility_runner/run_prompt_utility_example.py`.
+- Is **report-only**: writes nothing, applies no rewrite.
+- Is **safe**: does not call an LLM, optimizer loop, CLI, or scenario runner.
+
+See [examples/prompt_utility_runner/README.md](file:///workspace/examples/prompt_utility_runner/README.md)
+for details.

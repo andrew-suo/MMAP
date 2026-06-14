@@ -1,12 +1,13 @@
 """Explicit utility: prompt rewrite safety report wrapper.
 
-This module combines three pre-existing deterministic utilities into a single
+This module combines four pre-existing deterministic utilities into a single
 structured report for callers who want to audit a prompt rewrite before using
 it:
 
-1. numbering-only-refactor   (``mmap_optimizer.prompt.numbering_refactor``)
-2. immutable-payload check   (``mmap_optimizer.prompt.immutable_payload``)
-3. audit-checklist report    (``mmap_optimizer.prompt.audit_checklist``)
+1. JSON repair (optional)    (``mmap_optimizer.prompt.json_repair``)
+2. numbering-only-refactor   (``mmap_optimizer.prompt.numbering_refactor``)
+3. immutable-payload check   (``mmap_optimizer.prompt.immutable_payload``)
+4. audit-checklist report    (``mmap_optimizer.prompt.audit_checklist``)
 
 The caller invokes this explicitly. Nothing in the MMAP codebase calls this
 automatically; no optimizer-loop hook exists; and no LLM call is made.
@@ -56,6 +57,10 @@ from mmap_optimizer.prompt.audit_checklist import (
 from mmap_optimizer.prompt.immutable_payload import (
     validate_immutable_payload,
 )
+from mmap_optimizer.prompt.json_repair import (
+    JsonRepairResult,
+    repair_json_output,
+)
 from mmap_optimizer.prompt.numbering_refactor import (
     detect_numbering_issues,
     refactor_prompt_numbering_only,
@@ -78,6 +83,16 @@ class PromptRewriteSafetyReport:
     numbering-refactor pass. It is intended for callers who want to see what
     a "structurally-clean" version of the rewrite looks like before manually
     applying it.
+
+    JSON repair fields:
+    - ``json_repair_applied``: True iff ``apply_json_repair=True`` was passed.
+    - ``json_repair_ok``: True/False if repair was applied; None otherwise.
+    - ``json_repair_issue_count``: Number of issues from JSON repair; 0 if
+      not applied.
+    - ``json_repaired_text``: The repaired text if repair was applied and
+      succeeded; None otherwise.
+    - ``json_repaired_hash``: SHA-256 of ``json_repaired_text`` if present;
+      None otherwise.
     """
 
     target_id: str
@@ -85,10 +100,15 @@ class PromptRewriteSafetyReport:
     overall_status: str
     original_hash: str
     rewritten_hash: str
+    json_repaired_hash: str | None
     normalized_rewritten_hash: str
     numbering_issue_count: int
     immutable_payload_issue_count: int
     audit_issue_count: int
+    json_repair_applied: bool
+    json_repair_ok: bool | None
+    json_repair_issue_count: int
+    json_repaired_text: str | None
     normalized_rewritten: str
     audit_report: AuditChecklistReport
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -100,10 +120,15 @@ class PromptRewriteSafetyReport:
             "overall_status": self.overall_status,
             "original_hash": self.original_hash,
             "rewritten_hash": self.rewritten_hash,
+            "json_repaired_hash": self.json_repaired_hash,
             "normalized_rewritten_hash": self.normalized_rewritten_hash,
             "numbering_issue_count": self.numbering_issue_count,
             "immutable_payload_issue_count": self.immutable_payload_issue_count,
             "audit_issue_count": self.audit_issue_count,
+            "json_repair_applied": self.json_repair_applied,
+            "json_repair_ok": self.json_repair_ok,
+            "json_repair_issue_count": self.json_repair_issue_count,
+            "json_repaired_text": self.json_repaired_text,
             "normalized_rewritten": self.normalized_rewritten,
             "audit_report": self.audit_report.to_dict(),
             "metadata": dict(self.metadata),
@@ -120,6 +145,7 @@ def build_prompt_rewrite_safety_report(
     original: str,
     rewritten: str,
     apply_numbering_refactor: bool = True,
+    apply_json_repair: bool = False,
     protected_placeholders: Iterable[str] | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> PromptRewriteSafetyReport:
@@ -128,19 +154,27 @@ def build_prompt_rewrite_safety_report(
     Steps executed (in order, all in-memory, no filesystem writes):
 
     1. Hash ``original`` and ``rewritten`` via SHA-256.
-    2. Optionally normalize numbering in ``rewritten``
+    2. If *apply_json_repair* is True, run ``repair_json_output(rewritten)``.
+       - If repair succeeds, use ``repaired_text`` for subsequent steps.
+       - If repair fails, continue with original ``rewritten`` and mark
+         ``ok=False``, ``overall_status="fail"``.
+    3. Optionally normalize numbering in the (possibly repaired) text
        (``refactor_prompt_numbering_only``) if *apply_numbering_refactor* is
-       True; otherwise *normalized_rewritten* == *rewritten*.
-    3. Count numbering issues in *rewritten* via ``detect_numbering_issues``.
-    4. Run ``validate_immutable_payload(original, normalized_rewritten)``.
-    5. Build three ``AuditChecklistItem`` entries for
-       ``payload_integrity``, ``format_validity``, and ``rewrite_traceability``
-       and construct an ``AuditChecklistReport``.
-    6. Emit a final ``PromptRewriteSafetyReport`` with aggregate counts and
+       True; otherwise *normalized_rewritten* == input text.
+    4. Count numbering issues in the input text via ``detect_numbering_issues``.
+    5. Run ``validate_immutable_payload(original, normalized_rewritten)``.
+    6. Build ``AuditChecklistItem`` entries for ``payload_integrity``,
+       ``format_validity``, ``rewrite_traceability``, and optionally
+       ``json-repair`` (if JSON repair was applied).
+    7. Emit a final ``PromptRewriteSafetyReport`` with aggregate counts and
        overall_status.
 
     The function is deterministic: the same inputs always yield the same
     outputs. It never writes to disk and never calls an LLM.
+
+    ``apply_json_repair`` defaults to ``False`` to preserve backward
+    compatibility. Only callers who explicitly set it to ``True`` will
+    have JSON repair applied.
     """
     if not isinstance(target_id, str):
         raise TypeError(
@@ -158,17 +192,43 @@ def build_prompt_rewrite_safety_report(
     original_hash = hashlib.sha256(original.encode("utf-8")).hexdigest()
     rewritten_hash = hashlib.sha256(rewritten.encode("utf-8")).hexdigest()
 
-    # Step 1 — numbering normalization
-    numbering_issues = list(detect_numbering_issues(rewritten))
+    # Step 1 — optional JSON repair
+    json_repair_applied = apply_json_repair
+    json_repair_ok: bool | None = None
+    json_repair_issue_count = 0
+    json_repaired_text: str | None = None
+    json_repaired_hash: str | None = None
+    json_repair_result: JsonRepairResult | None = None
+
+    text_for_numbering = rewritten  # text that goes into numbering step
+
+    if apply_json_repair:
+        json_repair_result = repair_json_output(rewritten)
+        json_repair_ok = json_repair_result.ok
+        json_repair_issue_count = len(json_repair_result.issues)
+        if json_repair_result.ok:
+            json_repaired_text = json_repair_result.repaired_text
+            json_repaired_hash = hashlib.sha256(
+                json_repaired_text.encode("utf-8")
+            ).hexdigest()
+            text_for_numbering = json_repaired_text
+        else:
+            # Repair failed: continue with original rewritten text
+            # normalized_rewritten will be based on original rewritten
+            json_repaired_text = None
+            json_repaired_hash = None
+
+    # Step 2 — numbering normalization
+    numbering_issues = list(detect_numbering_issues(text_for_numbering))
     if apply_numbering_refactor:
-        normalized_rewritten = refactor_prompt_numbering_only(rewritten)
+        normalized_rewritten = refactor_prompt_numbering_only(text_for_numbering)
     else:
-        normalized_rewritten = rewritten
+        normalized_rewritten = text_for_numbering
     normalized_rewritten_hash = hashlib.sha256(
         normalized_rewritten.encode("utf-8")
     ).hexdigest()
 
-    # Step 2 — immutable payload validation
+    # Step 3 — immutable payload validation
     immutable_result = validate_immutable_payload(
         original,
         normalized_rewritten,
@@ -176,10 +236,68 @@ def build_prompt_rewrite_safety_report(
     )
     immutable_issues = list(immutable_result.issues)
 
-    # Step 3 — audit items
+    # Step 4 — audit items
     audit_items: list[AuditChecklistItem] = []
 
-    # 3a. payload_integrity
+    # 4a. json-repair (if applied)
+    if apply_json_repair and json_repair_result is not None:
+        if json_repair_result.ok:
+            # Check if repair actually changed the text
+            repair_changed = json_repaired_text != rewritten
+            status = "warning" if repair_changed else "pass"
+            severity = "minor" if repair_changed else "info"
+            evidence = (
+                "JSON repair succeeded. "
+                "issue_count=%d; repaired_text_length=%d; "
+                "position_valid=True; repair_changed=%s"
+                % (
+                    json_repair_issue_count,
+                    len(json_repaired_text) if json_repaired_text else 0,
+                    repair_changed,
+                )
+            )
+            issue = None
+            suggested_fix = None
+            if repair_changed:
+                issue = "JSON was not position-valid; repairs applied."
+                suggested_fix = (
+                    "Ensure model outputs position-valid JSON "
+                    "(no fences, no surrounding prose, no trailing commas)."
+                )
+            audit_items.append(
+                AuditChecklistItem(
+                    id="json-repair",
+                    dimension="format_validity",
+                    status=status,
+                    evidence=evidence,
+                    issue=issue,
+                    severity=severity,
+                    suggested_fix=suggested_fix,
+                )
+            )
+        else:
+            # JSON repair failed
+            issue_summary = "; ".join(
+                i.issue_type for i in json_repair_result.issues[:3]
+            )
+            audit_items.append(
+                AuditChecklistItem(
+                    id="json-repair",
+                    dimension="format_validity",
+                    status="fail",
+                    evidence="JSON repair failed. "
+                    "issue_count=%d; issue_types=%s"
+                    % (json_repair_issue_count, issue_summary),
+                    issue="Rewritten text is not valid JSON and could not be "
+                    "automatically repaired. Issues: %s" % issue_summary,
+                    severity="blocker",
+                    suggested_fix=(
+                        "Produce position-valid JSON before safety validation."
+                    ),
+                )
+            )
+
+    # 4b. payload_integrity
     if immutable_result.ok:
         audit_items.append(
             AuditChecklistItem(
@@ -217,7 +335,7 @@ def build_prompt_rewrite_safety_report(
             )
         )
 
-    # 3b. format_validity (numbering)
+    # 4c. format_validity (numbering)
     if numbering_issues:
         if apply_numbering_refactor:
             audit_items.append(
@@ -279,8 +397,27 @@ def build_prompt_rewrite_safety_report(
             )
         )
 
-    # 3c. rewrite_traceability (hash chain)
-    if rewritten_hash == normalized_rewritten_hash:
+    # 4d. rewrite_traceability (hash chain)
+    hash_chain_parts = []
+    hash_chain_parts.append("rewritten_hash=%s" % rewritten_hash[:12])
+    if json_repaired_hash is not None:
+        hash_chain_parts.append("json_repaired_hash=%s" % json_repaired_hash[:12])
+    hash_chain_parts.append("normalized_rewritten_hash=%s" % normalized_rewritten_hash[:12])
+    hash_chain_evidence = "Hash chain: " + "; ".join(hash_chain_parts)
+
+    # Determine if any transformation occurred
+    text_changed = False
+    change_description = []
+    if json_repaired_hash is not None and json_repaired_hash != rewritten_hash:
+        text_changed = True
+        change_description.append("JSON repair modified text")
+    if normalized_rewritten_hash != (
+        json_repaired_hash if json_repaired_hash else rewritten_hash
+    ):
+        text_changed = True
+        change_description.append("Numbering refactor modified text")
+
+    if not text_changed and not apply_json_repair:
         audit_items.append(
             AuditChecklistItem(
                 id="rewrite_traceability",
@@ -296,32 +433,36 @@ def build_prompt_rewrite_safety_report(
             AuditChecklistItem(
                 id="rewrite_traceability",
                 dimension="format_validity",
-                status="warning",
-                evidence="Numbering refactor produced different text; "
-                "rewritten_hash=%s, normalized_rewritten_hash=%s"
-                % (rewritten_hash[:12], normalized_rewritten_hash[:12]),
-                issue="normalized_rewritten differs from rewritten due to "
-                "numbering repair; apply the normalized version to ensure "
-                "numbering consistency.",
-                severity="minor",
+                status="warning" if text_changed else "pass",
+                evidence=hash_chain_evidence,
+                issue=(
+                    "Text transformations applied: %s"
+                    % ", ".join(change_description)
+                ) if change_description else None,
+                severity="minor" if text_changed else "info",
                 suggested_fix=(
                     "Use report.normalized_rewritten (already computed in "
                     "this report) instead of the raw rewritten text if you "
-                    "want to ship a numbering-consistent version."
-                ),
+                    "want to ship a cleaned version."
+                ) if text_changed else None,
             )
         )
 
-    # Step 4 — compose audit report
+    # Step 5 — compose audit report
+    audit_metadata = {
+        "original_hash": original_hash,
+        "rewritten_hash": rewritten_hash,
+        "normalized_rewritten_hash": normalized_rewritten_hash,
+        "apply_numbering_refactor": apply_numbering_refactor,
+        "apply_json_repair": apply_json_repair,
+    }
+    if json_repaired_hash is not None:
+        audit_metadata["json_repaired_hash"] = json_repaired_hash
+
     audit_report = build_audit_checklist_report(
         target_id=target_id,
         items=audit_items,
-        metadata={
-            "original_hash": original_hash,
-            "rewritten_hash": rewritten_hash,
-            "normalized_rewritten_hash": normalized_rewritten_hash,
-            "apply_numbering_refactor": apply_numbering_refactor,
-        },
+        metadata=audit_metadata,
     )
 
     # Aggregate issue counts for easy reference
@@ -333,9 +474,14 @@ def build_prompt_rewrite_safety_report(
 
     # overall_status is delegated to audit_report; ok is True iff the
     # combined report is not "fail" AND the immutable-payload validation
-    # succeeded. This is a conservative gate: a pure numbering warning
-    # will leave ok=True (callers can still inspect overall_status).
-    ok = immutable_result.ok and audit_report.overall_status != "fail"
+    # succeeded AND (if JSON repair was applied) it succeeded.
+    # This is a conservative gate.
+    json_repair_failed = apply_json_repair and json_repair_ok is False
+    ok = (
+        immutable_result.ok
+        and audit_report.overall_status != "fail"
+        and not json_repair_failed
+    )
 
     return PromptRewriteSafetyReport(
         target_id=target_id,
@@ -343,10 +489,15 @@ def build_prompt_rewrite_safety_report(
         overall_status=audit_report.overall_status,
         original_hash=original_hash,
         rewritten_hash=rewritten_hash,
+        json_repaired_hash=json_repaired_hash,
         normalized_rewritten_hash=normalized_rewritten_hash,
         numbering_issue_count=numbering_issue_count,
         immutable_payload_issue_count=immutable_payload_issue_count,
         audit_issue_count=audit_issue_count,
+        json_repair_applied=json_repair_applied,
+        json_repair_ok=json_repair_ok,
+        json_repair_issue_count=json_repair_issue_count,
+        json_repaired_text=json_repaired_text,
         normalized_rewritten=normalized_rewritten,
         audit_report=audit_report,
         metadata=dict(metadata) if metadata else {},
@@ -374,6 +525,9 @@ def prompt_rewrite_safety_report_from_dict(
 
     This is the inverse of ``PromptRewriteSafetyReport.to_dict()``. Raises
     ``TypeError`` if *data* is not a mapping.
+
+    Handles both legacy dicts (without JSON repair fields) and new dicts
+    (with JSON repair fields) for backward compatibility.
     """
     if not isinstance(data, Mapping):
         raise TypeError(
@@ -390,12 +544,17 @@ def prompt_rewrite_safety_report_from_dict(
         overall_status=str(d.get("overall_status", "")),
         original_hash=str(d.get("original_hash", "")),
         rewritten_hash=str(d.get("rewritten_hash", "")),
+        json_repaired_hash=d.get("json_repaired_hash"),  # Optional, may be None
         normalized_rewritten_hash=str(d.get("normalized_rewritten_hash", "")),
         numbering_issue_count=int(d.get("numbering_issue_count", 0)),
         immutable_payload_issue_count=int(
             d.get("immutable_payload_issue_count", 0)
         ),
         audit_issue_count=int(d.get("audit_issue_count", 0)),
+        json_repair_applied=bool(d.get("json_repair_applied", False)),
+        json_repair_ok=d.get("json_repair_ok"),  # Optional, may be None
+        json_repair_issue_count=int(d.get("json_repair_issue_count", 0)),
+        json_repaired_text=d.get("json_repaired_text"),  # Optional, may be None
         normalized_rewritten=str(d.get("normalized_rewritten", "")),
         audit_report=audit_report,
         metadata=dict(d.get("metadata", {})),
@@ -418,14 +577,22 @@ def render_prompt_rewrite_safety_summary(
         "overall_status : %s" % report.overall_status,
         "original_hash  : %s…" % report.original_hash[:12],
         "rewritten_hash : %s…" % report.rewritten_hash[:12],
-        "normalized_hash: %s…" % report.normalized_rewritten_hash[:12],
-        "issue counts   : numbering=%d, payload=%d, audit_non_pass=%d"
+    ]
+
+    if report.json_repair_applied:
+        lines.append("json_repair    : applied=%s, ok=%s, issues=%d"
+            % (report.json_repair_applied, report.json_repair_ok,
+               report.json_repair_issue_count))
+        if report.json_repaired_hash:
+            lines.append("json_repaired  : %s…" % report.json_repaired_hash[:12])
+
+    lines.append("normalized_hash: %s…" % report.normalized_rewritten_hash[:12])
+    lines.append("issue counts   : numbering=%d, payload=%d, audit_non_pass=%d"
         % (
             report.numbering_issue_count,
             report.immutable_payload_issue_count,
             report.audit_issue_count,
-        ),
-    ]
+        ))
 
     if report.audit_report.failure_summary:
         lines.append("-" * 60)

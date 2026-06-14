@@ -18,7 +18,7 @@ scenario pipeline. They are tools for humans / CI pipelines.**
 | **json-repair-position-valid** | `mmap_optimizer.prompt.json_repair` | Return a position-valid JSON body: strip fences, drop surrounding prose, remove trailing commas |
 | **immutable-payload** | `mmap_optimizer.prompt.immutable_payload` | Validate that a rewrite preserves `{placeholders}`, field names, heading text, and rule text |
 | **audit-checklist** | `mmap_optimizer.prompt.audit_checklist` | Build structured `AuditChecklistReport` with pass/warning/fail semantics and blocker/major/minor severity |
-| **prompt-rewrite-safety-report** | `mmap_optimizer.prompt.rewrite_safety` | **Wrapper** that composes the above three into a single `PromptRewriteSafetyReport` |
+| **prompt-rewrite-safety-report** | `mmap_optimizer.prompt.rewrite_safety` | **Wrapper** that composes the above four into a single `PromptRewriteSafetyReport`; optionally includes JSON repair stage (`apply_json_repair=False` by default) |
 
 ---
 
@@ -27,9 +27,10 @@ scenario pipeline. They are tools for humans / CI pipelines.**
 | Your problem | Utility |
 |---|---|
 | "My human-generated rewrite has duplicate heading numbers" | `numbering_refactor` |
+| "The model output is wrapped in Markdown fences or has trailing prose" | `json_repair` |
 | "Did this proposed rewrite accidentally drop a placeholder?" | `immutable_payload` |
 | "I need a structured audit trail for a review meeting / CI" | `audit_checklist` |
-| "I want one report combining the three" | `rewrite_safety` (composes them) |
+| "I want one report combining the four" | `rewrite_safety` (composes them; `apply_json_repair=False` by default) |
 
 ---
 

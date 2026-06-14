@@ -217,20 +217,81 @@ PATCH_SEMANTIC_MERGE_TEMPLATE = """# Role
 # Patches
 {patches_json}
 
+# Three-Dimensional Merge Framework
+Use the following three-dimension framework to decide which patches to keep,
+merge, or drop. Operate dimension-by-dimension; do not skip to final
+reduction without first grouping and deduping.
+
+Dimension 1 — Structure Isolation: Group candidate patches by target section
+or equivalent section identifier. Only compare or merge patches that affect
+the same logical area. Do not merge patches across unrelated sections. Within
+each group, deduplicate and resolve conflicts first. Across groups, preserve
+independent patches unless there is a clear cross-section conflict.
+
+Dimension 2 — Logic Deduplication: When multiple patches within the same
+group express the same intent, keep the clearest and most specific version,
+or merge wording into one patch if the current schema supports it. Recurring
+patch intent across multiple candidates is a soft priority signal, not a
+hard deletion rule — use it to prefer among equivalent fixes, but do not
+discard unique valid patches solely because they are rare.
+
+Dimension 3 — Technical Constraints: Preserve JSON schema, supported
+operations, patch count validity, locator applicability, and line-level
+non-overlap. Use only operations supported by the current patch schema.
+Do not invent new operation names, new fields, or new patch object shapes
+during merge.
+
+# Group-by-Section Discipline
+- First group candidate patches by target section or equivalent section
+  identifier.
+- Within each group, deduplicate and resolve conflicts.
+- Across groups, preserve independent patches unless there is a clear
+  cross-section conflict.
+
+# Unique Valid Patch Preservation
+If a patch is the only valid patch addressing a distinct failure pattern and
+it does not conflict with other patches, preserve it even if no other patch
+suggests the same change. Avoid popularity bias: do not drop a valid unique
+patch only because a different pattern appears more often in the candidate
+list.
+
+# Conflict Resolution
+- When two patches conflict, prefer the one with clearer evidence, narrower
+  scope, better alignment with the failure reason, and fewer side effects.
+- Line-level / locator non-overlap: do not emit merged patches that require
+  overlapping edits to the same exact text span unless they have been
+  consolidated into one valid patch.
+
+# Operation Priority
+append_to_section > insert_after/insert_before > replace_section > add_after_section > replace_in_section > delete_section。
+
+# Migration Note
+This template has been enriched with the three-dimension merge framework and
+additional safeguards inherited from the legacy PATCH_MERGE_PROMPT.
+- The current patch JSON schema, placeholders, and operation list remain unchanged.
+- No new patch operations or required fields were introduced.
+- Popularity bias is treated as a soft signal only, not a hard deletion rule.
+- No fixed compression ratio is enforced; prefer compact results but do not
+  force a target ratio.
+- The three-dimension framework and group-by-section discipline are adapted
+  from PATCH_MERGE_PROMPT; the rest of the template follows the previous
+  version's style.
+
 # Merge Strategy
 - Be Specific：保留可执行触发条件，不把具体规则泛化成空话。
 - Match Specificity：多次出现的同类错误可抽象成通用规则；孤例保持边界限定。
 - Preserve What Works：不得删除已证明有效且无冲突的唯一 patch。
 - Improve Conciseness：同 section 同意图可合并；不同意图不得硬合并。
+- Prefer a compact merged patch list, but do not force a fixed compression
+  ratio. Preserve all non-redundant, non-conflicting, valid patches.
 
 # Conflict Checks
 - 检查 patch 是否与 Output Format 冲突。
 - 检查 patch 是否触碰 frozen schema。
 - 检查 patch 是否绕过安全约束、self-check 或不确定性策略。
 - 保留唯一非冲突边界 patch；除非有更强理由，不删除孤立 patch。
-
-# Operation Priority
-append_to_section > insert_after/insert_before > replace_section > add_after_section > replace_in_section > delete_section。
+- Do not merge unrelated section-local patches into a broad global rewrite.
+  Merging must preserve original intent and target locality.
 
 # Output Contract
 仅输出 JSON 数组。每个元素必须是 patch 对象；失败时返回原 patch 数组作为 fallback。

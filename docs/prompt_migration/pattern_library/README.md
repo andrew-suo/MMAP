@@ -22,7 +22,7 @@ matrix. The current release ships patterns classified as **Low**,
 | # | Pattern name | Source legacy prompts | Risk | Status | Default enabled | Explicit utility |
 |---|---|---|---|---|---|---|
 | 1 | `numbering-only-refactor` | `PROMPT_REFACTOR_PROMPT`, `PROMPT_REFACTOR_EVAL_PROMPT` | **Low** | `shipped` | **false** | `mmap_optimizer.prompt.numbering_refactor` |
-| 2 | `json-repair-position-valid` | `JSON_FIX_PROMPT`, `PATCH_TRANSLATION_PROMPT` (output clause), `PATCH_TRANSLATION_RETRY_PROMPT` | **Low** | `shipped` | **false** | *(planned)* |
+| 2 | `json-repair-position-valid` | `JSON_FIX_PROMPT`, `PATCH_TRANSLATION_PROMPT` (output clause), `PATCH_TRANSLATION_RETRY_PROMPT` | **Low** | `shipped` | **false** | `mmap_optimizer.prompt.json_repair` |
 | 3 | `immutable-payload` | `PATCH_TRANSLATION_PROMPT`, `PATCH_TRANSLATION_RETRY_PROMPT`, `PATCH_TEXT_MATCH_PROMPT` | **Medium-low** | `shipped` | **false** | `mmap_optimizer.prompt.immutable_payload` |
 | 4 | `incremental-fusion` | `PROMPT_REPLACE_SECTION_TEMPLATE`, `PATCH_GENERATION_PROMPT`, `PATCH_ROOT_MERGE_PROMPT` | **Medium** | `shipped` | **false** | *(planned)* |
 | 5 | `compression-reverse-recovery` | `CONSOLIDATION_PROMPT`, `CONSOLIDATION_EVAL_PROMPT`, `LLM_PRUNE_PROMPT`, `LLM_PRUNE_VALIDATION_PROMPT` | **Medium** | `shipped` | **false** | *(planned)* |
@@ -63,6 +63,7 @@ Currently-shipped explicit utilities:
 | Pattern | Module | Invocation |
 |---|---|---|
 | `numbering-only-refactor` | `mmap_optimizer.prompt.numbering_refactor` | `refactor_prompt_numbering_only(text) -> str`, `detect_numbering_issues(text) -> list[NumberingIssue]` |
+| `json-repair-position-valid` | `mmap_optimizer.prompt.json_repair` | `repair_json_output(text) -> JsonRepairResult`, `parse_json_strict(text) -> Any`, `strip_json_code_fence(text) -> str`, `extract_position_valid_json_candidate(text) -> str`, `ensure_position_valid_json(text) -> str` |
 | `immutable-payload` | `mmap_optimizer.prompt.immutable_payload` | `validate_immutable_payload(original, rewritten) -> ImmutablePayloadValidationResult`, `stable_payload_hash(text) -> str`, `extract_placeholders(text) -> tuple[str, ...]` |
 | `audit-checklist` | `mmap_optimizer.prompt.audit_checklist` | `build_audit_checklist_report(*, target_id, items, metadata) -> AuditChecklistReport`, `validate_audit_checklist_report(report) -> tuple[str, ...]`, `render_audit_checklist_summary(report) -> str`, `audit_checklist_to_json(report) -> str`, `audit_checklist_from_dict(data) -> AuditChecklistReport` |
 

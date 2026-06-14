@@ -60,6 +60,9 @@ from mmap_optimizer.prompt.numbering_refactor import (
 from mmap_optimizer.prompt.rewrite_safety import (
     build_prompt_rewrite_safety_report,
 )
+from mmap_optimizer.prompt.structured_output_schema import (
+    validate_json_text_against_schema,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +75,13 @@ SUPPORTED_UTILITIES: frozenset[str] = frozenset({
     "immutable_payload",
     "audit_checklist",
     "rewrite_safety",
+    "structured_schema",
+})
+
+STRUCTURED_SCHEMA_INPUTS: frozenset[str] = frozenset({
+    "rewritten",
+    "original",
+    "json_repair",
 })
 
 
@@ -95,6 +105,8 @@ class PromptUtilityRunConfig:
     report_only: bool = True
     protected_placeholders: tuple[str, ...] = ()
     metadata: Mapping[str, Any] | None = None
+    structured_schema: Mapping[str, Any] | None = None
+    structured_schema_input: str = "rewritten"
 
     def __post_init__(self) -> None:
         # Ensure utilities is a tuple of strings
@@ -106,6 +118,11 @@ class PromptUtilityRunConfig:
             raise TypeError(
                 "utilities must be tuple or list, got %s"
                 % type(self.utilities).__name__
+            )
+        if not isinstance(self.structured_schema_input, str):
+            raise TypeError(
+                "structured_schema_input must be str, got %s"
+                % type(self.structured_schema_input).__name__
             )
 
 
@@ -157,6 +174,7 @@ def validate_prompt_utility_run_config(
 
     Returns an empty tuple if the config is valid.
     Unknown utility names cause validation failure.
+    Bad ``structured_schema_input`` values cause validation failure.
     """
     if not isinstance(config, PromptUtilityRunConfig):
         return ("config must be PromptUtilityRunConfig",)
@@ -169,6 +187,34 @@ def validate_prompt_utility_run_config(
         seen.add(name)
         if name not in SUPPORTED_UTILITIES:
             issues.append("unknown utility: %s" % name)
+        if name == "structured_schema":
+            if not isinstance(config.structured_schema, Mapping):
+                issues.append(
+                    "structured_schema: missing or non-mapping schema "
+                    "(got %s)" % type(config.structured_schema).__name__
+                )
+
+    if (
+        isinstance(config.structured_schema_input, str)
+        and config.structured_schema_input not in STRUCTURED_SCHEMA_INPUTS
+    ):
+        issues.append(
+            "invalid structured_schema_input: %r (expected one of: %s)"
+            % (
+                config.structured_schema_input,
+                ", ".join(sorted(STRUCTURED_SCHEMA_INPUTS)),
+            )
+        )
+
+    if (
+        config.structured_schema_input == "json_repair"
+        and "structured_schema" in config.utilities
+        and "json_repair" not in config.utilities
+    ):
+        issues.append(
+            "structured_schema: json_repair input requested but "
+            "json_repair utility is not in utilities list"
+        )
 
     return tuple(issues)
 
@@ -392,6 +438,59 @@ def run_prompt_utilities(
                 if ac_report.overall_status == "fail":
                     ok = False
                     issues.append("audit_checklist: overall_status=fail")
+
+            elif utility_name == "structured_schema":
+                schema = config.structured_schema
+                input_source = config.structured_schema_input
+
+                text_to_validate: str | None = None
+                if input_source == "rewritten":
+                    text_to_validate = rewritten
+                elif input_source == "original":
+                    text_to_validate = original
+                elif input_source == "json_repair":
+                    jr_report = reports.get("json_repair")
+                    if jr_report is None:
+                        _jr_inline = repair_json_output(rewritten)
+                        jr_report = _jr_inline.to_dict()
+                    if jr_report and jr_report.get("ok"):
+                        text_to_validate = jr_report.get("repaired_text")
+                    else:
+                        reports["structured_schema"] = {
+                            "ok": False,
+                            "issues": [
+                                {
+                                    "issue_type": "upstream_failure",
+                                    "path": "$",
+                                    "detail": "json_repair did not produce valid repaired text",
+                                }
+                            ],
+                            "checked_paths": [],
+                            "schema_hash": "",
+                            "value_hash": "",
+                            "input": "json_repair",
+                        }
+                        ok = False
+                        issues.append(
+                            "structured_schema: json_repair did not produce "
+                            "valid repaired text"
+                        )
+                        continue
+
+                if text_to_validate is not None:
+                    ss_result = validate_json_text_against_schema(
+                        text_to_validate,
+                        schema,
+                    )
+                    ss_report = ss_result.to_dict()
+                    ss_report["input"] = input_source
+                    reports["structured_schema"] = ss_report
+                    if not ss_result.ok:
+                        ok = False
+                        issues.append(
+                            "structured_schema: ok=False; %d issue(s)"
+                            % len(ss_result.issues)
+                        )
 
         except Exception as exc:
             ok = False

@@ -169,7 +169,11 @@ class TestConfigValidation:
     def test_validate_all_supported_ok(self) -> None:
         all_utilities = tuple(sorted(SUPPORTED_UTILITIES))
         issues = validate_prompt_utility_run_config(
-            PromptUtilityRunConfig(enabled=True, utilities=all_utilities)
+            PromptUtilityRunConfig(
+                enabled=True,
+                utilities=all_utilities,
+                structured_schema={"type": "object"},
+            )
         )
         assert issues == ()
 
@@ -574,6 +578,345 @@ class TestFailureSemantics:
         )
         assert result.ok is True
         assert result.reports == {}
+
+
+# ---------------------------------------------------------------------------
+# Structured schema utility tests
+# ---------------------------------------------------------------------------
+
+_SCHEMA = {
+    "type": "object",
+    "required": ["invoice_id", "amount", "currency"],
+    "properties": {
+        "invoice_id": {"type": "string"},
+        "amount": {"type": "number"},
+        "currency": {"type": "string"},
+    },
+    "additionalProperties": False,
+}
+
+
+class TestStructuredSchemaUtility:
+    # ── Config / default tests ──────────────────────────────────────────
+    def test_default_config_still_disabled(self) -> None:
+        config = PromptUtilityRunConfig()
+        assert config.enabled is False
+        assert config.structured_schema is None
+        assert config.structured_schema_input == "rewritten"
+
+    def test_default_reports_still_empty(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="a",
+            rewritten="b",
+            config=PromptUtilityRunConfig(),
+        )
+        assert result.ok is True
+        assert result.enabled is False
+        assert result.reports == {}
+
+    def test_structured_schema_not_required_unless_requested(self) -> None:
+        issues = validate_prompt_utility_run_config(
+            PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("json_repair",),
+                structured_schema=None,
+            )
+        )
+        assert issues == ()
+
+    def test_utility_list_includes_structured_schema(self) -> None:
+        assert "structured_schema" in SUPPORTED_UTILITIES
+        assert "rewrite_safety" in SUPPORTED_UTILITIES
+        assert "json_repair" in SUPPORTED_UTILITIES
+
+    def test_unknown_utility_behavior_unchanged(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="a",
+            rewritten="b",
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("structured_schema", "nonsense"),
+                structured_schema=_SCHEMA,
+            ),
+        )
+        assert result.ok is False
+        assert any("unknown utility" in i for i in result.issues)
+
+    # ── Success tests ───────────────────────────────────────────────────
+    def test_validate_rewritten_json_successfully(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="orig",
+            rewritten='{"invoice_id": "INV-1", "amount": 19.99, "currency": "USD"}',
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("structured_schema",),
+                structured_schema=_SCHEMA,
+            ),
+        )
+        assert result.ok is True
+        assert "structured_schema" in result.reports
+        assert result.reports["structured_schema"]["ok"] is True
+        assert result.reports["structured_schema"]["input"] == "rewritten"
+
+    def test_validate_original_json_successfully(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original='{"invoice_id": "INV-1", "amount": 1, "currency": "USD"}',
+            rewritten="irrelevant text",
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("structured_schema",),
+                structured_schema=_SCHEMA,
+                structured_schema_input="original",
+            ),
+        )
+        assert result.ok is True
+        assert result.reports["structured_schema"]["input"] == "original"
+
+    def test_validate_json_repair_output_successfully(self) -> None:
+        fenced = (
+            "```json\n"
+            '{"invoice_id": "INV-1", "amount": 1, "currency": "USD"}\n'
+            "```"
+        )
+        result = run_prompt_utilities(
+            target_id="t",
+            original="orig",
+            rewritten=fenced,
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("json_repair", "structured_schema"),
+                structured_schema=_SCHEMA,
+                structured_schema_input="json_repair",
+            ),
+        )
+        assert result.ok is True
+        assert "json_repair" in result.reports
+        assert "structured_schema" in result.reports
+        assert result.reports["structured_schema"]["input"] == "json_repair"
+
+    def test_structured_schema_report_is_json_serializable(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="orig",
+            rewritten='{"invoice_id": "INV-1", "amount": 1, "currency": "USD"}',
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("structured_schema",),
+                structured_schema=_SCHEMA,
+            ),
+        )
+        dumped = prompt_utility_run_result_to_json(result)
+        reloaded = json.loads(dumped)
+        assert reloaded["reports"]["structured_schema"]["ok"] is True
+
+    def test_result_ok_true_when_schema_validation_passes(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="orig",
+            rewritten='{"invoice_id": "INV-1", "amount": 1, "currency": "USD"}',
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("structured_schema",),
+                structured_schema=_SCHEMA,
+            ),
+        )
+        assert result.ok is True
+
+    # ── Failure tests ───────────────────────────────────────────────────
+    def test_missing_schema_ok_false(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="a",
+            rewritten="b",
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("structured_schema",),
+                structured_schema=None,
+            ),
+        )
+        assert result.ok is False
+        assert any(
+            "structured_schema" in i and "missing" in i.lower()
+            for i in result.issues
+        )
+
+    def test_invalid_input_value_ok_false(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="a",
+            rewritten="b",
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("structured_schema",),
+                structured_schema=_SCHEMA,
+                structured_schema_input="bad-value",
+            ),
+        )
+        assert result.ok is False
+        assert any(
+            "invalid structured_schema_input" in i.lower()
+            for i in result.issues
+        )
+
+    def test_invalid_json_text_ok_false(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="orig",
+            rewritten="not json at all",
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("structured_schema",),
+                structured_schema=_SCHEMA,
+            ),
+        )
+        assert result.ok is False
+        assert any("structured_schema" in i for i in result.issues)
+
+    def test_schema_validation_failure_ok_false(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="orig",
+            rewritten='{"invoice_id": "INV-1"}',  # missing required
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("structured_schema",),
+                structured_schema=_SCHEMA,
+            ),
+        )
+        assert result.ok is False
+        assert result.reports["structured_schema"]["ok"] is False
+
+    def test_json_repair_not_listed_ok_false(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="orig",
+            rewritten='{"invoice_id": "INV-1", "amount": 1, "currency": "USD"}',
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("structured_schema",),
+                structured_schema=_SCHEMA,
+                structured_schema_input="json_repair",
+            ),
+        )
+        assert result.ok is False
+        assert any(
+            "json_repair input requested" in i.lower() for i in result.issues
+        )
+
+    def test_json_repair_failed_ok_false(self) -> None:
+        # Force json_repair to fail by giving something very broken
+        result = run_prompt_utilities(
+            target_id="t",
+            original="orig",
+            rewritten='{ "truncated": ',
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("json_repair", "structured_schema"),
+                structured_schema=_SCHEMA,
+                structured_schema_input="json_repair",
+            ),
+        )
+        assert result.ok is False
+        assert any(
+            "json_repair did not produce valid repaired text" in i
+            for i in result.issues
+        )
+
+    def test_invalid_schema_contract_ok_false(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="orig",
+            rewritten='{"invoice_id": "INV-1"}',
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("structured_schema",),
+                structured_schema={"type": "not_a_real_type"},
+            ),
+        )
+        assert result.ok is False
+        assert any("structured_schema" in i for i in result.issues)
+
+    # ── Combined utility tests ──────────────────────────────────────────
+    def test_json_repair_plus_structured_schema_ordered(self) -> None:
+        fenced = (
+            "```json\n"
+            '{"invoice_id": "INV-1", "amount": 1, "currency": "USD"}\n'
+            "```"
+        )
+        result = run_prompt_utilities(
+            target_id="t",
+            original="orig",
+            rewritten=fenced,
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("json_repair", "structured_schema"),
+                structured_schema=_SCHEMA,
+                structured_schema_input="json_repair",
+            ),
+        )
+        assert result.ok is True
+        assert "json_repair" in result.reports
+        assert "structured_schema" in result.reports
+
+    def test_rewrite_safety_plus_structured_schema_independent(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="## A\n1. {x}\n",
+            rewritten='{"invoice_id": "INV-1", "amount": 1, "currency": "USD"}',
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("rewrite_safety", "structured_schema"),
+                structured_schema=_SCHEMA,
+            ),
+        )
+        assert "rewrite_safety" in result.reports
+        assert "structured_schema" in result.reports
+
+    def test_numbering_refactor_plus_structured_schema(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="a",
+            rewritten='{"invoice_id": "INV-1", "amount": 1, "currency": "USD"}',
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("numbering_refactor", "structured_schema"),
+                structured_schema=_SCHEMA,
+            ),
+        )
+        assert "numbering_refactor" in result.reports
+        assert "structured_schema" in result.reports
+
+    def test_immutable_payload_plus_structured_schema(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="orig text",
+            rewritten='{"invoice_id": "INV-1", "amount": 1, "currency": "USD"}',
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("immutable_payload", "structured_schema"),
+                structured_schema=_SCHEMA,
+            ),
+        )
+        assert "immutable_payload" in result.reports
+        assert "structured_schema" in result.reports
+
+    def test_audit_checklist_plus_structured_schema(self) -> None:
+        result = run_prompt_utilities(
+            target_id="t",
+            original="a",
+            rewritten='{"invoice_id": "INV-1", "amount": 1, "currency": "USD"}',
+            config=PromptUtilityRunConfig(
+                enabled=True,
+                utilities=("audit_checklist", "structured_schema"),
+                structured_schema=_SCHEMA,
+            ),
+        )
+        assert "audit_checklist" in result.reports
+        assert "structured_schema" in result.reports
 
 
 # ---------------------------------------------------------------------------

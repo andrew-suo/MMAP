@@ -22,7 +22,7 @@ optimizer-loop hook.
 
 ## Relation to Explicit Utilities
 
-This module composes five previously-shipped explicit utilities:
+This module composes pre-existing explicit utilities, including the structured output schema checker added in PR #60:
 
 | Utility name | Module | Purpose |
 |---|---|---|
@@ -31,6 +31,7 @@ This module composes five previously-shipped explicit utilities:
 | `numbering_refactor` | `mmap_optimizer.prompt.numbering_refactor` | Detect and normalize heading/list/step numbering |
 | `immutable_payload` | `mmap_optimizer.prompt.immutable_payload` | Validate placeholder/field structural integrity |
 | `audit_checklist` | `mmap_optimizer.prompt.audit_checklist` | Structured audit checklist report |
+| `structured_schema` | `mmap_optimizer.prompt.structured_output_schema` | Validate JSON-like text against a lightweight schema contract |
 
 **Default enabled:** `false`. Nothing in the optimizer imports this module.
 
@@ -116,6 +117,7 @@ json_str = prompt_utility_run_result_to_json(result, sort_keys=True)
 | `numbering_refactor` | Standalone numbering detection and normalization on `rewritten` |
 | `immutable_payload` | Standalone immutable payload validation of `original` vs `rewritten` |
 | `audit_checklist` | Minimal runner-level audit (runner enabled, report_only, known utilities) |
+| `structured_schema` | Schema contract validation against `rewritten`, `original`, or `json_repair` output. Requires `structured_schema` mapping in config. |
 
 **Unknown utility names** cause `ok=False` and are listed in `issues`.
 
@@ -127,7 +129,7 @@ json_str = prompt_utility_run_result_to_json(result, sort_keys=True)
 
 | Symbol | Purpose |
 |---|---|
-| `PromptUtilityRunConfig` | Frozen dataclass — `enabled`, `utilities`, `apply_json_repair`, `apply_numbering_refactor`, `report_only`, `protected_placeholders`, `metadata` |
+| `PromptUtilityRunConfig` | Frozen dataclass — `enabled`, `utilities`, `apply_json_repair`, `apply_numbering_refactor`, `report_only`, `protected_placeholders`, `metadata`, `structured_schema`, `structured_schema_input` |
 | `PromptUtilityRunResult` | Frozen dataclass — `target_id`, `enabled`, `report_only`, `utilities`, `ok`, `reports`, `issues`, `metadata` |
 | `run_prompt_utilities(*, target_id, original, rewritten, config)` | Primary entry point. Returns `PromptUtilityRunResult` |
 | `validate_prompt_utility_run_config(config)` | Validate config, return tuple of issue strings |
@@ -147,6 +149,8 @@ class PromptUtilityRunConfig:
     report_only: bool = True        # No writes, no applies
     protected_placeholders: tuple[str, ...] = ()  # Forwarded to utilities
     metadata: Mapping[str, Any] | None = None  # Caller-supplied context
+    structured_schema: Mapping[str, Any] | None = None  # Schema contract
+    structured_schema_input: str = "rewritten"  # "rewritten" | "original" | "json_repair"
 ```
 
 ### PromptUtilityRunResult schema
@@ -234,6 +238,71 @@ result = run_prompt_utilities(
 # result.reports["immutable_payload"]
 ```
 
+### 5. Validate rewritten JSON against a schema
+
+```python
+schema = {
+    "type": "object",
+    "required": ["invoice_id", "amount", "currency"],
+    "properties": {
+        "invoice_id": {"type": "string"},
+        "amount": {"type": "number"},
+        "currency": {"type": "string"},
+    },
+    "additionalProperties": False,
+}
+config = PromptUtilityRunConfig(
+    enabled=True,
+    utilities=("structured_schema",),
+    structured_schema=schema,
+    structured_schema_input="rewritten",
+)
+result = run_prompt_utilities(
+    target_id="invoice-json-check",
+    original="orig",
+    rewritten='{"invoice_id": "INV-1", "amount": 19.99, "currency": "USD"}',
+    config=config,
+)
+# result.reports["structured_schema"]["ok"] is True if the JSON conforms
+```
+
+### 6. Combine json_repair + structured_schema
+
+```python
+config = PromptUtilityRunConfig(
+    enabled=True,
+    utilities=("json_repair", "structured_schema"),
+    structured_schema=schema,
+    structured_schema_input="json_repair",
+)
+result = run_prompt_utilities(
+    target_id="invoice-json-check",
+    original="orig",
+    rewritten='```json\n{"invoice_id": "INV-1", "amount": 1, "currency": "USD"}\n```',
+    config=config,
+)
+# result.reports["json_repair"] — JSON repair stage result
+# result.reports["structured_schema"] — schema validation against repaired_text
+```
+
+### 7. Combine rewrite_safety + structured_schema
+
+```python
+config = PromptUtilityRunConfig(
+    enabled=True,
+    utilities=("rewrite_safety", "structured_schema"),
+    structured_schema=schema,
+)
+result = run_prompt_utilities(
+    target_id="prompt-v3-to-v4",
+    original=original_text,
+    rewritten=rewritten_text,
+    config=config,
+)
+# result.reports["rewrite_safety"] — the full safety report
+# result.reports["structured_schema"] — schema validation against rewritten
+```
+
 ---
 
 ## `ok` Semantics
@@ -248,6 +317,11 @@ result = run_prompt_utilities(
 | `json_repair` standalone `ok=False` | `ok=False`, issue with issue count |
 | `immutable_payload` `ok=False` | `ok=False`, issue with issue count |
 | `audit_checklist` `overall_status="fail"` | `ok=False` |
+| `structured_schema` requested but schema missing or non-mapping | `ok=False`, issue: `"structured_schema: missing or non-mapping schema (got ...)"` |
+| `structured_schema_input` not in `{rewritten, original, json_repair}` | `ok=False`, issue: `"invalid structured_schema_input: ..."` |
+| `structured_schema_input="json_repair"` but `json_repair` utility not listed | `ok=False`, issue: `"structured_schema: json_repair input requested but json_repair utility is not in utilities list"` |
+| `structured_schema` validation `ok=False` | `ok=False`, issue with issue count |
+| `structured_schema` with an invalid schema contract (e.g. bad `type`) | `ok=False`, invalid-schema issue |
 
 **`enabled=False` never causes `ok=False`** — it returns `ok=True` with a
 warning issue about the runner being disabled.

@@ -15,6 +15,7 @@ scenario pipeline. They are tools for humans / CI pipelines.**
 | Utility | Module | Purpose |
 |---|---|---|
 | **numbering-only-refactor** | `mmap_optimizer.prompt.numbering_refactor` | Repair Markdown heading / list / step numbering (`## 1. / ## 2.`, `1. / 2.`, `Step 1 / Step 2`) |
+| **json-repair-position-valid** | `mmap_optimizer.prompt.json_repair` | Return a position-valid JSON body: strip fences, drop surrounding prose, remove trailing commas |
 | **immutable-payload** | `mmap_optimizer.prompt.immutable_payload` | Validate that a rewrite preserves `{placeholders}`, field names, heading text, and rule text |
 | **audit-checklist** | `mmap_optimizer.prompt.audit_checklist` | Build structured `AuditChecklistReport` with pass/warning/fail semantics and blocker/major/minor severity |
 | **prompt-rewrite-safety-report** | `mmap_optimizer.prompt.rewrite_safety` | **Wrapper** that composes the above three into a single `PromptRewriteSafetyReport` |

@@ -14,7 +14,8 @@ reviewable decision — never automatic.
 
 **Risk policy.** Patterns are added in roughly the order
 `low → medium → high`. See `source_prompt_bundle_analysis.md` for the full
-matrix. The current release only ships patterns classified as **Low** risk.
+matrix. The current release ships patterns classified as **Low** and
+**Medium-low** risk.
 
 ## Index
 
@@ -22,15 +23,19 @@ matrix. The current release only ships patterns classified as **Low** risk.
 |---|---|---|---|---|---|
 | 1 | `numbering-only-refactor` | `PROMPT_REFACTOR_PROMPT`, `PROMPT_REFACTOR_EVAL_PROMPT` | **Low** | `shipped` | **false** |
 | 2 | `json-repair-position-valid` | `JSON_FIX_PROMPT`, `PATCH_TRANSLATION_PROMPT` (output clause), `PATCH_TRANSLATION_RETRY_PROMPT` | **Low** | `shipped` | **false** |
+| 3 | `immutable-payload` | `PATCH_TRANSLATION_PROMPT`, `PATCH_TRANSLATION_RETRY_PROMPT`, `PATCH_TEXT_MATCH_PROMPT` | **Medium-low** | `shipped` | **false** |
+| 4 | `incremental-fusion` | `PROMPT_REPLACE_SECTION_TEMPLATE`, `PATCH_GENERATION_PROMPT`, `PATCH_ROOT_MERGE_PROMPT` | **Medium** | `shipped` | **false** |
 
 ## Recommended next step
 
-Add the following patterns, each in its own PR:
+Pick one narrow next step:
 
-- **Immutable payload** (derived from `PATCH_TRANSLATION_PROMPT`'s payload
-  protection clause) — medium-low risk.
-- **Incremental fusion** (derived from `PROMPT_REPLACE_SECTION_TEMPLATE`) —
-  medium risk, requires a clear "old content + new rules" merge contract.
+- Wire one of the low-risk patterns (e.g., `numbering-only-refactor` or
+  `immutable-payload`) as a **scenario-gated** / explicitly-named utility
+  function (never automatic in the default path).
+- Or add the third batch: `compression reverse-recovery` + `audit checklist`
+  (the remaining capability modules from PR #47 that are still unrepresented
+  in the pattern library).
 
 Do **not** ship the following in the default pipeline until a scenario-gating
 mechanism exists:

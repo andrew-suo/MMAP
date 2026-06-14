@@ -14,8 +14,8 @@ reviewable decision — never automatic.
 
 **Risk policy.** Patterns are added in roughly the order
 `low → medium → high`. See `source_prompt_bundle_analysis.md` for the full
-matrix. The current release ships patterns classified as **Low** and
-**Medium-low** risk.
+matrix. The current release ships patterns classified as **Low**,
+**Medium-low**, and **Medium** risk.
 
 ## Index
 
@@ -25,17 +25,18 @@ matrix. The current release ships patterns classified as **Low** and
 | 2 | `json-repair-position-valid` | `JSON_FIX_PROMPT`, `PATCH_TRANSLATION_PROMPT` (output clause), `PATCH_TRANSLATION_RETRY_PROMPT` | **Low** | `shipped` | **false** |
 | 3 | `immutable-payload` | `PATCH_TRANSLATION_PROMPT`, `PATCH_TRANSLATION_RETRY_PROMPT`, `PATCH_TEXT_MATCH_PROMPT` | **Medium-low** | `shipped` | **false** |
 | 4 | `incremental-fusion` | `PROMPT_REPLACE_SECTION_TEMPLATE`, `PATCH_GENERATION_PROMPT`, `PATCH_ROOT_MERGE_PROMPT` | **Medium** | `shipped` | **false** |
+| 5 | `compression-reverse-recovery` | `CONSOLIDATION_PROMPT`, `CONSOLIDATION_EVAL_PROMPT`, `LLM_PRUNE_PROMPT`, `LLM_PRUNE_VALIDATION_PROMPT` | **Medium** | `shipped` | **false** |
+| 6 | `audit-checklist` | `LLM_PRUNE_VALIDATION_PROMPT`, `PATCH_TRANSLATION_RETRY_PROMPT`, `CONSOLIDATION_PROMPT`, evaluation-family prompts | **Medium-low** | `shipped` | **false** |
 
 ## Recommended next step
 
 Pick one narrow next step:
 
-- Wire one of the low-risk patterns (e.g., `numbering-only-refactor` or
-  `immutable-payload`) as a **scenario-gated** / explicitly-named utility
-  function (never automatic in the default path).
-- Or add the third batch: `compression reverse-recovery` + `audit checklist`
-  (the remaining capability modules from PR #47 that are still unrepresented
-  in the pattern library).
+- Wire one of the lower-risk patterns (e.g., `numbering-only-refactor`,
+  `immutable-payload`, or `audit-checklist`) as a **scenario-gated** /
+  explicitly-named utility function (never automatic in the default path).
+- Or add the fourth batch: `structured-output-schema` + `evaluation-scoring-calibration`
+  (from `PROMPT_STANDARDIZATION_PROMPT` and the evaluation-family prompts).
 
 Do **not** ship the following in the default pipeline until a scenario-gating
 mechanism exists:

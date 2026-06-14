@@ -187,6 +187,74 @@ PATCH_ROOT_AUDIT_TEMPLATE = """# Role
 # Patches
 {patches_json}
 
+# Cross-Section Audit Framework
+Use the following four-dimension audit framework, inherited from the legacy
+PATCH_ROOT_MERGE_PROMPT. The goal is to detect cross-section conflicts before
+patches are applied, not to introduce new patch content.
+
+Audit Dimension 1 — Rules ↔ Output Format consistency:
+Check whether proposed patches change rules, labels, fields, JSON structure,
+or decision vocabulary in a way that conflicts with the Output Format section.
+Common conflicts include: a rule says output one label but Output Format
+defines another label set; a patch adds a JSON field but Output Format does
+not define it; a patch adds an exception but no decision rule references it.
+
+Audit Dimension 2 — Workflow ↔ Rules consistency:
+Check whether proposed patches add or change workflow steps without
+corresponding rule support, or add rules that the workflow never applies.
+Common conflicts include: workflow adds a step whose result is never used;
+rule section adds a constraint but no workflow step enforces it.
+
+Audit Dimension 3 — Redundancy and duplication:
+Detect duplicate or near-duplicate patches across sections. Prefer
+consolidation or wording refinement over deleting the only valid patch for
+a failure mode. If a patch is the only non-conflicting patch addressing a
+distinct failure mode, preserve it. Do not remove unique valid patches merely
+because they are low-frequency or not duplicated elsewhere.
+
+Audit Dimension 4 — Orphan protection:
+Detect patches that introduce concepts, labels, fields, examples, or
+constraints that are not referenced by any related workflow/rule/output
+section. When detected, prefer marking as conflicting or adjusting wording
+to connect the orphan to an existing section; do not delete a valid patch
+solely because its target concept appears orphan.
+
+# Modify-First, Never-Delete-by-Default
+When a conflict is found, prefer a minimal modification that preserves the
+useful part of the patch. Do not delete a patch unless it is truly redundant,
+unsupported, or impossible to reconcile with the prompt contract.
+
+# Audit Discipline
+- Do not create brand-new patches during root audit. Only keep, remove, or
+  minimally adjust patches already present in the input, if the current
+  output contract supports adjustment. Return only audited versions of
+  input patches. Do not invent new patch intents.
+- Use only the current patch schema and supported operations. Do not invent
+  new operation names, fields, decision objects, or patch shapes during
+  root audit.
+- Do not convert several localized patches into a broad global rewrite.
+  Root audit should reduce conflicts while preserving section locality and
+  original patch intent.
+- Output Format changes are high-impact. Any patch that modifies output
+  structure, label vocabulary, required fields, or JSON shape must be
+  checked against all related rules and workflow steps.
+- Only audit against the provided prompt structure, current prompt, and
+  input patches. Do not introduce requirements from outside the provided
+  context.
+
+# Migration Note
+This template has been enriched with the four-dimension cross-section audit
+framework inherited from the legacy PATCH_ROOT_MERGE_PROMPT.
+- The current patch JSON schema, placeholders, and operation list remain
+  unchanged.
+- No new patch operations, required fields, or brand-new patch intents
+  are introduced.
+- Root audit remains an audit layer, not a patch-generation layer: only
+  existing input patches may be kept, adjusted, or removed.
+- The four-dimension audit framework and modify-first discipline are
+  adapted from PATCH_ROOT_MERGE_PROMPT; the rest of the template follows
+  the previous version's style.
+
 # Audit Checks
 - Rules/Constraints 不得与 Output Format 或 frozen schema 冲突。
 - Workflow patch 不得绕过安全约束、自检或不确定性处理。

@@ -19,14 +19,14 @@ matrix. The current release ships patterns classified as **Low**,
 
 ## Index
 
-| # | Pattern name | Source legacy prompts | Risk | Status | Default enabled |
-|---|---|---|---|---|---|
-| 1 | `numbering-only-refactor` | `PROMPT_REFACTOR_PROMPT`, `PROMPT_REFACTOR_EVAL_PROMPT` | **Low** | `shipped` | **false** |
-| 2 | `json-repair-position-valid` | `JSON_FIX_PROMPT`, `PATCH_TRANSLATION_PROMPT` (output clause), `PATCH_TRANSLATION_RETRY_PROMPT` | **Low** | `shipped` | **false** |
-| 3 | `immutable-payload` | `PATCH_TRANSLATION_PROMPT`, `PATCH_TRANSLATION_RETRY_PROMPT`, `PATCH_TEXT_MATCH_PROMPT` | **Medium-low** | `shipped` | **false** |
-| 4 | `incremental-fusion` | `PROMPT_REPLACE_SECTION_TEMPLATE`, `PATCH_GENERATION_PROMPT`, `PATCH_ROOT_MERGE_PROMPT` | **Medium** | `shipped` | **false** |
-| 5 | `compression-reverse-recovery` | `CONSOLIDATION_PROMPT`, `CONSOLIDATION_EVAL_PROMPT`, `LLM_PRUNE_PROMPT`, `LLM_PRUNE_VALIDATION_PROMPT` | **Medium** | `shipped` | **false** |
-| 6 | `audit-checklist` | `LLM_PRUNE_VALIDATION_PROMPT`, `PATCH_TRANSLATION_RETRY_PROMPT`, `CONSOLIDATION_PROMPT`, evaluation-family prompts | **Medium-low** | `shipped` | **false** |
+| # | Pattern name | Source legacy prompts | Risk | Status | Default enabled | Explicit utility |
+|---|---|---|---|---|---|---|
+| 1 | `numbering-only-refactor` | `PROMPT_REFACTOR_PROMPT`, `PROMPT_REFACTOR_EVAL_PROMPT` | **Low** | `shipped` | **false** | `mmap_optimizer.prompt.numbering_refactor` |
+| 2 | `json-repair-position-valid` | `JSON_FIX_PROMPT`, `PATCH_TRANSLATION_PROMPT` (output clause), `PATCH_TRANSLATION_RETRY_PROMPT` | **Low** | `shipped` | **false** | *(planned)* |
+| 3 | `immutable-payload` | `PATCH_TRANSLATION_PROMPT`, `PATCH_TRANSLATION_RETRY_PROMPT`, `PATCH_TEXT_MATCH_PROMPT` | **Medium-low** | `shipped` | **false** | `mmap_optimizer.prompt.immutable_payload` |
+| 4 | `incremental-fusion` | `PROMPT_REPLACE_SECTION_TEMPLATE`, `PATCH_GENERATION_PROMPT`, `PATCH_ROOT_MERGE_PROMPT` | **Medium** | `shipped` | **false** | *(planned)* |
+| 5 | `compression-reverse-recovery` | `CONSOLIDATION_PROMPT`, `CONSOLIDATION_EVAL_PROMPT`, `LLM_PRUNE_PROMPT`, `LLM_PRUNE_VALIDATION_PROMPT` | **Medium** | `shipped` | **false** | *(planned)* |
+| 6 | `audit-checklist` | `LLM_PRUNE_VALIDATION_PROMPT`, `PATCH_TRANSLATION_RETRY_PROMPT`, `CONSOLIDATION_PROMPT`, evaluation-family prompts | **Medium-low** | `shipped` | **false** | *(planned)* |
 
 ## Recommended next step
 
@@ -44,6 +44,26 @@ mechanism exists:
 - 7-section standardization pattern (`PROMPT_STANDARDIZATION_PROMPT`).
 - 3-state evaluation pattern (`EVALUATION_PROMPT` — which replaces the
   current binary eval style).
+
+## Explicit utility modules
+
+Starting from PR #51 and the current PR, selected patterns ship with a
+corresponding **explicit Python utility module** in `mmap_optimizer.prompt.*`
+that callers can invoke manually (never automatically). Every utility:
+
+- is exposed under `mmap_optimizer.prompt.<name>`;
+- ships with a `tests/test_prompt_<name>_utility.py` test file;
+- ships with a `docs/prompt_migration/utilities/<name>_utility.md` doc;
+- ships with **default enabled: false**;
+- has **zero dependency** on `mmap_optimizer.model.*`,
+  `mmap_optimizer.orchestration.*`, or any live prompt path.
+
+Currently-shipped explicit utilities:
+
+| Pattern | Module | Invocation |
+|---|---|---|
+| `numbering-only-refactor` | `mmap_optimizer.prompt.numbering_refactor` | `refactor_prompt_numbering_only(text) -> str`, `detect_numbering_issues(text) -> list[NumberingIssue]` |
+| `immutable-payload` | `mmap_optimizer.prompt.immutable_payload` | `validate_immutable_payload(original, rewritten) -> ImmutablePayloadValidationResult`, `stable_payload_hash(text) -> str`, `extract_placeholders(text) -> tuple[str, ...]` |
 
 ## Guardrails (apply to every pattern in this library)
 

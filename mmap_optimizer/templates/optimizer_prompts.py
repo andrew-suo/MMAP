@@ -124,12 +124,49 @@ PATCH_GENERATION_TEMPLATE = """# Role
 {evaluation_summary}
 
 # Strategy System
-- Be Specific：针对具体错误模式写规则，避免“更仔细”等空泛话术。
+## Core Principles
+- Be Specific：针对具体错误模式写规则，避免"更仔细"等空泛话术。
 - Match Specificity to Failure Frequency：偶发错误追加轻量规则；高频错误使用 checklist / DO NOT 规则。
 - Preserve What Works：成功样本依赖的 section 不得改坏；没有错误时输出空数组。
 - Improve Conciseness：优先合并冗余规则，不做大段重写。
 
+## Legacy PATCH_GENERATION_PROMPT Four-Strategy Framework
+Use the following strategy framework inherited from PATCH_GENERATION_PROMPT.
+For each observed failure, pick the most specific applicable strategy and
+formulate one patch per strategy — avoid restating the same fix multiple times.
+
+Strategy 1 — Add missing constraint: Use when the failure is caused by an
+absent rule, missing condition, missing exception, or missing output
+requirement. Formulate a concise addition to the most relevant section.
+
+Strategy 2 — Refine ambiguous instruction: Use when the current prompt
+contains a relevant rule but it is vague, overly broad, conflicting with
+other sections, or easy to misinterpret. Prefer tightening existing wording
+over adding new rules.
+
+Strategy 3 — Add localized example or counterexample: Use when the rule
+exists but the model needs a concrete example, boundary case, or
+contrastive example to apply it correctly. Keep examples tight and
+illustrative — do not invent evidence outside the provided failure context.
+
+Strategy 4 — Tighten output format / decision contract: Use when the failure
+is caused by invalid JSON, wrong label vocabulary, a missing required field,
+malformed structure, or inconsistent final answer format. Ensure every
+patch here only affects the output formatting language, not the upstream logic.
+
+## Patch Scope and Localization
+- Generate the smallest patch that fixes the observed failure.
+- Prefer editing the most relevant section rather than rewriting broad
+  unrelated sections.
+- Each patch should address one concrete failure; do not bundle multiple
+  independent fixes into a single patch.
+- For reasoning, cite the section name or label so downstream audit can
+  trace the patch back to its target.
+
 # Operation Priority
+Use only operations supported by the current patch schema. Prefer the least
+invasive supported operation. Do not invent operation names.
+
 1. `append_to_section`：最安全，新增规则首选。
 2. `insert_after` / `insert_before`：需要靠近上下文时使用。
 3. `replace_section`：仅当整段结构已失效且能保留全部核心逻辑时使用。
@@ -142,6 +179,27 @@ PATCH_GENERATION_TEMPLATE = """# Role
 - 不得添加原 prompt 中没有依据的新业务规则。
 - 不得绕过 Output Format、安全约束或自检流程。
 - 唯一 patch 保护：若 patch 是唯一针对某错误模式且无冲突，必须保留。
+- Do not propose edits to protected or frozen sections unless the current
+  patch schema explicitly supports such edits. If the relevant text is
+  protected, explain the limitation in the patch reasoning if such a field
+  exists; otherwise return no patch for that case.
+- Only generate patches grounded in the provided failure reason, result
+  content, ground truth, and current prompt structure. Do not infer missing
+  requirements from outside the provided context.
+- If the evaluation result indicates the current prompt already handles this
+  case correctly, return an empty patch list. Do not invent improvements
+  for passing cases.
+- Use `cited_sections` to record the section names your patch targets.
+  This field is already supported in the current output schema.
+
+# Migration Note
+This template has been enriched with the four-strategy framework and
+additional safety guidelines inherited from the legacy PATCH_GENERATION_PROMPT.
+- The current patch JSON schema, placeholders, and operation list remain unchanged.
+- No new patch operations or new required fields were introduced.
+- The four strategy headings and patch localization rules are adapted from
+  PATCH_GENERATION_PROMPT; the rest of the template is from the previous
+  version.
 
 # Output Contract
 返回 JSON 对象：

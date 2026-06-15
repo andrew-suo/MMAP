@@ -87,6 +87,52 @@ PATCH_TRANSLATION_RETRY_TEMPLATE = """# Role
 
 JSON_FIX_TEMPLATE = """# Role
 你是 JSON 数据清洗与结构化修复专家。
+本模板继承自 legacy JSON_FIX_PROMPT 规则，只做语法修复，不执行业务推理、不生成新内容、不改语义。
+
+# Legacy JSON_FIX_PROMPT Repair Framework
+
+## 1. Syntax-Only Repair
+Repair only JSON syntax, escaping, brackets, commas, quotes, and structural
+validity. Do not change the semantic meaning of the data.
+
+## 2. Preserve Payload Semantics
+Preserve all original keys, values, array order, object nesting, text
+content, numbers, booleans, and nulls unless a minimal syntax repair is
+required to make the JSON valid.
+
+## 3. No Schema Invention
+Do not add new fields, remove fields, rename fields, or infer missing
+business values. If a value is missing or ambiguous, preserve the closest
+original representation rather than inventing content.
+
+## 4. Output JSON Only
+Return only the repaired JSON. Do not output explanations, Markdown, code
+fences, comments, labels, or commentary.
+
+## 5. Minimal Edit Principle
+Make the smallest possible edit that converts the malformed input into
+valid JSON.
+
+## 6. Type Preservation
+Preserve value types whenever possible. Do not convert strings to numbers,
+numbers to strings, booleans to strings, arrays to objects, or objects to
+arrays unless the malformed JSON makes the original type unambiguously
+recoverable.
+
+## 7. Escaping and Quote Repair
+Fix common JSON escaping issues, including unescaped quotes, invalid
+backslashes, trailing commas, missing commas, missing closing brackets,
+and mismatched braces.
+
+## 8. No Hallucinated Fallback
+If the JSON cannot be reliably repaired, return the most structurally
+faithful valid JSON representation possible without inventing new semantic
+content.
+
+## 9. Contract-Aware Repair
+Use the expected output contract only to validate shape and required
+top-level structure. Do not use it to invent values that were not present
+in the malformed JSON.
 
 # Raw Text
 {raw_text}
@@ -96,6 +142,16 @@ JSON_FIX_TEMPLATE = """# Role
 - 只修复 JSON 语法：括号、逗号、引号、转义、截断闭合。
 - 不得发明、删除、重解释核心 key/value。
 - 若无法可靠修复，输出最小合法 fallback：对象用 `{}`，数组用 `[]`。
+
+# Migration Note
+This template has been enriched with the syntax-only JSON repair framework
+inherited from the legacy JSON_FIX_PROMPT.
+- The current output contract, placeholders, and contract type remain unchanged.
+- No new placeholders are introduced.
+- No new patch operations, required fields, or brand-new patch intents are introduced.
+- Output remains valid JSON only — never Markdown, never explanations, never commentary.
+- JSON fix remains a pure syntax repair layer only — not a business logic layer,
+  not a content generator, not a patch template.
 
 # Output Contract
 仅输出合法 JSON；第一字符必须是 `{` 或 `[`；不得包含解释。

@@ -90,7 +90,16 @@ class OpenAICompatibleClient:
 
     def _content_to_parts(self, content: Any) -> list[dict[str, Any]]:
         if isinstance(content, list):
-            return [dict(part) if isinstance(part, dict) else {"type": "text", "text": str(part)} for part in content]
+            parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") in ("text", "image_url"):
+                        parts.append(dict(part))
+                    else:
+                        parts.append({"type": "text", "text": json.dumps(part, ensure_ascii=False)})
+                else:
+                    parts.append({"type": "text", "text": str(part)})
+            return parts
         if isinstance(content, str):
             return [{"type": "text", "text": content}] if content else []
         return [{"type": "text", "text": json.dumps(content, ensure_ascii=False)}]

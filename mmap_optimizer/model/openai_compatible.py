@@ -42,11 +42,15 @@ class OpenAICompatibleClient:
 
     def _build_payload(self, *, messages: list[dict[str, Any]], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> dict[str, Any]:
         cfg = model_config or {}
+        chat_template_kwargs = cfg.get("chat_template_kwargs")
+        if chat_template_kwargs is None:
+            chat_template_kwargs = {"enable_thinking": False}
         payload: dict[str, Any] = {
             "model": cfg.get("model") or self.model,
             "messages": messages,
             "temperature": cfg.get("temperature", 0),
             "max_tokens": cfg.get("max_tokens", 2048),
+            "chat_template_kwargs": chat_template_kwargs,
         }
         if response_format is not None:
             payload["response_format"] = response_format

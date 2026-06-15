@@ -21,6 +21,7 @@ class ModelConfig:
     temperature: float = 0.0
     max_tokens: int = 2048
     verify_ssl: bool = True
+    chat_template_kwargs: dict[str, Any] | None = None
 
 
 @dataclass
@@ -185,6 +186,7 @@ def model_config_from_mapping(data: dict[str, Any] | None) -> ModelConfig:
         temperature=float(data.get("temperature", 0.0)),
         max_tokens=int(data.get("max_tokens", 2048)),
         verify_ssl=_bool_value(data.get("verify_ssl", data.get("ssl_verify", True))),
+        chat_template_kwargs=data.get("chat_template_kwargs"),
     )
 
 
@@ -194,6 +196,8 @@ def model_config_to_request_dict(config: ModelConfig) -> dict[str, Any]:
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
     }
+    if config.chat_template_kwargs is not None:
+        request["chat_template_kwargs"] = config.chat_template_kwargs
     return request
 
 

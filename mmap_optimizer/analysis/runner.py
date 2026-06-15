@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,11 +65,14 @@ class AnalysisRunner:
                 {"role": "system", "content": rendered.text},
                 {
                     "role": "user",
-                    "content": {
-                        "sample_id": evaluation.sample_id,
-                        "evaluation": evaluation.__dict__,
-                        "mock_output": mock_output,
-                    },
+                    "content": json.dumps(
+                        {
+                            "sample_id": evaluation.sample_id,
+                            "evaluation": evaluation.__dict__,
+                            "mock_output": mock_output,
+                        },
+                        ensure_ascii=False,
+                    ),
                 },
             ]
             response = self.model_client.complete(messages, model_config=self.model_config)

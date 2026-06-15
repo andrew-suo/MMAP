@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import replace
 
 from mmap_optimizer.core.enums import PromptVersionType
+from mmap_optimizer.logging import get_logger
 from mmap_optimizer.prompt.version import PromptVersion
 from .schema import Patch
+
+logger = get_logger(__name__)
 
 
 class PatchApplyError(ValueError):
@@ -20,6 +25,7 @@ class PatchApplier:
         new_version: int,
         version_type: PromptVersionType | str = PromptVersionType.OPTIMIZATION,
     ) -> PromptVersion:
+        apply_start_time = time.perf_counter()
         section = base_prompt.prompt_ir.section_by_id(patch.section_id)
         if section is None:
             raise PatchApplyError(f"Section not found: {patch.section_id}")
@@ -77,4 +83,6 @@ class PatchApplier:
             applied_patch_ids=[*base_prompt.applied_patch_ids, patch.id],
         )
         new_prompt.render()
+        apply_duration_ms = int((time.perf_counter() - apply_start_time) * 1000)
+        logger.debug(f"[stage=patch_apply] patch_id={patch.id} section_id={patch.section_id} mode={mode} duration_ms={apply_duration_ms}")
         return new_prompt

@@ -12,6 +12,7 @@ from mmap_optimizer.analysis.runner import AnalysisRunner
 from mmap_optimizer.dataset.sample import GroundTruth, Sample, SampleAsset, SampleState
 from mmap_optimizer.debug.logger import DebugEventLogger
 from mmap_optimizer.evaluation.evaluator import EvaluationRecord, Evaluator
+from mmap_optimizer.logging import get_logger, log_stage
 from mmap_optimizer.metrics.round_metrics import RoundMetrics, compute_round_metrics
 from mmap_optimizer.metrics.section_contribution import build_section_contribution
 from mmap_optimizer.patch.applier import PatchApplier
@@ -34,6 +35,8 @@ from mmap_optimizer.testing.prompt_test_runner import PromptTestRunner
 from mmap_optimizer.testing.suite_builder import PatchTestSuiteBuilder
 from mmap_optimizer.storage.json_store import JsonStore
 from .records import OptimizationRound, RunRecord
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -104,7 +107,9 @@ class RoundRunner:
         )
         round_record.dynamic_validation_batch_id = dval_batch.id
         self.store.write_json(f"{round_id}/dynamic_validation_batch.json", dval_batch)
+        log_stage(logger, "batch_selection_done", round=round_index, optimization_batch_size=len(optimization_batch), dval_batch_size=len(dval_batch.sample_ids))
 
+        log_stage(logger, "extraction_run_start", round=round_index, sample_count=len(optimization_batch))
         extraction_result = self._prompt_runner().run(
             round_id=round_id,
             run_type=RunType.EXTRACTION.value,
@@ -116,6 +121,8 @@ class RoundRunner:
         )
         extraction_runs, evals = extraction_result.runs, extraction_result.evaluations
         dynamic_samples = [s for s in state.samples if s.id in set(dval_batch.sample_ids)]
+        log_stage(logger, "extraction_run_done", round=round_index, sample_count=len(optimization_batch), evaluation_count=len(evals))
+        log_stage(logger, "dval_run_start", round=round_index, sample_count=len(dynamic_samples))
         dval_result = self._prompt_runner().run(
             round_id=round_id,
             run_type=RunType.DYNAMIC_VALIDATION_EXTRACTION.value,
@@ -126,6 +133,7 @@ class RoundRunner:
             contract=state.extraction_output_schema_contract,
         )
         dval_runs, dval_evals = dval_result.runs, dval_result.evaluations
+        log_stage(logger, "dval_run_done", round=round_index, sample_count=len(dynamic_samples), evaluation_count=len(dval_evals))
         round_record.extraction_run_ids = [r.id for r in extraction_runs]
         round_record.dynamic_validation_run_ids = [r.id for r in dval_runs]
 
@@ -148,6 +156,7 @@ class RoundRunner:
 
         wrong_evals = [evaluation for evaluation in evals if evaluation.overall_status != "correct"]
         if wrong_evals:
+            log_stage(logger, "patch_generation_start", round=round_index, failed_sample_count=len(wrong_evals))
             analysis_result = AnalysisRunner(
                 self.optimizer_client,
                 model_id=self.config.optimizer_model.model,
@@ -201,6 +210,7 @@ class RoundRunner:
             merge_report = merge_result.merge_report
             merged_patches = merge_result.final_patches
             rejected_patches.extend(merge_result.rejected_patches)
+            log_stage(logger, "patch_merge_done", round=round_index, merged_patch_count=len(merged_patches), rejected_count=len(merge_result.rejected_patches), merge_conflicts=len(merge_report.conflict_patch_ids) if merge_report else 0)
             if merged_patches and (self.config.patch_semantic_merge_enabled or self.config.patch_root_audit_enabled):
                 semantic_processor = SemanticPatchProcessor(self.optimizer_client, self._optimizer_model_config())
                 if self.config.patch_semantic_merge_enabled:
@@ -217,6 +227,7 @@ class RoundRunner:
                         patch.rejection_reason = validation.reason
                         rejected_patches.append(patch)
                 merged_patches = semantic_validated
+            log_stage(logger, "patch_testing_start", round=round_index, patch_count=len(merged_patches))
             accepted_patches: list[Patch] = []
             suite_builder = PatchTestSuiteBuilder()
             patch_tester = PatchTester(model_client=self.extraction_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model, model_config=self._extraction_model_config())
@@ -250,6 +261,7 @@ class RoundRunner:
                     patch.rejection_reason = test_result.rejection_reason
                     rejected_patches.append(patch)
 
+            log_stage(logger, "patch_testing_done", round=round_index, accepted_count=len(accepted_patches), rejected_count=len(merged_patches) - len(accepted_patches))
             final_patches: list[Patch] = []
             if accepted_patches:
                 final_patches, bundle_runs, bundle_evals, bundle_results = self._select_safe_bundle(
@@ -267,6 +279,7 @@ class RoundRunner:
                 rejected_patches.extend([patch for patch in accepted_patches if patch not in final_patches])
 
             if final_patches:
+                log_stage(logger, "patch_apply_start", round=round_index, patch_count=len(final_patches))
                 next_prompt = state.active_extraction_prompt
                 next_version = next_prompt.version + 1
                 for patch in final_patches:
@@ -277,6 +290,7 @@ class RoundRunner:
                     next_version += 1
                 state.active_extraction_prompt = next_prompt
                 round_record.accepted_patch_ids = [patch.id for patch in final_patches]
+                log_stage(logger, "patch_apply_done", round=round_index, applied_count=len(final_patches))
             round_record.rejected_patch_ids = [patch.id for patch in rejected_patches]
 
         analysis_evolution_report = AnalysisEvolutionEngine().evolve(

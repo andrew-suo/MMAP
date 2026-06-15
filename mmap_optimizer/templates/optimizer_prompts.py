@@ -447,11 +447,45 @@ PROMPT_NUMBERING_REFACTOR_TEMPLATE = """# Role
 # Current Prompt
 {current_prompt}
 
-# Rules
-- 只修改数字/list 编号符号。
-- 不得修改措辞、标点、标题层级、顺序或嵌套。
-- 不得合并、删除或新增业务规则。
-- 仅输出修复后的 prompt body。
+# Legacy PROMPT_REFACTOR_PROMPT — Numbering-Only Refactor Discipline Framework
+
+## 1. Numbering-Only Refactor
+只重编编号、排序标记、列表标签和结构编号。不得改变业务逻辑、任务规则、示例、决策标准、输出语义或安全约束。
+
+## 2. Preserve Semantic Content
+精确保留每条原始规则、条件、示例、占位符、变量、输出要求以及例外情况，仅修改必须修复的编号/排序标记。
+
+## 3. Fix Duplicate / Skipped / Inconsistent Numbering
+修复重复编号、跳过编号、不一致的编号样式、损坏的嵌套编号，以及与周围结构不再匹配的列表标签。
+
+## 4. Preserve Hierarchy
+保留原始标题层级和嵌套列表的父子关系。除非当前修复指令明确要求编号更正，否则不得提升、降级、合并、拆分或移动规则。
+
+## 5. Preserve Cross-References When Possible
+如果 prompt 包含交叉引用如"见第 3 步"或"规则 2"，仅更新受编号修复明确影响的引用。不要猜测模糊引用。
+
+## 6. Placeholder and Code Block Protection
+不得修改占位符、变量、代码块、JSON 模式、示例或字面引用的文本，除非编号标记本身在损坏的结构内且必须修复。
+
+## 7. Minimal Edit Principle
+使用恢复一致结构所需的最小可能编号编辑。
+
+## 8. No Global Standardization
+不得将 prompt 规范化为新的风格、七段式结构或任意标准格式。
+
+## 9. Ambiguity Fallback
+如果编号修复需要猜测作者的预期顺序或层级，保留原始文本并避免推测性重排。
+
+## 10. Output Refactored Prompt Only
+只输出修复后的 prompt 文本。不得包含解释、Markdown 包装器、在整个 prompt 周围的代码 fence、标签、注释或评注，除非当前契约明确要求。
+
+# Migration Note
+此 prompt_numbering_refactor template 已通过 legacy PROMPT_REFACTOR_PROMPT 的 numbering-only refactor discipline 增强。
+- 输出契约保持不变：仅修复后的 prompt body，无 header/fence。
+- 输入占位符 {current_prompt} 保持不变。
+- 不改变业务逻辑、不新增规则、不删除规则、不重写规则含义。
+- PROMPT_REFACTOR_EVAL_PROMPT：当前无对应目标（numbering_refactor 是确定性文本工具而非 LLM 驱动评估器），暂不迁移，后续可 scenario-gated 引入。
+- optimizer loop、patch schema、patch applier、其他 templates 未被修改。
 """
 
 PROMPT_FORMAT_REPAIR_TEMPLATE = """# Role

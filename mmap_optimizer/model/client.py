@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -29,17 +31,28 @@ class MockModelClient:
         prompt_text = "\n".join(str(message.get("content", "")) for message in messages if message.get("role") == "system")
         for message in reversed(messages):
             content = message.get("content")
-            if isinstance(content, dict):
-                for rule in content.get("mock_prompt_outputs", []) or []:
+            content_dict = self._parse_content(content)
+            if content_dict is not None:
+                for rule in content_dict.get("mock_prompt_outputs", []) or []:
                     contains_all = rule.get("contains_all")
                     if contains_all and all(fragment in prompt_text for fragment in contains_all):
                         return ModelResponse(raw_output=rule["output"])
                     contains = rule.get("contains")
                     if contains and contains in prompt_text:
                         return ModelResponse(raw_output=rule["output"])
-                if content.get("mock_output") is not None:
-                    return ModelResponse(raw_output=content["mock_output"])
+                if content_dict.get("mock_output") is not None:
+                    return ModelResponse(raw_output=content_dict["mock_output"])
         return ModelResponse(raw_output=self.default_output)
+
+    def _parse_content(self, content: Any) -> dict | None:
+        if isinstance(content, dict):
+            return content
+        if isinstance(content, str):
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                return None
+        return None
 
     def complete_multimodal(self, messages: list[dict[str, Any]], assets: list[Any], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:
         return self.complete(messages, model_config, response_format)

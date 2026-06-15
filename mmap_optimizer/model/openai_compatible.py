@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 from pathlib import Path
+import ssl
 import urllib.request
 from typing import Any
 
@@ -13,14 +14,15 @@ from .client import ModelResponse
 
 
 class OpenAICompatibleClient:
-    def __init__(self, base_url: str, api_key: str | None = None, model: str | None = None):
+    def __init__(self, base_url: str, api_key: str | None = None, model: str | None = None, verify_ssl: bool = True):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.verify_ssl = verify_ssl
 
     @classmethod
-    def from_env(cls, base_url: str, api_key_env: str, model: str | None = None) -> "OpenAICompatibleClient":
-        return cls(base_url=base_url, api_key=os.environ.get(api_key_env), model=model)
+    def from_env(cls, base_url: str, api_key_env: str, model: str | None = None, verify_ssl: bool = True) -> "OpenAICompatibleClient":
+        return cls(base_url=base_url, api_key=os.environ.get(api_key_env), model=model, verify_ssl=verify_ssl)
 
     def complete(self, messages: list[dict[str, Any]], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:
         payload = self._build_payload(messages=messages, model_config=model_config, response_format=response_format)
@@ -58,7 +60,12 @@ class OpenAICompatibleClient:
             headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {})},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        context = None
+        if not self.verify_ssl:
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     def _messages_with_assets(self, messages: list[dict[str, Any]], assets: list[Any]) -> list[dict[str, Any]]:

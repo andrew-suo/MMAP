@@ -20,6 +20,7 @@ class ModelConfig:
     api_key: str | None = None
     temperature: float = 0.0
     max_tokens: int = 2048
+    verify_ssl: bool = True
 
 
 @dataclass
@@ -183,6 +184,7 @@ def model_config_from_mapping(data: dict[str, Any] | None) -> ModelConfig:
         api_key=data.get("api_key"),
         temperature=float(data.get("temperature", 0.0)),
         max_tokens=int(data.get("max_tokens", 2048)),
+        verify_ssl=_bool_value(data.get("verify_ssl", data.get("ssl_verify", True))),
     )
 
 

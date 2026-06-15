@@ -53,18 +53,16 @@ class PromptTestRunner:
         evals: list[EvaluationRecord] = []
         suffix = f"_{run_id_suffix}" if run_id_suffix else ""
         def run_one(sample: Sample) -> tuple[RunRecord, EvaluationRecord]:
+            user_payload = {
+                "sample_id": sample.id,
+                "text_context": sample.text_context,
+                "structured_context": sample.structured_context,
+                "mock_output": sample.metadata.get("mock_output"),
+                "mock_prompt_outputs": sample.metadata.get("mock_prompt_outputs", []),
+            }
             messages = [
                 {"role": "system", "content": rendered.text},
-                {
-                    "role": "user",
-                    "content": {
-                        "sample_id": sample.id,
-                        "text_context": sample.text_context,
-                        "structured_context": sample.structured_context,
-                        "mock_output": sample.metadata.get("mock_output"),
-                        "mock_prompt_outputs": sample.metadata.get("mock_prompt_outputs", []),
-                    },
-                },
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
             ]
             sample_assets = [assets[asset_id] for asset_id in sample.asset_ids if asset_id in assets]
             gt = ground_truths.get(sample.ground_truth_id)
@@ -72,8 +70,10 @@ class PromptTestRunner:
             raw_outputs: list[str] = []
             rounds = max(1, self.vote_rounds if vote_mode else 1)
             for vote_index in range(rounds):
+                payload = dict(user_payload)
                 if vote_mode:
-                    messages[-1]["content"]["vote_round"] = vote_index + 1
+                    payload["vote_round"] = vote_index + 1
+                messages[-1]["content"] = json.dumps(payload, ensure_ascii=False)
                 response = self.model_client.complete_multimodal(
                     messages,
                     sample_assets,

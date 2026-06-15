@@ -57,6 +57,7 @@ class OptimizerConfig:
     scenario_id: str | None = None
     extraction_model: ModelConfig = field(default_factory=ModelConfig)
     optimizer_model: ModelConfig = field(default_factory=ModelConfig)
+    prompt_section_id_hints: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -259,4 +260,5 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
         scenario_id=data.get("scenario_id"),
         extraction_model=model_config_from_mapping(extraction_model_data),
         optimizer_model=model_config_from_mapping(optimizer_model_data),
+        prompt_section_id_hints=dict(data.get("prompt_initialization", {}).get("section_id_hints", {}) or {}),
     )

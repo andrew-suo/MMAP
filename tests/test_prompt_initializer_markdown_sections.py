@@ -145,11 +145,19 @@ def test_markdown_headings_level_preserved():
 
 
 def test_markdown_includes_subheadings():
+    # Without hints, grouped mode folds sub-headings into parent content.
     sections = parse_markdown_sections(SCENARIO_PROMPT)
-    # subheading "2.1 不合格" / "2.2 可接受" must appear.
-    titles = "".join(s["title"] for s in sections)
-    assert "不合格" in titles
-    assert "可接受" in titles
+    # Sub-heading text should appear in parent section content.
+    all_content = "".join(s["content"] for s in sections)
+    assert "不合格" in all_content
+    assert "可接受" in all_content
+    # In grouped mode (no hints), sub-headings are NOT top-level sections.
+    titles = [s["title"] for s in sections]
+    assert "2.1 不合格" not in titles
+    # With hints, flat mode is used and sub-headings become top-level.
+    sections_flat = parse_markdown_sections(SCENARIO_PROMPT, section_id_hints=DOMAIN_HINTS)
+    flat_titles = [s["title"] for s in sections_flat]
+    assert any("不合格" in t for t in flat_titles)
 
 
 def test_initializer_renders_multiple_sections_for_markdown():

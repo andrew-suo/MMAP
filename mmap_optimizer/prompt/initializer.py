@@ -202,13 +202,23 @@ def parse_markdown_sections(
     raw_prompt: str,
     *,
     section_id_hints: dict[str, str] | None = None,
+    group_subheadings: bool = True,
 ) -> list[dict[str, Any]]:
     """Split raw markdown text into ordered section entries.
 
     Purely structural: headings are the boundaries; everything below a heading
     (until the next heading of equal-or-higher level) becomes the body.
 
-    Returns a list of dicts with keys: id, title, level, content.
+    When ``group_subheadings=True`` (default) and no ``section_id_hints`` are
+    provided, sub-headings (### and below) are folded into their nearest
+    parent heading (##).  Only top-level headings become sections; their
+    content includes the full text of all sub-headings beneath them.
+
+    When ``section_id_hints`` are provided, flat mode is automatically used
+    so that each heading (including sub-headings) becomes its own section.
+    This allows hints to target specific sub-headings precisely.
+
+    Returns a list of dicts with keys: id, title, level, content, subsections.
     Returns [] if prompt is empty, has no headings, or produced <2 sections.
     """
     if not raw_prompt:
@@ -221,36 +231,109 @@ def parse_markdown_sections(
     used_ids: set[str] = set()
     section_id_hints = section_id_hints or {}
 
-    # Group subsections into their nearest top-level section by level?  For
-    # now we keep headings as-is — each heading starts a new section and
-    # keeps its own body text.  This keeps rendering stable and preserves
-    # ordering of subsections without guessing "semantic grouping".
-    sections: list[dict[str, Any]] = []
+    # When hints are provided, use flat mode so each heading can be targeted.
+    # Without hints, grouped mode keeps things concise.
+    effective_group = group_subheadings and not section_id_hints
+
+    if not effective_group:
+        # Flat mode: every heading becomes a section (original behavior).
+        sections: list[dict[str, Any]] = []
+        for idx, m in enumerate(matches):
+            hashes = m.group(1)
+            title = m.group(2).strip()
+            level = len(hashes)
+            body_start = m.end() + 1 if m.end() + 1 <= len(raw_prompt) else m.end()
+            body_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw_prompt)
+            body = raw_prompt[body_start:body_end].rstrip("\n")
+
+            sid = normalize_section_id(
+                title,
+                used_ids=used_ids,
+                section_id_hints=section_id_hints,
+            )
+            used_ids.add(sid)
+
+            sections.append({
+                "id": sid,
+                "title": title,
+                "level": level,
+                "content": f"{'#' * level} {title}\n{body}" if body else f"{'#' * level} {title}",
+                "subsections": [],
+            })
+
+        if len(sections) < 2:
+            return []
+        return sections
+
+    # ── grouped mode ──
+    # Determine the top-level heading level (minimum level across all headings).
+    min_level = min(len(m.group(1)) for m in matches)
+
+    # First pass: collect all heading spans.
+    heading_spans: list[tuple[int, str, int, int, int]] = []  # (level, title, match_start, body_start, body_end)
     for idx, m in enumerate(matches):
         hashes = m.group(1)
         title = m.group(2).strip()
         level = len(hashes)
         body_start = m.end() + 1 if m.end() + 1 <= len(raw_prompt) else m.end()
         body_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(raw_prompt)
-        body = raw_prompt[body_start:body_end].rstrip("\n")
+        heading_spans.append((level, title, m.start(), body_start, body_end))
 
-        sid = normalize_section_id(
-            title,
-            used_ids=used_ids,
-            section_id_hints=section_id_hints,
-        )
-        used_ids.add(sid)
+    # Second pass: group sub-headings under their nearest parent at min_level.
+    # A parent is a heading at min_level.  All subsequent headings at > min_level
+    # belong to that parent until the next heading at min_level.
+    #
+    # When a sub-heading's title matches a section_id_hint, that hint should
+    # "bubble up" to influence the parent section's id — because in grouped
+    # mode the sub-heading is not a standalone section.
+    grouped: list[dict[str, Any]] = []
+    current_parent: dict[str, Any] | None = None
 
-        sections.append({
-            "id": sid,
-            "title": title,
-            "level": level,
-            "content": f"{'#' * level} {title}\n{body}" if body else f"{'#' * level} {title}",
-        })
+    for level, title, match_start, body_start, body_end in heading_spans:
+        if level == min_level:
+            # Start a new parent section.
+            if current_parent is not None:
+                grouped.append(current_parent)
+            body = raw_prompt[body_start:body_end].rstrip("\n")
+            sid = normalize_section_id(
+                title,
+                used_ids=used_ids,
+                section_id_hints=section_id_hints,
+            )
+            used_ids.add(sid)
+            current_parent = {
+                "id": sid,
+                "title": title,
+                "level": level,
+                "content": f"{'#' * level} {title}\n{body}" if body else f"{'#' * level} {title}",
+                "subsections": [],
+            }
+        else:
+            # Sub-heading: fold into current parent.
+            if current_parent is not None:
+                sub_body = raw_prompt[body_start:body_end].rstrip("\n")
+                sub_sid = normalize_section_id(
+                    title,
+                    used_ids=used_ids,
+                    section_id_hints=section_id_hints,
+                )
+                used_ids.add(sub_sid)
+                current_parent["subsections"].append({
+                    "id": sub_sid,
+                    "title": title,
+                    "level": level,
+                    "content": f"{'#' * level} {title}\n{sub_body}" if sub_body else f"{'#' * level} {title}",
+                })
+                # Extend parent content to include sub-heading text.
+                sub_text = raw_prompt[match_start:body_end].rstrip("\n")
+                current_parent["content"] += "\n" + sub_text
 
-    if len(sections) < 2:
+    if current_parent is not None:
+        grouped.append(current_parent)
+
+    if len(grouped) < 2:
         return []
-    return sections
+    return grouped
 
 
 # ──────────────────── IR builder ────────────────────────────────────────────

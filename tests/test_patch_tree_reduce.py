@@ -1,5 +1,5 @@
 from mmap_optimizer.core.enums import PromptType
-from mmap_optimizer.patch.clusterer import cluster_patches
+from mmap_optimizer.patch.tree_reduce import TreeReducePatchMerger, _cluster_patches
 from mmap_optimizer.patch.conflict import detect_patch_conflicts
 from mmap_optimizer.patch.schema import Patch
 from mmap_optimizer.patch.tree_reduce import TreeReducePatchMerger
@@ -41,7 +41,7 @@ def prompt_ir():
 def test_cluster_patches_groups_by_target_section_and_operation():
     patches = [make_patch("p1", "a"), make_patch("p2", "b"), make_patch("p3", "c", section="visual_evidence_rules")]
 
-    clusters = cluster_patches(patches)
+    clusters = _cluster_patches(patches)
 
     assert len(clusters) == 2
     assert [patch.id for patch in clusters[0].patches] == ["p1", "p2"]

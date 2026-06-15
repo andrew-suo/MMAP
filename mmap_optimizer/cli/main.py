@@ -59,12 +59,13 @@ def _load_contract(path: Path, prompt_type: PromptType, contract_id: str) -> Out
 
 
 
-def _build_state(args: argparse.Namespace) -> tuple[OptimizerState, OutputSchemaContract, OutputSchemaContract]:
+def _build_state(args: argparse.Namespace, *, config: OptimizerConfig | None = None) -> tuple[OptimizerState, OutputSchemaContract, OutputSchemaContract]:
     data_dir = Path(args.data_dir)
     extraction_contract = _load_contract(Path(args.extraction_schema), PromptType.EXTRACTION, "extraction_output_schema_v1")
     analysis_contract = _load_contract(Path(args.analysis_schema), PromptType.ANALYSIS, "analysis_output_schema_v1")
-    extraction_prompt = initialize_prompt_from_file(args.extraction_prompt, PromptType.EXTRACTION, extraction_contract)
-    analysis_prompt = initialize_prompt_from_file(args.analysis_prompt, PromptType.ANALYSIS, analysis_contract)
+    hints = config.prompt_section_id_hints if config else {}
+    extraction_prompt = initialize_prompt_from_file(args.extraction_prompt, PromptType.EXTRACTION, extraction_contract, section_id_hints=hints)
+    analysis_prompt = initialize_prompt_from_file(args.analysis_prompt, PromptType.ANALYSIS, analysis_contract, section_id_hints=hints)
     samples = load_samples(data_dir / "samples.jsonl")
     ground_truths = load_ground_truths(data_dir / "ground_truth.jsonl")
     assets = load_assets(data_dir / "assets.jsonl") if (data_dir / "assets.jsonl").exists() else {}
@@ -89,7 +90,6 @@ def _print_run_result(metrics_records, summary) -> None:
 
 def run_smoke(args: argparse.Namespace) -> None:
     _apply_scenario_args(args)
-    state, _, _ = _build_state(args)
     config = OptimizerConfig(
         batch_size=args.batch_size,
         dynamic_validation_batch_size=args.dynamic_validation_batch_size,
@@ -100,6 +100,7 @@ def run_smoke(args: argparse.Namespace) -> None:
         fewshot_max_slots=args.fewshot_max_slots,
         fewshot_min_accuracy_delta=args.fewshot_min_accuracy_delta,
     )
+    state, _, _ = _build_state(args, config=config)
     store = JsonStore(args.run_dir)
     logger.info(f"[stage=optimizer_start] mode=smoke config_path=%s sample_count=%d planned_rounds=%d output_dir=%s log_level=%s",
                 getattr(args, 'config', 'N/A'), len(state.samples), args.rounds, args.run_dir, os.environ.get('MMAP_LOG_LEVEL', 'INFO'))
@@ -110,12 +111,12 @@ def run_smoke(args: argparse.Namespace) -> None:
 
 def run(args: argparse.Namespace) -> None:
     _apply_scenario_args(args)
-    state, _, _ = _build_state(args)
     config = optimizer_config_from_mapping(load_mapping(args.config))
     if args.run_dir is not None:
         config.run_dir = args.run_dir
     if getattr(args, "loaded_scenario_id", None):
         config.scenario_id = args.loaded_scenario_id
+    state, _, _ = _build_state(args, config=config)
     store = JsonStore(config.run_dir)
     extraction_client = build_model_client(config.extraction_model)
     optimizer_client = build_model_client(config.optimizer_model)

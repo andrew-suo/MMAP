@@ -28,6 +28,7 @@ PATCH_TEXT_MATCH_TEMPLATE = """# Role
 
 PATCH_TRANSLATION_TEMPLATE = """# Role
 你是 Patch 文本校准专家。你需要将 patch locator 字段对齐到当前 Prompt 原文，同时保护 payload 不被篡改。
+本模板继承自 legacy PATCH_TRANSLATION_PROMPT 规则，只做 locator 校准，不生成、不合并、不审计 patch 内容。
 
 # Prompt Structure
 {prompt_structure}
@@ -37,6 +38,47 @@ PATCH_TRANSLATION_TEMPLATE = """# Role
 
 # Patches To Align
 {patches_json}
+
+# Legacy PATCH_TRANSLATION_PROMPT Locator Calibration Framework
+
+## 1. Exact Section Header Calibration
+Map any fuzzy or paraphrased target section reference to the exact section
+header string that exists in the current prompt structure. Do not invent
+section names. `target_section` / `section_id` must be one of the headers
+listed in the provided prompt structure.
+
+## 2. In-Section-Only Locator Matching
+After the section is calibrated, search only inside that section for
+`old_text` / `target_text`. Do not search across unrelated sections.
+Strictly match within the boundary of the calibrated section.
+
+## 3. Payload Immutability
+Only locator fields may be corrected. Preserve the original patch payload,
+operation, reasoning, new_text, and risk metadata exactly. Do not modify
+`op`, `operation_mode`, `content`, `patch_text`, `new_text`, `new_content`,
+`rationale`, `reasoning`, or any semantic payload field. Only locator-related
+fields may be changed. Preserve all non-locator payload exactly.
+
+## 4. N-in-N-out Count Preservation
+Return exactly the same number of patch objects as received. Do not add,
+delete, split, or merge patches during translation. The same number of
+patches — N-in-N-out — must be preserved.
+
+## 5. Verbatim Locator Requirement
+The translated `old_text` / `target_text` must be copied verbatim from
+the current prompt, including punctuation and whitespace where relevant.
+Never paraphrase or approximate locator text.
+
+## 6. Zero-Hallucination Fuse — Unresolved Locator Fallback
+If no reliable section or text match can be found, keep the patch unchanged
+and mark the locator as unresolved using `extra.unresolved_locators`. Do not
+guess approximate source text. Never invent content that does not exist in
+the provided prompt structure or current prompt text.
+
+## 7. No Semantic Rewriting
+Patch translation is not patch generation, not merge, and not root audit.
+Do not rewrite patch intent, add rules, or improve content while calibrating
+locators. Your only action is locator field correction — no semantic rewriting.
 
 # Calibration Workflow
 1. 校准 section header：`target_section` / `section_id` 必须指向 Prompt Structure 中真实存在的 section。
@@ -51,12 +93,22 @@ PATCH_TRANSLATION_TEMPLATE = """# Role
 - `op`, `operation_mode`, `content`, `patch_text`, `new_text`, `new_content`, `rationale`, `reasoning` 必须逐字保持不变。
 - 输入多少 patch，输出多少 patch，不得丢弃。
 
+# Migration Note
+This template has been enriched with the locator calibration framework
+inherited from the legacy PATCH_TRANSLATION_PROMPT.
+- The current patch JSON schema, placeholders, and operation list remain unchanged.
+- No new patch operations, required fields, or brand-new patch intents are introduced.
+- N-in-N-out count is strictly preserved; no add / delete / split / merge during translation.
+- Patch translation remains a locator calibration layer only — not patch
+  generation, not patch merge, not root audit.
+
 # Output Contract
 返回 JSON 数组。每个元素仍为 patch 对象；无法对齐时保留原值并写入 `extra.unresolved_locators`。
 """
 
 PATCH_TRANSLATION_RETRY_TEMPLATE = """# Role
 你是 Patch 二次校准与故障修复专家。上一次 apply/validate 因 locator 匹配失败被拦截，你必须根据失败原因做一次保守修复。
+本模板继承自 legacy PATCH_TRANSLATION_RETRY_PROMPT 规则，只做 locator 修复，不生成、不合并、不审计 patch 内容。
 
 # Failure Details
 {failure_info}
@@ -70,6 +122,42 @@ PATCH_TRANSLATION_RETRY_TEMPLATE = """# Role
 # Failed Patch
 {patch_json}
 
+# Legacy PATCH_TRANSLATION_RETRY_PROMPT Retry Framework
+
+## 1. Failure-Info Driven Retry
+Use failure_info as the primary signal. Fix only the locator problem
+described by the failure; do not re-interpret the entire patch. If
+`failure_info` references a specific section, target text, or locator
+field name, address exactly that issue.
+
+## 2. Exactly-One Retry Output
+Return exactly one-element JSON array; the single patch must be the
+repaired version of the input patch. Do not output multiple alternatives.
+Do not add, delete, or split patches.
+
+## 3. Header → In-Section Hard Match → Fuse Order
+Retry strictly in this order:
+1. Calibrate the exact section header: choose a section id/header that
+   is 100% present in the provided prompt structure.
+2. Search for exact in-section `old_text` / `target_text` — return the
+   verbatim current-prompt text, including punctuation and whitespace.
+3. If exact match fails, use the safest supported unresolved fallback:
+   preserve the original patch and mark unresolved locators via
+   `extra.unresolved_locators`.
+
+## 4. No Guessing
+Do not guess approximate source text. If no reliable match exists,
+preserve the original patch and surface unresolved locator information
+according to the current schema. Never paraphrase or fabricate locator
+content.
+
+## 5. Preserve All Non-Locator Payload
+The retry may only repair locator-related fields. Only locator-related
+fields may be changed. Preserve all non-locator payload exactly. It must
+not modify operation, intended new_text, reasoning, risk, or any other
+semantic payload. Only `target_section`, `section_id`, `old_text`,
+`target_text`, and `extra.unresolved_locators` may change.
+
 # Required Steps
 1. 定位并校准 section header：必须选择 Prompt Structure 中 100% 存在的 section id/header。
 2. 在该 section 内硬匹配 `old_text` / `target_text`，返回逐字逐标点的原文。
@@ -80,6 +168,15 @@ PATCH_TRANSLATION_RETRY_TEMPLATE = """# Role
 - 零幻觉：绝不臆造当前 prompt 中不存在的文本。
 - Payload 锁定：除 locator 与 `extra.unresolved_locators` 外，其他字段必须逐字不变。
 - 输出数组必须有且仅有一个 patch。
+
+# Migration Note
+This template has been enriched with the failure-driven retry framework
+inherited from the legacy PATCH_TRANSLATION_RETRY_PROMPT.
+- The current patch JSON schema, placeholders, and operation list remain unchanged.
+- No new patch operations, required fields, or brand-new patch intents are introduced.
+- Patch translation retry remains a locator calibration layer only — not
+  patch generation, not patch merge, not root audit.
+- Exactly-one-patch one-element JSON array output is strictly enforced.
 
 # Output Contract
 返回 JSON 数组：`[patch]`。patch 必须符合原 patch schema；错误情况下使用原 patch + `extra.unresolved_locators` fallback。

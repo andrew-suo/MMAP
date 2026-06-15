@@ -5,6 +5,7 @@ from .schema import PromptTemplateSpec
 
 PATCH_TEXT_MATCH_TEMPLATE = """# Role
 你是极其严谨的 Prompt 文本定位与对齐专家。
+本模板继承自 legacy PATCH_TEXT_MATCH_PROMPT 规则，只做 substring 匹配，不生成、不合并、不审计、不改写文本。
 
 # Source Section
 {section_content}
@@ -15,12 +16,68 @@ PATCH_TEXT_MATCH_TEMPLATE = """# Role
 # Field Type
 {field_type}
 
+# Legacy PATCH_TEXT_MATCH_PROMPT Matching Framework
+
+## 1. Pure Substring Extraction
+Return only the matched substring copied from the provided section content.
+Do not output explanations, JSON, Markdown, code fences, quotes, labels, or
+commentary. The output must be a raw substring only — nothing else.
+
+## 2. De-Paraphrasing from Intent Text to Source Text
+The intent_text may be paraphrased, summarized, or semantically similar to
+the source text. Resolve it back to the exact source substring that appears
+verbatim in section_content. Intent text is only a semantic hint; the output
+must always come from the source.
+
+## 3. Longest Meaningful Substring Rule
+When multiple candidates match, choose the longest meaningful substring that
+fully captures the intended edit target without including unrelated
+neighboring instructions. Prefer the longest meaningful substring that is
+still a clean, contiguous piece of source text.
+
+## 4. Exact Source-Copy Requirement
+The output must be copied verbatim from section_content, preserving original
+wording, punctuation, and whitespace where relevant. Never rephrase,
+re-punctuate, or normalize the matched substring.
+
+## 5. In-Section Only
+Search only within the provided section_content. Do not infer or import text
+from other prompt sections. Do not combine fragments from outside the
+provided section.
+
+## 6. Total Fuse on No Reliable Match
+If no reliable source substring can be found, return an empty string. Do not
+guess, paraphrase, synthesize, or repair text. Do not fall back to the
+intent_text or any invented substitute.
+
+## 7. Field-Type Sensitivity
+Use field_type only to understand what kind of locator is being matched —
+such as old_text, target_text, or insertion anchor. Do not let field_type
+change the output contract or the shape of what you return.
+
+## 8. No Semantic Rewriting
+This task is text matching only. Do not rewrite the prompt, generate a
+patch, merge patches, audit patches, or improve wording.
+
+## 9. No Hallucinated Source Text
+Never output text that is not present verbatim in section_content.
+
 # Rules
 - 仅在 Source Section 内查找，不得跨 section。
 - 优先 100% 精确匹配；精确失败后才进入模糊匹配。
 - 模糊匹配必须返回 Source Section 中原样存在、连续不断的最长可信子串。
 - 严禁臆造、改写、翻译、补字或删除字符。
 - 若相似度低于阈值或无法确认，输出空字符串。
+
+# Migration Note
+This template has been enriched with the verbatim substring matching and
+de-paraphrasing framework inherited from the legacy PATCH_TEXT_MATCH_PROMPT.
+- The current output contract, placeholders, and contract type remain unchanged.
+- No new placeholders are introduced.
+- No new patch operations, required fields, or brand-new patch intents are introduced.
+- Output remains a plain matched substring — not JSON, not Markdown, not explanation,
+  not a patch, not a translation, not a merge, not an audit.
+- Patch text match remains a pure substring extraction layer only.
 
 # Output Contract
 仅输出匹配到的原文子串；无匹配时输出零字符空响应。

@@ -18,6 +18,68 @@ class PromptTestRunResult:
     evaluations: list[EvaluationRecord]
 
 
+FEWSHOT_SECTION_ID = "few_shot_examples"
+
+
+def _extract_fewshot_asset_ids(prompt: PromptVersion, samples: list[Sample]) -> list[str]:
+    """Extract few-shot example asset_ids from prompt conservatively.
+
+    This function looks for few-shot asset_ids in:
+    1. prompt.prompt_ir.global_constraints["fewshot_asset_ids"]
+    2. prompt.prompt_ir.global_constraints["asset_ids"]
+    3. section.constraints["fewshot_asset_ids"] for few-shot sections
+    4. section.constraints["asset_ids"] for few-shot sections
+    5. Parsed from few-shot section content (FEW_SHOT_SAMPLE:{sample_id} format)
+
+    Returns a deduplicated list of asset_ids while preserving order.
+    """
+    asset_ids: list[str] = []
+    seen: set[str] = set()
+    sample_by_id = {s.id: s for s in samples}
+
+    ir = getattr(prompt, "prompt_ir", None)
+    if ir is not None:
+        global_constraints = getattr(ir, "global_constraints", {}) or {}
+        for key in ("fewshot_asset_ids", "asset_ids"):
+            ids = global_constraints.get(key, [])
+            if isinstance(ids, list):
+                for asset_id in ids:
+                    if asset_id not in seen:
+                        seen.add(asset_id)
+                        asset_ids.append(asset_id)
+
+    if ir is not None:
+        for section in getattr(ir, "sections", []) or []:
+            if section.id == FEWSHOT_SECTION_ID:
+                section_constraints = getattr(section, "constraints", {}) or {}
+                for key in ("fewshot_asset_ids", "asset_ids"):
+                    ids = section_constraints.get(key, [])
+                    if isinstance(ids, list):
+                        for asset_id in ids:
+                            if asset_id not in seen:
+                                seen.add(asset_id)
+                                asset_ids.append(asset_id)
+
+    fewshot_section = None
+    if ir is not None:
+        fewshot_section = ir.section_by_id(FEWSHOT_SECTION_ID)
+
+    if fewshot_section is not None:
+        content = fewshot_section.content or ""
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("FEW_SHOT_SAMPLE:"):
+                sample_id = stripped.split(":", 1)[1].strip()
+                if sample_id in sample_by_id:
+                    sample = sample_by_id[sample_id]
+                    for asset_id in sample.asset_ids:
+                        if asset_id not in seen:
+                            seen.add(asset_id)
+                            asset_ids.append(asset_id)
+
+    return asset_ids
+
+
 class PromptTestRunner:
     """Runs a concrete PromptVersion on samples and evaluates the outputs.
 
@@ -52,6 +114,9 @@ class PromptTestRunner:
         runs: list[RunRecord] = []
         evals: list[EvaluationRecord] = []
         suffix = f"_{run_id_suffix}" if run_id_suffix else ""
+        fewshot_asset_ids = _extract_fewshot_asset_ids(prompt, samples)
+        fewshot_assets = [assets[asset_id] for asset_id in fewshot_asset_ids if asset_id in assets]
+
         def run_one(sample: Sample) -> tuple[RunRecord, EvaluationRecord]:
             user_payload = {
                 "sample_id": sample.id,
@@ -65,6 +130,7 @@ class PromptTestRunner:
                 {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
             ]
             sample_assets = [assets[asset_id] for asset_id in sample.asset_ids if asset_id in assets]
+            all_assets = fewshot_assets + sample_assets
             gt = ground_truths.get(sample.ground_truth_id)
             vote_mode = self.enable_voting and (gt is None or gt.primary_answer is None)
             raw_outputs: list[str] = []
@@ -76,7 +142,7 @@ class PromptTestRunner:
                 messages[-1]["content"] = json.dumps(payload, ensure_ascii=False)
                 response = self.model_client.complete_multimodal(
                     messages,
-                    sample_assets,
+                    all_assets,
                     model_config=self.model_config,
                 )
                 raw_outputs.append(response.raw_output)

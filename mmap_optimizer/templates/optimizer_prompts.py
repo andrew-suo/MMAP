@@ -413,12 +413,47 @@ LLM_PRUNE_TEMPLATE = """# Role
 # Section Content
 {section_content}
 
-# Rules
-- 保留硬约束、边界规则、阈值、占位符、负向提示和有语义作用的示例。
-- 删除填充、重复和低价值解释。
-- 不得添加原 section 中不存在的规则或事实。
-- 输出压缩后的 section body。
+# Legacy CONSOLIDATION_PROMPT — Semantic-Preserving Compression Framework
+
+## 1. Semantic-Preserving Compression
+只通过删除冗余、合并等价规则和改进简洁性来压缩。不得删除或削弱业务逻辑、任务约束、示例、输出要求、安全约束或边界条件处理。
+
+## 2. Preserve All Unique Constraints
+每条唯一约束、决策条件、占位符、输出字段、例外和必需行为必须在合并后仍然保留。
+
+## 3. Merge Duplicates, Not Differences
+合并重复或语义等价的规则。不得合并范围、条件、例外、目标 section 或输出要求不同的规则。
+
+## 4. Preserve Placeholders and Variables
+精确保留占位符和插值 token，包括花括号、拼写、大小写以及周围语法。
+
+## 5. Preserve Output Contract
+精确保留所有输出格式要求、模式、标签词汇表、必需字段、JSON 约束和格式化义务。
+
+## 6. Preserve Examples and Counterexamples
+不得删除示例、反例或边界条件，除非它们是完全重复或被等价示例完全包含。
+
+## 7. No Over-Compression
+不得过度压缩，导致结果 prompt 变得歧义、欠明确或更难执行。
+
+## 8. Structure-Aware Consolidation
+尊重 section 边界和层级。优先在同一 section 内合并，再考虑跨 section 合并。
+
+## 9. Minimal Wording Changes
+使用减少冗余所需的最小措辞变更。避免风格重写、任意规范化或新风格。
+
+## 10. Output Consolidated Section Only
+仅输出合并后的 section body。不得包含解释、摘要、Markdown 包装器、在整个 prompt 周围的代码 fence、标签、注释或评注，除非当前契约明确要求。
+
+# Migration Note
+此 llm_prune template 已通过 legacy CONSOLIDATION_PROMPT 的 semantic-preserving compression discipline 增强。
+- 输出契约保持不变：压缩后的 section body，无 header/fence。
+- 输入占位符 {section_header} 和 {section_content} 保持不变。
+- 不删除核心业务约束、输出格式、占位符、反例、边界条件。
+- 不做七段式标准化。
+- optimizer loop、patch schema、patch applier、其他 templates 未被修改。
 """
+
 
 LLM_PRUNE_VALIDATION_TEMPLATE = """# Role
 你验证压缩后的 prompt section 是否与原文语义等价。
@@ -428,6 +463,20 @@ LLM_PRUNE_VALIDATION_TEMPLATE = """# Role
 
 # Pruned Section
 {pruned_section}
+
+# Legacy CONSOLIDATION_EVAL_PROMPT — Consolidation Evaluation Framework
+
+## 1. Evaluate Semantic Preservation
+评估合并后的 prompt 是否保留了原文中的每条唯一约束、占位符、输出要求、例外和必需行为。
+
+## 2. Fail on Semantic Loss
+如果合并删除了、削弱了、错误合并了或重新解释了任何唯一规则，按现有输出契约标记为失败。
+
+## 3. Fail on Over-Compression Ambiguity
+如果压缩使 prompt 变得歧义、欠明确或更难执行，按现有输出契约标记为失败。
+
+## 4. Use Existing Labels Only
+仅使用现有评估标签/状态。不得引入新标签。
 
 # Criteria
 - 核心意图、期望模型行为、显式/隐式约束均保留。
@@ -439,6 +488,12 @@ LLM_PRUNE_VALIDATION_TEMPLATE = """# Role
 成功示例：{"valid": true, "reason": "核心约束和阈值均保留，仅删除重复解释。"}
 边界示例：{"valid": false, "reason": "删除了低清晰度时使用 UNCERTAIN 的约束。"}
 错误 fallback：{"valid": false, "reason": "validation output invalid"}
+
+# Migration Note
+此 llm_prune_validation template 已通过 legacy CONSOLIDATION_EVAL_PROMPT 的 consolidation evaluation discipline 增强。
+- 输出契约保持不变：{"valid": boolean, "reason": string}。
+- 仅使用现有标签 valid/reason，不引入新标签。
+- 不修改评估语义或重写 prompt 内容。
 """
 
 PROMPT_NUMBERING_REFACTOR_TEMPLATE = """# Role

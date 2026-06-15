@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import mimetypes
 import os
 from pathlib import Path
 import ssl
+import time
 import urllib.request
 from typing import Any
 
 from mmap_optimizer.dataset.sample import SampleAsset
+from mmap_optimizer.logging import get_logger, log_progress
 from .client import ModelResponse
+
+logger = get_logger(__name__)
 
 
 class OpenAICompatibleClient:
@@ -26,19 +31,54 @@ class OpenAICompatibleClient:
 
     def complete(self, messages: list[dict[str, Any]], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:
         payload = self._build_payload(messages=messages, model_config=model_config, response_format=response_format)
-        body = self._post_json(payload, timeout=(model_config or {}).get("timeout", 120))
-        content = body["choices"][0]["message"]["content"]
-        return ModelResponse(raw_output=content, metadata={"usage": body.get("usage"), "response_id": body.get("id")})
+        log_progress(logger, "model_request_start",
+            model=payload.get("model"), message_count=len(messages),
+            temperature=payload.get("temperature"), max_tokens=payload.get("max_tokens"),
+            timeout=(model_config or {}).get("timeout", 120),
+            has_response_format=response_format is not None,
+            has_chat_template_kwargs="chat_template_kwargs" in payload,
+            enable_thinking=payload.get("chat_template_kwargs", {}).get("enable_thinking") if payload.get("chat_template_kwargs") else None,
+        )
+        start_time = time.perf_counter()
+        try:
+            body = self._post_json(payload, timeout=(model_config or {}).get("timeout", 120))
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            content = body["choices"][0]["message"]["content"]
+            log_progress(logger, "model_response_done",
+                model=payload.get("model"), duration_ms=duration_ms, response_chars=len(content) if content else 0)
+            return ModelResponse(raw_output=content, metadata={"usage": body.get("usage"), "response_id": body.get("id")})
+        except Exception as exc:
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            logger.exception("[stage=model_request_failed] model=%s duration_ms=%d error=%s: %s", payload.get("model"), duration_ms, type(exc).__name__, exc)
+            raise
 
     def complete_multimodal(self, messages: list[dict[str, Any]], assets: list[Any], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:
         prepared_messages = self._messages_with_assets(messages, assets)
         payload = self._build_payload(messages=prepared_messages, model_config=model_config, response_format=response_format)
-        body = self._post_json(payload, timeout=(model_config or {}).get("timeout", 120))
-        content = body["choices"][0]["message"]["content"]
-        return ModelResponse(
-            raw_output=content,
-            metadata={"usage": body.get("usage"), "response_id": body.get("id"), "asset_count": len(assets)},
+        log_progress(logger, "model_request_start",
+            model=payload.get("model"), message_count=len(prepared_messages),
+            asset_count=len(assets) if assets else 0,
+            temperature=payload.get("temperature"), max_tokens=payload.get("max_tokens"),
+            timeout=(model_config or {}).get("timeout", 120),
+            has_response_format=response_format is not None,
+            has_chat_template_kwargs="chat_template_kwargs" in payload,
+            enable_thinking=payload.get("chat_template_kwargs", {}).get("enable_thinking") if payload.get("chat_template_kwargs") else None,
         )
+        start_time = time.perf_counter()
+        try:
+            body = self._post_json(payload, timeout=(model_config or {}).get("timeout", 120))
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            content = body["choices"][0]["message"]["content"]
+            log_progress(logger, "model_response_done",
+                model=payload.get("model"), duration_ms=duration_ms, response_chars=len(content) if content else 0)
+            return ModelResponse(
+                raw_output=content,
+                metadata={"usage": body.get("usage"), "response_id": body.get("id"), "asset_count": len(assets)},
+            )
+        except Exception as exc:
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            logger.exception("[stage=model_request_failed] model=%s duration_ms=%d error=%s: %s", payload.get("model"), duration_ms, type(exc).__name__, exc)
+            raise
 
     def _build_payload(self, *, messages: list[dict[str, Any]], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> dict[str, Any]:
         cfg = model_config or {}

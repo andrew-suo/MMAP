@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from mmap_optimizer.core.config import OptimizerConfig, load_mapping, optimizer_config_from_mapping, validate_optimizer_config_mapping
 from mmap_optimizer.core.enums import PromptType
+from mmap_optimizer.logging import get_logger
+
+logger = get_logger(__name__)
 from mmap_optimizer.core.scenario import (
     DEFAULT_SCENARIOS_DIR,
     list_scenarios,
@@ -97,6 +101,8 @@ def run_smoke(args: argparse.Namespace) -> None:
         fewshot_min_accuracy_delta=args.fewshot_min_accuracy_delta,
     )
     store = JsonStore(args.run_dir)
+    logger.info(f"[stage=optimizer_start] mode=smoke config_path=%s sample_count=%d planned_rounds=%d output_dir=%s log_level=%s",
+                getattr(args, 'config', 'N/A'), len(state.samples), args.rounds, args.run_dir, os.environ.get('MMAP_LOG_LEVEL', 'INFO'))
     runner = RoundRunner(model_client=MockModelClient(), evaluator=Evaluator(), store=store, config=config)
     _, metrics_records, summary = OptimizerLoop(runner=runner, store=store, config=config, resume=getattr(args, "resume", False)).run(state, max_rounds=args.rounds)
     _print_run_result(metrics_records, summary)
@@ -113,6 +119,11 @@ def run(args: argparse.Namespace) -> None:
     store = JsonStore(config.run_dir)
     extraction_client = build_model_client(config.extraction_model)
     optimizer_client = build_model_client(config.optimizer_model)
+    logger.info("[stage=optimizer_start] mode=production config_path=%s extraction_model=%s extraction_provider=%s optimizer_model=%s optimizer_provider=%s max_workers=%d sample_count=%d planned_rounds=%s output_dir=%s log_level=%s",
+                args.config, config.extraction_model.model, config.extraction_model.provider,
+                config.optimizer_model.model, config.optimizer_model.provider,
+                config.execution_max_workers, len(state.samples),
+                args.rounds, config.run_dir, os.environ.get('MMAP_LOG_LEVEL', 'INFO'))
     runner = RoundRunner(
         extraction_client=extraction_client,
         optimizer_client=optimizer_client,

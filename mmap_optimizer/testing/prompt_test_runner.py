@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from dataclasses import dataclass
 
 from mmap_optimizer.dataset.sample import GroundTruth, Sample, SampleAsset
 from mmap_optimizer.evaluation.evaluator import EvaluationRecord, Evaluator
+from mmap_optimizer.logging import get_logger, log_stage
 from mmap_optimizer.model.client import ModelClient
 from mmap_optimizer.orchestration.executor import map_ordered
 from mmap_optimizer.orchestration.records import RunRecord
 from mmap_optimizer.prompt.contract import OutputSchemaContract
 from mmap_optimizer.prompt.version import PromptVersion
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -118,6 +123,8 @@ class PromptTestRunner:
         fewshot_assets = [assets[asset_id] for asset_id in fewshot_asset_ids if asset_id in assets]
 
         def run_one(sample: Sample) -> tuple[RunRecord, EvaluationRecord]:
+            sample_start_time = time.perf_counter()
+            log_stage(logger, "sample_start", sample_id=sample.id, asset_count=len(sample.asset_ids), fewshot_asset_count=len(fewshot_asset_ids))
             user_payload = {
                 "sample_id": sample.id,
                 "text_context": sample.text_context,
@@ -135,49 +142,67 @@ class PromptTestRunner:
             vote_mode = self.enable_voting and (gt is None or gt.primary_answer is None)
             raw_outputs: list[str] = []
             rounds = max(1, self.vote_rounds if vote_mode else 1)
-            for vote_index in range(rounds):
-                payload = dict(user_payload)
-                if vote_mode:
-                    payload["vote_round"] = vote_index + 1
-                messages[-1]["content"] = json.dumps(payload, ensure_ascii=False)
-                response = self.model_client.complete_multimodal(
-                    messages,
-                    all_assets,
-                    model_config=self.model_config,
-                )
-                raw_outputs.append(response.raw_output)
-            run = RunRecord(
-                id=f"run_{round_id}_{run_type}{suffix}_{sample.id}",
-                round_id=round_id,
-                run_type=run_type,
-                sample_id=sample.id,
-                prompt_version_id=prompt.id,
-                rendered_prompt_hash=rendered.text_hash,
-                model_id=self.model_id,
-                raw_output=raw_outputs[0],
-            )
             try:
-                run.parsed_output = json.loads(raw_outputs[0])
-            except Exception:
-                run.parsed_output = None
-            if vote_mode:
-                evaluation = self.evaluator.evaluate_without_ground_truth(
+                for vote_index in range(rounds):
+                    payload = dict(user_payload)
+                    if vote_mode:
+                        payload["vote_round"] = vote_index + 1
+                    messages[-1]["content"] = json.dumps(payload, ensure_ascii=False)
+                    log_stage(logger, "model_call_start", sample_id=sample.id, vote_index=vote_index)
+                    call_start = time.perf_counter()
+                    response = self.model_client.complete_multimodal(
+                        messages,
+                        all_assets,
+                        model_config=self.model_config,
+                    )
+                    call_duration_ms = int((time.perf_counter() - call_start) * 1000)
+                    log_stage(logger, "model_call_done", sample_id=sample.id, vote_index=vote_index, duration_ms=call_duration_ms, response_chars=len(response.raw_output) if response.raw_output else 0)
+                    raw_outputs.append(response.raw_output)
+                run = RunRecord(
+                    id=f"run_{round_id}_{run_type}{suffix}_{sample.id}",
                     round_id=round_id,
-                    run_id=run.id,
+                    run_type=run_type,
                     sample_id=sample.id,
-                    raw_outputs=raw_outputs,
-                    contract=contract,
-                )
-            else:
-                evaluation = self.evaluator.evaluate(
-                    round_id=round_id,
-                    run_id=run.id,
-                    sample_id=sample.id,
+                    prompt_version_id=prompt.id,
+                    rendered_prompt_hash=rendered.text_hash,
+                    model_id=self.model_id,
                     raw_output=raw_outputs[0],
-                    ground_truth=gt,
-                    contract=contract,
                 )
-            return run, evaluation
+                log_stage(logger, "parse_start", sample_id=sample.id)
+                try:
+                    run.parsed_output = json.loads(raw_outputs[0])
+                    log_stage(logger, "parse_done", sample_id=sample.id, status="ok")
+                except Exception as exc:
+                    run.parsed_output = None
+                    logger.warning(f"[stage=parse_failed] sample_id={sample.id} error={type(exc).__name__}: {exc}")
+                    log_stage(logger, "parse_done", sample_id=sample.id, status="failed")
+                log_stage(logger, "evaluate_start", sample_id=sample.id)
+                if vote_mode:
+                    evaluation = self.evaluator.evaluate_without_ground_truth(
+                        round_id=round_id,
+                        run_id=run.id,
+                        sample_id=sample.id,
+                        raw_outputs=raw_outputs,
+                        contract=contract,
+                    )
+                else:
+                    evaluation = self.evaluator.evaluate(
+                        round_id=round_id,
+                        run_id=run.id,
+                        sample_id=sample.id,
+                        raw_output=raw_outputs[0],
+                        ground_truth=gt,
+                        contract=contract,
+                    )
+                log_stage(logger, "evaluate_done", sample_id=sample.id, decision=evaluation.overall_status)
+                sample_duration_ms = int((time.perf_counter() - sample_start_time) * 1000)
+                log_stage(logger, "sample_done", sample_id=sample.id, duration_ms=sample_duration_ms, decision=evaluation.overall_status)
+                return run, evaluation
+            except Exception as exc:
+                sample_duration_ms = int((time.perf_counter() - sample_start_time) * 1000)
+                logger.exception(f"[stage=sample_failed] sample_id={sample.id} duration_ms={sample_duration_ms} error={type(exc).__name__}: {exc}")
+                log_stage(logger, "sample_failed", sample_id=sample.id, duration_ms=sample_duration_ms, error=type(exc).__name__)
+                raise
 
         for run, evaluation in map_ordered(samples, run_one, max_workers=self.max_workers):
             runs.append(run)

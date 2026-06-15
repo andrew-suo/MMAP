@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from mmap_optimizer.core.config import OptimizerConfig
+from mmap_optimizer.logging import get_logger, log_stage
 from mmap_optimizer.metrics.round_metrics import RoundMetrics
 from mmap_optimizer.metrics.trend import MetricsTrend, build_metrics_trend
 from mmap_optimizer.storage.json_store import JsonStore
@@ -11,6 +13,8 @@ from .checkpoint import OptimizerCheckpoint
 from .records import OptimizationRound
 from .run_state import RunState, RunStateStore
 from .round_runner import OptimizerState, RoundRunner
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -69,27 +73,48 @@ class OptimizerLoop:
         metrics_records: list[RoundMetrics] = []
         self.store.write_json("run_summary.json", summary)
         self.run_state_store.save(RunState(run_id=summary.id, iteration=effective_start - 1, stage="initialized", completed_round_ids=[]))
+        log_stage(logger, "optimizer_start", planned_rounds=planned_rounds, start_round=effective_start, resume=self.resume)
 
-        for offset in range(planned_rounds):
-            round_index = effective_start + offset
-            self.run_state_store.save(RunState(run_id=summary.id, iteration=round_index, stage="round_started", completed_round_ids=[record.id for record in rounds]))
-            round_record, metrics = self.runner.run_round(state, round_index=round_index)
-            rounds.append(round_record)
-            metrics_records.append(metrics)
-            self._accumulate(summary, round_record, metrics)
-            summary.completed_round_count = len(rounds)
-            summary.round_ids = [record.id for record in rounds]
-            summary.final_extraction_prompt_version_id = state.active_extraction_prompt.id
-            summary.final_analysis_prompt_version_id = state.active_analysis_prompt.id
+        try:
+            for offset in range(planned_rounds):
+                round_index = effective_start + offset
+                round_start_time = time.perf_counter()
+                self.run_state_store.save(RunState(run_id=summary.id, iteration=round_index, stage="round_started", completed_round_ids=[record.id for record in rounds]))
+                log_stage(logger, "round_start", round=round_index, planned_rounds=planned_rounds,
+                          input_extraction_prompt_id=state.active_extraction_prompt.id,
+                          input_analysis_prompt_id=state.active_analysis_prompt.id)
+                round_record, metrics = self.runner.run_round(state, round_index=round_index)
+                round_duration_ms = int((time.perf_counter() - round_start_time) * 1000)
+                rounds.append(round_record)
+                metrics_records.append(metrics)
+                self._accumulate(summary, round_record, metrics)
+                summary.completed_round_count = len(rounds)
+                summary.round_ids = [record.id for record in rounds]
+                summary.final_extraction_prompt_version_id = state.active_extraction_prompt.id
+                summary.final_analysis_prompt_version_id = state.active_analysis_prompt.id
+                self._write_trend_and_summary(summary, metrics_records)
+                self.run_state_store.save(RunState(run_id=summary.id, iteration=round_index, stage="round_completed", completed_round_ids=summary.round_ids))
+                self._save_checkpoint(round_index, state, metrics, fewshot_pool_path=None)
+                log_stage(logger, "round_done", round=round_index, duration_ms=round_duration_ms,
+                          accepted_patch_count=len(round_record.accepted_patch_ids) if round_record.accepted_patch_ids else 0,
+                          rejected_patch_count=len(round_record.rejected_patch_ids) if round_record.rejected_patch_ids else 0,
+                          batch_accuracy=metrics.batch_accuracy)
+
+            summary.status = "COMPLETED"
+            summary.stopped_reason = "PLANNED_ROUNDS_COMPLETED"
             self._write_trend_and_summary(summary, metrics_records)
-            self.run_state_store.save(RunState(run_id=summary.id, iteration=round_index, stage="round_completed", completed_round_ids=summary.round_ids))
-            self._save_checkpoint(round_index, state, metrics, fewshot_pool_path=None)
-
-        summary.status = "COMPLETED"
-        summary.stopped_reason = "PLANNED_ROUNDS_COMPLETED"
-        self._write_trend_and_summary(summary, metrics_records)
-        self.run_state_store.save(RunState(run_id=summary.id, iteration=effective_start + planned_rounds - 1, stage="completed", completed_round_ids=summary.round_ids))
-        return rounds, metrics_records, summary
+            self.run_state_store.save(RunState(run_id=summary.id, iteration=effective_start + planned_rounds - 1, stage="completed", completed_round_ids=summary.round_ids))
+            log_stage(logger, "optimizer_done", status="COMPLETED", completed_rounds=len(rounds),
+                      final_batch_accuracy=summary.final_batch_accuracy,
+                      total_accepted_patches=summary.total_accepted_patches,
+                      total_rejected_patches=summary.total_rejected_patches)
+            return rounds, metrics_records, summary
+        except Exception as exc:
+            summary.status = "FAILED"
+            summary.stopped_reason = f"ERROR: {type(exc).__name__}: {exc}"
+            self._write_trend_and_summary(summary, metrics_records)
+            logger.exception(f"[stage=optimizer_failed] error={type(exc).__name__}: {exc}")
+            raise
 
     def _save_checkpoint(self, round_index: int, state: OptimizerState, metrics: RoundMetrics, *, fewshot_pool_path: str | None) -> None:
         checkpoint = OptimizerCheckpoint(

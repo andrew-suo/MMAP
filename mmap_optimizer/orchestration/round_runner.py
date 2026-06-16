@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import shutil
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 from mmap_optimizer.compression.engine import CompressionEngine
 from mmap_optimizer.core.config import OptimizerConfig, model_config_to_request_dict
@@ -34,6 +34,7 @@ from mmap_optimizer.testing.patch_runner import PatchTester
 from mmap_optimizer.testing.patch_tester import PatchTestResult
 from mmap_optimizer.testing.prompt_test_runner import PromptTestRunner
 from mmap_optimizer.testing.suite_builder import PatchTestSuiteBuilder
+from mmap_optimizer.testing.transition import classify_transition
 from mmap_optimizer.storage.json_store import JsonStore
 from .records import OptimizationRound, RoundStage, RunRecord
 
@@ -50,6 +51,12 @@ class OptimizerState:
     active_analysis_prompt: PromptVersion
     extraction_output_schema_contract: OutputSchemaContract
     analysis_output_schema_contract: OutputSchemaContract
+
+
+@dataclass
+class _RegressionCheckResult:
+    regression_count: int = 0
+    regression_sample_ids: list[str] = field(default_factory=list)
 
 
 class RoundRunner:
@@ -247,8 +254,10 @@ class RoundRunner:
             accepted_patches: list[Patch] = []
             suite_builder = PatchTestSuiteBuilder()
             patch_tester = PatchTester(model_client=self.extraction_client, evaluator=self.evaluator, model_id=self.config.extraction_model.model, model_config=self._extraction_model_config())
+            canary_sample_ids = self._select_canary_samples(state.sample_states) if self.config.canary_protection_enabled else []
+            historically_fixed_ids = self._collect_historically_fixed_sample_ids(state.sample_states) if self.config.historical_regression_check_enabled else []
             for patch in merged_patches:
-                suite = suite_builder.build_individual_suite(round_id=round_id, patch=patch, current_evaluations=evals)
+                suite = suite_builder.build_individual_suite(round_id=round_id, patch=patch, current_evaluations=evals, canary_sample_ids=canary_sample_ids)
                 base_suite_evals = [evaluation for evaluation in evals if evaluation.sample_id in set(suite.sample_ids)]
                 patch_run = patch_tester.test_individual(
                     round_id=round_id,
@@ -260,6 +269,8 @@ class RoundRunner:
                     assets=state.assets,
                     ground_truths=state.ground_truths,
                     contract=state.extraction_output_schema_contract,
+                    canary_sample_ids=canary_sample_ids,
+                    historically_fixed_sample_ids=historically_fixed_ids,
                 )
                 test_result = patch_run.test_result
                 patch_test_runs.extend(patch_run.runs)
@@ -294,6 +305,8 @@ class RoundRunner:
                     base_prompt=state.active_extraction_prompt,
                     base_evaluations=evals,
                     state=state,
+                    canary_sample_ids=canary_sample_ids,
+                    historically_fixed_sample_ids=historically_fixed_ids,
                 )
                 patch_test_runs.extend(bundle_runs)
                 patch_test_evals.extend(bundle_evals)
@@ -302,6 +315,7 @@ class RoundRunner:
 
             if final_patches:
                 log_stage(logger, "patch_apply_start", round=round_index, patch_count=len(final_patches))
+                pre_apply_prompt = state.active_extraction_prompt
                 next_prompt = state.active_extraction_prompt
                 next_version = next_prompt.version + 1
                 for patch in final_patches:
@@ -313,6 +327,26 @@ class RoundRunner:
                 state.active_extraction_prompt = next_prompt
                 round_record.accepted_patch_ids = [patch.id for patch in final_patches]
                 log_stage(logger, "patch_apply_done", round=round_index, applied_count=len(final_patches))
+
+                # Post-apply regression verification
+                if self.config.post_apply_regression_enabled:
+                    regression_result = self._post_apply_regression_check(
+                        round_id=round_id,
+                        new_prompt=state.active_extraction_prompt,
+                        base_evaluations=evals + dval_evals,
+                        state=state,
+                    )
+                    if regression_result.regression_count > 0:
+                        log_stage(logger, "post_apply_regression_detected", round=round_index, regression_count=regression_result.regression_count, regression_sample_ids=regression_result.regression_sample_ids)
+                        state.active_extraction_prompt = pre_apply_prompt
+                        round_record.accepted_patch_ids = []
+                        for patch in final_patches:
+                            patch.status = "rejected"
+                            patch.rejection_reason = "POST_APPLY_REGRESSION"
+                            rejected_patches.append(patch)
+                        final_patches = []
+                    else:
+                        log_stage(logger, "post_apply_regression_passed", round=round_index)
             round_record.rejected_patch_ids = [patch.id for patch in rejected_patches]
             self._advance_stage(round_id, round_record, RoundStage.PATCH_APPLY.value)
             self._save_intermediate(round_id, "patch_apply_done", {
@@ -503,11 +537,13 @@ class RoundRunner:
         base_prompt: PromptVersion,
         base_evaluations: list[EvaluationRecord],
         state: OptimizerState,
+        canary_sample_ids: list[str] | None = None,
+        historically_fixed_sample_ids: list[str] | None = None,
     ) -> tuple[list[Patch], list[RunRecord], list[EvaluationRecord], list[PatchTestResult]]:
         runs: list[RunRecord] = []
         evaluations: list[EvaluationRecord] = []
         results: list[PatchTestResult] = []
-        all_suite = suite_builder.build_bundle_suite(round_id=round_id, patches=accepted_patches, current_evaluations=base_evaluations)
+        all_suite = suite_builder.build_bundle_suite(round_id=round_id, patches=accepted_patches, current_evaluations=base_evaluations, canary_sample_ids=canary_sample_ids)
         all_base_evals = [evaluation for evaluation in base_evaluations if evaluation.sample_id in set(all_suite.sample_ids)]
         all_bundle = patch_tester.test_bundle(
             round_id=round_id,
@@ -519,6 +555,8 @@ class RoundRunner:
             assets=state.assets,
             ground_truths=state.ground_truths,
             contract=state.extraction_output_schema_contract,
+            canary_sample_ids=canary_sample_ids,
+            historically_fixed_sample_ids=historically_fixed_sample_ids,
         )
         runs.extend(all_bundle.runs)
         evaluations.extend(all_bundle.evaluations)
@@ -529,7 +567,7 @@ class RoundRunner:
         safe: list[Patch] = []
         for patch in sorted(accepted_patches, key=lambda item: len(item.fixed_sample_ids), reverse=True):
             trial = [*safe, patch]
-            trial_suite = suite_builder.build_bundle_suite(round_id=round_id, patches=trial, current_evaluations=base_evaluations)
+            trial_suite = suite_builder.build_bundle_suite(round_id=round_id, patches=trial, current_evaluations=base_evaluations, canary_sample_ids=canary_sample_ids)
             trial_base_evals = [evaluation for evaluation in base_evaluations if evaluation.sample_id in set(trial_suite.sample_ids)]
             trial_bundle = patch_tester.test_bundle(
                 round_id=round_id,
@@ -541,6 +579,8 @@ class RoundRunner:
                 assets=state.assets,
                 ground_truths=state.ground_truths,
                 contract=state.extraction_output_schema_contract,
+                canary_sample_ids=canary_sample_ids,
+                historically_fixed_sample_ids=historically_fixed_sample_ids,
             )
             runs.extend(trial_bundle.runs)
             evaluations.extend(trial_bundle.evaluations)
@@ -593,6 +633,66 @@ class RoundRunner:
         intermediate_dir = self.store.root / round_id / "intermediate"
         if intermediate_dir.exists():
             shutil.rmtree(intermediate_dir)
+
+    def _select_canary_samples(self, sample_states: dict[str, SampleState]) -> list[str]:
+        """Select canary sample IDs: samples with high consecutive correct count."""
+        candidates = [
+            (sample_id, ss.consecutive_correct_count)
+            for sample_id, ss in sample_states.items()
+            if ss.consecutive_correct_count >= self.config.canary_min_consecutive_correct
+        ]
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return [sample_id for sample_id, _ in candidates[: self.config.canary_max_count]]
+
+    def _collect_historically_fixed_sample_ids(self, sample_states: dict[str, SampleState]) -> list[str]:
+        """Collect sample IDs that were previously fixed (consecutive_correct_count > 0)."""
+        return [sample_id for sample_id, ss in sample_states.items() if ss.consecutive_correct_count > 0]
+
+    def _post_apply_regression_check(
+        self,
+        *,
+        round_id: str,
+        new_prompt: PromptVersion,
+        base_evaluations: list[EvaluationRecord],
+        state: OptimizerState,
+    ) -> _RegressionCheckResult:
+        """Run regression check after patches are applied. Returns regression info."""
+        import random
+
+        correct_base_evals = [e for e in base_evaluations if e.overall_status == "correct"]
+        if not correct_base_evals:
+            return _RegressionCheckResult(regression_count=0, regression_sample_ids=[])
+
+        # Sample a subset of correct base evaluations for regression check
+        sample_count = max(1, int(len(correct_base_evals) * self.config.post_apply_regression_sample_ratio))
+        sampled_evals = random.Random(round_id).sample(correct_base_evals, min(sample_count, len(correct_base_evals)))
+
+        sample_by_id = {s.id: s for s in state.samples}
+        regression_samples = [sample_by_id[e.sample_id] for e in sampled_evals if e.sample_id in sample_by_id]
+        if not regression_samples:
+            return _RegressionCheckResult(regression_count=0, regression_sample_ids=[])
+
+        run_result = self._prompt_runner().run(
+            round_id=round_id,
+            run_type=RunType.REGRESSION_CHECK.value,
+            prompt=new_prompt,
+            samples=regression_samples,
+            assets=state.assets,
+            ground_truths=state.ground_truths,
+            contract=state.extraction_output_schema_contract,
+        )
+
+        base_by_sample = {e.sample_id: e for e in correct_base_evals}
+        regression_sample_ids: list[str] = []
+        for patched_eval in run_result.evaluations:
+            base_eval = base_by_sample.get(patched_eval.sample_id)
+            if base_eval is None:
+                continue
+            transition = classify_transition(base_eval, patched_eval)
+            if transition == "broken":
+                regression_sample_ids.append(patched_eval.sample_id)
+
+        return _RegressionCheckResult(regression_count=len(regression_sample_ids), regression_sample_ids=regression_sample_ids)
 
     def _apply_contribution_feedback(self, state: OptimizerState, evaluations: list[EvaluationRecord], contribution) -> None:
         for evaluation in evaluations:

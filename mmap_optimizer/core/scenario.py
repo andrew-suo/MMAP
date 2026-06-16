@@ -30,6 +30,7 @@ class ScenarioConfig:
     prompts_dir: Path
     schemas_dir: Path
     manifest: dict[str, object] = field(default_factory=dict)
+    section_id_hints: dict[str, str] = field(default_factory=dict)
 
 
 def load_scenario(path: str | Path) -> ScenarioConfig:
@@ -42,6 +43,9 @@ def load_scenario(path: str | Path) -> ScenarioConfig:
         raise FileNotFoundError(f"Scenario optimizer config not found: {config_path}")
     raw = config_path.read_text(encoding="utf-8")
     config = optimizer_config_from_mapping(load_mapping(config_path))
+    section_id_hints = manifest.get("section_id_hints", {})
+    if not isinstance(section_id_hints, dict):
+        section_id_hints = {}
     return ScenarioConfig(
         id=root.name,
         root=root,
@@ -51,6 +55,7 @@ def load_scenario(path: str | Path) -> ScenarioConfig:
         prompts_dir=root / str(manifest.get("prompts_dir", "prompts")),
         schemas_dir=root / str(manifest.get("schemas_dir", "schemas")),
         manifest=manifest,
+        section_id_hints=section_id_hints,
     )
 
 

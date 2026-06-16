@@ -49,6 +49,7 @@ def _apply_scenario_args(args: argparse.Namespace) -> None:
         args.extraction_schema = str(scenario.schemas_dir / "extraction_output_schema.json")
     if args.analysis_schema == "schemas/analysis_output_schema.json":
         args.analysis_schema = str(scenario.schemas_dir / "analysis_output_schema.json")
+    args.section_id_hints = scenario.section_id_hints
     args.loaded_scenario_id = scenario.id
 
 
@@ -61,10 +62,11 @@ def _load_contract(path: Path, prompt_type: PromptType, contract_id: str) -> Out
 
 def _build_state(args: argparse.Namespace) -> tuple[OptimizerState, OutputSchemaContract, OutputSchemaContract]:
     data_dir = Path(args.data_dir)
+    hints = getattr(args, "section_id_hints", {}) or {}
     extraction_contract = _load_contract(Path(args.extraction_schema), PromptType.EXTRACTION, "extraction_output_schema_v1")
     analysis_contract = _load_contract(Path(args.analysis_schema), PromptType.ANALYSIS, "analysis_output_schema_v1")
-    extraction_prompt = initialize_prompt_from_file(args.extraction_prompt, PromptType.EXTRACTION, extraction_contract)
-    analysis_prompt = initialize_prompt_from_file(args.analysis_prompt, PromptType.ANALYSIS, analysis_contract)
+    extraction_prompt = initialize_prompt_from_file(args.extraction_prompt, PromptType.EXTRACTION, extraction_contract, section_id_hints=hints)
+    analysis_prompt = initialize_prompt_from_file(args.analysis_prompt, PromptType.ANALYSIS, analysis_contract, section_id_hints=hints)
     samples = load_samples(data_dir / "samples.jsonl")
     ground_truths = load_ground_truths(data_dir / "ground_truth.jsonl")
     assets = load_assets(data_dir / "assets.jsonl") if (data_dir / "assets.jsonl").exists() else {}
@@ -137,11 +139,12 @@ def run(args: argparse.Namespace) -> None:
 
 def check_prompt(args: argparse.Namespace) -> None:
     _apply_scenario_args(args)
+    hints = getattr(args, "section_id_hints", {}) or {}
     extraction_contract = _load_contract(Path(args.extraction_schema), PromptType.EXTRACTION, "extraction_output_schema_v1")
     analysis_contract = _load_contract(Path(args.analysis_schema), PromptType.ANALYSIS, "analysis_output_schema_v1")
     prompts = {
-        "extraction": initialize_prompt_from_file(args.extraction_prompt, PromptType.EXTRACTION, extraction_contract),
-        "analysis": initialize_prompt_from_file(args.analysis_prompt, PromptType.ANALYSIS, analysis_contract),
+        "extraction": initialize_prompt_from_file(args.extraction_prompt, PromptType.EXTRACTION, extraction_contract, section_id_hints=hints),
+        "analysis": initialize_prompt_from_file(args.analysis_prompt, PromptType.ANALYSIS, analysis_contract, section_id_hints=hints),
     }
     reports = {name: check_prompt_health(prompt.prompt_ir) for name, prompt in prompts.items()}
     print(json.dumps(reports, default=lambda item: item.__dict__, ensure_ascii=False))

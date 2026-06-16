@@ -4,3 +4,4 @@ optimizer_config: optimizer.yaml
 data_dir: data
 prompts_dir: prompts
 schemas_dir: schemas
+# section_id_hints: {}  # Optional: map heading keywords → section IDs for domain-specific matching

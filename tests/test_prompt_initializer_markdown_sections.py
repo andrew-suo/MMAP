@@ -387,3 +387,96 @@ JSON。
     ids = [s.id for s in version.prompt_ir.sections]
     assert "analysis_output_schema" in ids
     assert "legacy_unmapped" in ids
+
+
+# ─────────── integration: ScenarioConfig → section_id_hints pipeline ───────────
+
+def test_scenario_config_reads_section_id_hints_from_manifest(tmp_path):
+    """ScenarioConfig.section_id_hints is populated from scenario.yaml manifest."""
+    from mmap_optimizer.core.scenario import ScenarioConfig, load_scenario
+
+    scenario_dir = tmp_path / "test_scenario"
+    scenario_dir.mkdir()
+    (scenario_dir / "scenario.yaml").write_text(
+        "name: Test\noptimizer_config: optimizer.yaml\ndata_dir: data\nprompts_dir: prompts\nschemas_dir: schemas\n"
+        "section_id_hints:\n  cable_check: jian_cha_bu_zhou\n  debris_check: jian_cha_bu_zhou\n",
+        encoding="utf-8",
+    )
+    (scenario_dir / "optimizer.yaml").write_text("batch_size: 5\n", encoding="utf-8")
+    (scenario_dir / "data").mkdir()
+    (scenario_dir / "prompts").mkdir()
+    (scenario_dir / "schemas").mkdir()
+
+    config = load_scenario(scenario_dir)
+    assert config.section_id_hints == {"cable_check": "jian_cha_bu_zhou", "debris_check": "jian_cha_bu_zhou"}
+
+
+def test_scenario_config_empty_hints_when_not_in_manifest(tmp_path):
+    """When scenario.yaml has no section_id_hints, the field defaults to empty dict."""
+    from mmap_optimizer.core.scenario import load_scenario
+
+    scenario_dir = tmp_path / "no_hints"
+    scenario_dir.mkdir()
+    (scenario_dir / "scenario.yaml").write_text(
+        "name: No Hints\noptimizer_config: optimizer.yaml\ndata_dir: data\nprompts_dir: prompts\nschemas_dir: schemas\n",
+        encoding="utf-8",
+    )
+    (scenario_dir / "optimizer.yaml").write_text("batch_size: 5\n", encoding="utf-8")
+    (scenario_dir / "data").mkdir()
+    (scenario_dir / "prompts").mkdir()
+    (scenario_dir / "schemas").mkdir()
+
+    config = load_scenario(scenario_dir)
+    assert config.section_id_hints == {}
+
+
+def test_scenario_config_ignores_non_dict_section_id_hints(tmp_path):
+    """If section_id_hints is not a dict, it falls back to empty dict."""
+    from mmap_optimizer.core.scenario import load_scenario
+
+    scenario_dir = tmp_path / "bad_hints"
+    scenario_dir.mkdir()
+    (scenario_dir / "scenario.yaml").write_text(
+        "name: Bad Hints\noptimizer_config: optimizer.yaml\ndata_dir: data\nprompts_dir: prompts\nschemas_dir: schemas\n"
+        "section_id_hints: not_a_dict\n",
+        encoding="utf-8",
+    )
+    (scenario_dir / "optimizer.yaml").write_text("batch_size: 5\n", encoding="utf-8")
+    (scenario_dir / "data").mkdir()
+    (scenario_dir / "prompts").mkdir()
+    (scenario_dir / "schemas").mkdir()
+
+    config = load_scenario(scenario_dir)
+    assert config.section_id_hints == {}
+
+
+def test_section_id_hints_flow_from_scenario_to_prompt_version(tmp_path):
+    """End-to-end: hints from scenario.yaml produce correct section IDs in PromptVersion."""
+    hints = {
+        "线缆": "cable_check",
+        "杂物": "debris_check",
+        "场景": "scene_check",
+    }
+    prompt = """## 角色定义
+你是检查员。
+
+## 线缆检查步骤
+检查线缆是否扭曲。
+
+## 场景检查
+检查场景完整性。
+
+## 杂物检测
+检测是否有杂物。
+
+## 输出格式
+JSON。
+"""
+    version = initialize_prompt_version(
+        prompt, PromptType.EXTRACTION, _contract(),
+        section_id_hints=hints,
+    )
+    ids = [s.id for s in version.prompt_ir.sections]
+    assert "cable_check" in ids, f"Expected cable_check in {ids}"
+    assert "scene_check" in ids, f"Expected scene_check in {ids}"
+    assert "debris_check" in ids, f"Expected debris_check in {ids}"

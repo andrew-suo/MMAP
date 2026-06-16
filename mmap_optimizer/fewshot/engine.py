@@ -246,13 +246,13 @@ class FewShotOptimizationEngine:
                 {"role": "system", "content": "Generate a concise few-shot reasoning example without changing the output schema."},
                 {
                     "role": "user",
-                    "content": {
+                    "content": json.dumps({
                         "sample_id": sample.id,
                         "ground_truth": ground_truth.value,
                         "final_output": final_output,
                         "text_context": sample.text_context,
                         "mock_output": sample.metadata.get("mock_fewshot_reasoning"),
-                    },
+                    }, ensure_ascii=False),
                 },
             ],
             model_config=self.reasoning_model_config,
@@ -381,7 +381,9 @@ class FewShotOptimizationEngine:
         broken: list[str] = []
         schema_violations: list[str] = []
         for candidate in candidate_evaluations:
-            baseline = baseline_by_sample[candidate.sample_id]
+            baseline = baseline_by_sample.get(candidate.sample_id)
+            if baseline is None:
+                continue
             if candidate.overall_status in {"parse_error", "schema_error"} or not candidate.schema_valid:
                 schema_violations.append(candidate.sample_id)
             if baseline.overall_status == "correct" and candidate.overall_status != "correct":

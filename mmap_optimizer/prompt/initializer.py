@@ -114,6 +114,32 @@ def _slugify(text: str) -> str:
     return cleaned
 
 
+def _pinyin_slug(text: str) -> str:
+    """Convert Chinese text to pinyin-based snake_case slug.
+
+    Returns empty string if pypinyin is not installed or text has no CJK
+    characters.  This is a fallback between English slug and section_NNN.
+    """
+    try:
+        from pypinyin import lazy_pinyin
+    except ImportError:
+        return ""
+    # Strip leading numbers / section markers (e.g. "3.2 第二步：..." → "第二步...")
+    stripped = re.sub(r"^[\d.]+\s*", "", text)
+    if not stripped:
+        return ""
+    # Check if there are CJK characters worth converting
+    has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in stripped)
+    if not has_cjk:
+        return ""
+    parts = lazy_pinyin(stripped)
+    slug = "_".join(p.lower() for p in parts if p.isalnum())
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    if len(slug) < 2:
+        return ""
+    return slug
+
+
 def _resolve_from_hints(title: str, hints: dict[str, str]) -> str | None:
     """Check title against hint map.  Longest match wins."""
     if not hints or not title:
@@ -181,6 +207,11 @@ def normalize_section_id(
     # (3) English slug fallback
     if not candidate:
         slug = _slugify(title)
+        if slug:
+            candidate = slug
+    # (3b) pinyin slug fallback for Chinese titles (requires pypinyin)
+    if not candidate:
+        slug = _pinyin_slug(title)
         if slug:
             candidate = slug
     # (4) stable numeric fallback

@@ -44,6 +44,8 @@ class OpenAICompatibleClient:
             body = self._post_json(payload, timeout=(model_config or {}).get("timeout", 120))
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             content = body["choices"][0]["message"]["content"]
+            if content is None:
+                content = ""
             log_progress(logger, "model_response_done",
                 model=payload.get("model"), duration_ms=duration_ms, response_chars=len(content) if content else 0)
             return ModelResponse(raw_output=content, metadata={"usage": body.get("usage"), "response_id": body.get("id")})
@@ -69,6 +71,8 @@ class OpenAICompatibleClient:
             body = self._post_json(payload, timeout=(model_config or {}).get("timeout", 120))
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             content = body["choices"][0]["message"]["content"]
+            if content is None:
+                content = ""
             log_progress(logger, "model_response_done",
                 model=payload.get("model"), duration_ms=duration_ms, response_chars=len(content) if content else 0)
             return ModelResponse(

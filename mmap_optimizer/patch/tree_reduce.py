@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from mmap_optimizer.prompt.ir import PromptIR
 from .clusterer import PatchCluster, cluster_patches
 from .conflict import PatchConflict, detect_patch_conflicts
-from .deduplicate import is_duplicate_patch, is_subsumed_patch, merge_trace
+from .deduplicate import is_duplicate_patch, is_subsumed_patch, merge_trace, normalize_patch_text
 from .merge_report import PatchMergeReport
 from .schema import Patch
 
@@ -109,10 +109,16 @@ class TreeReducePatchMerger:
 
     def _merge_many(self, round_id: str, cluster: PatchCluster, patches: list[Patch]) -> Patch:
         first = patches[0]
+        seen_texts: set[str] = set()
         text_lines = []
         for patch in patches:
             patch.status = "superseded"
             line = patch.patch_text.strip()
+            # Deduplicate: skip patch_text that is identical after normalization
+            normalized = normalize_patch_text(line)
+            if normalized in seen_texts:
+                continue
+            seen_texts.add(normalized)
             text_lines.append(line if line.startswith("-") else f"- {line}")
         merged_id = f"merge_{round_id}_{cluster.target_prompt_type}_{cluster.section_id}_{cluster.operation_type}"
         return Patch(

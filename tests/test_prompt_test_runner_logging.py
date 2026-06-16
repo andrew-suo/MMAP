@@ -275,19 +275,22 @@ class TestPromptTestRunnerErrorLogging:
         ground_truth = GroundTruth(id="gt-1", sample_id="sample-1", value={"answer": "test"}, primary_answer="test")
 
         with caplog.at_level(logging.INFO):
-            with pytest.raises(RuntimeError):
-                runner.run(
-                    round_id="round-1",
-                    run_type="test",
-                    prompt=prompt,
-                    samples=[sample],
-                    assets={},
-                    ground_truths={"gt-1": ground_truth},
-                    contract=mock.MagicMock(),
-                )
+            result = runner.run(
+                round_id="round-1",
+                run_type="test",
+                prompt=prompt,
+                samples=[sample],
+                assets={},
+                ground_truths={"gt-1": ground_truth},
+                contract=mock.MagicMock(),
+            )
         assert "sample_failed" in caplog.text
         assert "sample_id=sample-1" in caplog.text
         assert "RuntimeError" in caplog.text
+        # Error is now returned as a failed record, not raised
+        assert len(result.runs) == 1
+        assert len(result.evaluations) == 1
+        assert result.evaluations[0].overall_status == "ERROR"
 
     def test_parse_failed_logs_warning(self, caplog):
         """parse_failed should log a warning."""

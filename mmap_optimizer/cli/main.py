@@ -263,10 +263,21 @@ def generate_hints(args: argparse.Namespace) -> None:
     config = scenario.optimizer_config
     model_client = build_model_client(config.optimizer_model)
 
-    generated = auto_generate_hints(raw_prompt, model_client)
+    result = auto_generate_hints(raw_prompt, model_client)
+    generated = result.hints
 
     # Merge: existing manual hints take priority
     merged = {**generated, **existing_hints}
+
+    output = {
+        "scenario": scenario.id,
+        "existing_hints": existing_hints,
+        "generated_hints": generated,
+        "merged_hints": merged,
+        "uncovered_titles": result.uncovered_titles,
+        "is_complete": result.is_complete,
+        "written": False,
+    }
 
     if args.write and generated:
         # Persist to scenario.yaml
@@ -275,21 +286,10 @@ def generate_hints(args: argparse.Namespace) -> None:
         manifest["section_id_hints"] = merged
         # Write back preserving YAML structure
         _write_yaml_hints(manifest_path, manifest, merged)
-        print(json.dumps({
-            "scenario": scenario.id,
-            "existing_hints": existing_hints,
-            "generated_hints": generated,
-            "merged_hints": merged,
-            "written": True,
-        }, ensure_ascii=False, indent=2))
+        output["written"] = True
+        print(json.dumps(output, ensure_ascii=False, indent=2))
     else:
-        print(json.dumps({
-            "scenario": scenario.id,
-            "existing_hints": existing_hints,
-            "generated_hints": generated,
-            "merged_hints": merged,
-            "written": False,
-        }, ensure_ascii=False, indent=2))
+        print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
 def _write_yaml_hints(manifest_path: Path, manifest: dict, hints: dict[str, str]) -> None:

@@ -121,6 +121,7 @@ class PromptTestRunner:
         suffix = f"_{run_id_suffix}" if run_id_suffix else ""
         fewshot_asset_ids = _extract_fewshot_asset_ids(prompt, samples)
         fewshot_assets = [assets[asset_id] for asset_id in fewshot_asset_ids if asset_id in assets]
+        log_stage(logger, "fewshot_assets_extracted", fewshot_count=len(fewshot_assets), fewshot_asset_ids=fewshot_asset_ids)
 
         def run_one(sample: Sample) -> tuple[RunRecord, EvaluationRecord]:
             sample_start_time = time.perf_counter()
@@ -202,7 +203,26 @@ class PromptTestRunner:
                 sample_duration_ms = int((time.perf_counter() - sample_start_time) * 1000)
                 logger.exception(f"[stage=sample_failed] sample_id={sample.id} duration_ms={sample_duration_ms} error={type(exc).__name__}: {exc}")
                 log_stage(logger, "sample_failed", sample_id=sample.id, duration_ms=sample_duration_ms, error=type(exc).__name__)
-                raise
+                # Return a failed RunRecord + EvaluationRecord instead of raising
+                run = RunRecord(
+                    id=f"run_{round_id}_{run_type}{suffix}_{sample.id}",
+                    round_id=round_id,
+                    run_type=run_type,
+                    sample_id=sample.id,
+                    prompt_version_id=prompt.id,
+                    rendered_prompt_hash=rendered.text_hash,
+                    model_id=self.model_id,
+                    raw_output=None,
+                )
+                evaluation = self.evaluator.evaluate_without_ground_truth(
+                    round_id=round_id,
+                    run_id=run.id,
+                    sample_id=sample.id,
+                    raw_outputs=[str(exc)],
+                    contract=contract,
+                )
+                evaluation.overall_status = "ERROR"
+                return run, evaluation
 
         for run, evaluation in map_ordered(samples, run_one, max_workers=self.max_workers):
             runs.append(run)

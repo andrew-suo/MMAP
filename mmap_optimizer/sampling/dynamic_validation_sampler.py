@@ -91,10 +91,26 @@ def select_dynamic_validation_batch(
 ) -> DynamicValidationBatch:
     rng = random.Random(seed)
     exclude_sample_ids = exclude_sample_ids or set()
+    coverage_warnings: list[str] = []
     if batch_size <= 0:
         return DynamicValidationBatch(id=f"dval_{round_id}", round_id=round_id, sample_ids=[])
 
     candidates = [sample for sample in samples if sample.active and sample.id not in exclude_sample_ids]
+
+    # Handle empty candidate pool
+    if not candidates:
+        coverage_warnings.append("NO_CANDIDATES_AVAILABLE")
+        return DynamicValidationBatch(
+            id=f"dval_{round_id}",
+            round_id=round_id,
+            sample_ids=[],
+            rolling_window_coverage_satisfied=False,
+            coverage_warnings=coverage_warnings,
+        )
+
+    # Warn when candidates are insufficient
+    if len(candidates) < batch_size:
+        coverage_warnings.append(f"CANDIDATES_INSUFFICIENT:{len(candidates)}<batch_size({batch_size})")
     scores = {
         sample.id: _sample_score(
             sample,
@@ -114,7 +130,6 @@ def select_dynamic_validation_batch(
 
     selected: list[Sample] = []
     selected_ids: set[str] = set()
-    coverage_warnings: list[str] = []
     labels_to_cover = sorted(by_label_samples)
     difficulty_bins_to_cover = [bin_name for bin_name in ["easy", "medium", "hard"] if bin_name in by_difficulty_samples]
 

@@ -44,7 +44,7 @@ class OptimizerConfig:
     fewshot_min_accuracy_delta: float = 0.0
     analysis_json_repair_enabled: bool = False
     analysis_json_repair_max_attempts: int = 1
-    patch_semantic_merge_enabled: bool = False
+    patch_semantic_merge_enabled: bool = True
     patch_root_audit_enabled: bool = False
     llm_compression_enabled: bool = False
     patch_repair_enabled: bool = False

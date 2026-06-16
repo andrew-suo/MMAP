@@ -28,7 +28,7 @@ class SemanticPatchProcessor:
         template = self.registry.get(template_id)
         prompt = template.render(prompt_structure=_prompt_structure(prompt_ir), patches_json=json.dumps([_patch_to_dict(p) for p in patches], ensure_ascii=False, indent=2))
         response = self.model_client.complete(
-            [{"role": "system", "content": prompt}, {"role": "user", "content": {"patches": [_patch_to_dict(p) for p in patches]}}],
+            [{"role": "system", "content": prompt}, {"role": "user", "content": json.dumps({"patches": [_patch_to_dict(p) for p in patches]}, ensure_ascii=False)}],
             model_config=self.model_config,
             response_format=template.output_contract,
         )

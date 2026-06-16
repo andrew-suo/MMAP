@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import asdict, dataclass
 
 from mmap_optimizer.compression.engine import CompressionEngine
@@ -34,7 +35,7 @@ from mmap_optimizer.testing.patch_tester import PatchTestResult
 from mmap_optimizer.testing.prompt_test_runner import PromptTestRunner
 from mmap_optimizer.testing.suite_builder import PatchTestSuiteBuilder
 from mmap_optimizer.storage.json_store import JsonStore
-from .records import OptimizationRound, RunRecord
+from .records import OptimizationRound, RoundStage, RunRecord
 
 logger = get_logger(__name__)
 
@@ -136,6 +137,13 @@ class RoundRunner:
         log_stage(logger, "dval_run_done", round=round_index, sample_count=len(dynamic_samples), evaluation_count=len(dval_evals))
         round_record.extraction_run_ids = [r.id for r in extraction_runs]
         round_record.dynamic_validation_run_ids = [r.id for r in dval_runs]
+        self._advance_stage(round_id, round_record, RoundStage.BASELINE_EVAL.value)
+        self._save_intermediate(round_id, "extraction_done", {
+            "extraction_run_ids": round_record.extraction_run_ids,
+            "dynamic_validation_run_ids": round_record.dynamic_validation_run_ids,
+            "eval_count": len(evals),
+            "dval_eval_count": len(dval_evals),
+        })
 
         extraction_by_sample = {run.sample_id: run for run in extraction_runs if run.sample_id}
         analysis_records = []
@@ -206,6 +214,14 @@ class RoundRunner:
                     rejected_patches.append(patch)
                     self._debug("guardrail_detention", round_id=round_id, patch_id=patch.id, reason=validation.reason)
 
+            self._advance_stage(round_id, round_record, RoundStage.PATCH_VALIDATION.value)
+            self._save_intermediate(round_id, "patch_generation_done", {
+                "draft_patch_count": len(draft_patches),
+                "candidate_patch_count": len(candidate_patches),
+                "rejected_patch_count": len(rejected_patches),
+                "analysis_record_count": len(analysis_records),
+            })
+
             merge_result = TreeReducePatchMerger().merge(round_id=round_id, patches=candidate_patches, prompt_ir=state.active_extraction_prompt.prompt_ir)
             merge_report = merge_result.merge_report
             merged_patches = merge_result.final_patches
@@ -262,6 +278,12 @@ class RoundRunner:
                     rejected_patches.append(patch)
 
             log_stage(logger, "patch_testing_done", round=round_index, accepted_count=len(accepted_patches), rejected_count=len(merged_patches) - len(accepted_patches))
+            self._advance_stage(round_id, round_record, RoundStage.PATCH_EVAL.value)
+            self._save_intermediate(round_id, "patch_eval_done", {
+                "accepted_patch_ids": [p.id for p in accepted_patches],
+                "rejected_patch_ids": [p.id for p in rejected_patches],
+                "test_result_count": len(patch_test_results),
+            })
             final_patches: list[Patch] = []
             if accepted_patches:
                 final_patches, bundle_runs, bundle_evals, bundle_results = self._select_safe_bundle(
@@ -292,6 +314,11 @@ class RoundRunner:
                 round_record.accepted_patch_ids = [patch.id for patch in final_patches]
                 log_stage(logger, "patch_apply_done", round=round_index, applied_count=len(final_patches))
             round_record.rejected_patch_ids = [patch.id for patch in rejected_patches]
+            self._advance_stage(round_id, round_record, RoundStage.PATCH_APPLY.value)
+            self._save_intermediate(round_id, "patch_apply_done", {
+                "accepted_patch_ids": round_record.accepted_patch_ids,
+                "rejected_patch_ids": round_record.rejected_patch_ids,
+            })
 
         analysis_evolution_report = AnalysisEvolutionEngine().evolve(
             round_id=round_id,
@@ -354,6 +381,12 @@ class RoundRunner:
             if analysis_compression_report.accepted:
                 state.active_analysis_prompt = compressed_analysis_prompt
 
+        self._advance_stage(round_id, round_record, RoundStage.COMPRESSION.value)
+        self._save_intermediate(round_id, "compression_done", {
+            "compression_report_count": len(compression_reports),
+            "compression_accepted": any(r.accepted for r in compression_reports),
+        })
+
         fewshot_round_index = round_index - self.config.max_text_rounds
         if self.config.fewshot_enabled and 0 < fewshot_round_index <= self.config.fewshot_max_rounds:
             fewshot_engine = FewShotOptimizationEngine(
@@ -384,6 +417,12 @@ class RoundRunner:
             round_record.fewshot_report_ids = [report.id for report in fewshot_reports]
             if fewshot_report.accepted:
                 state.active_extraction_prompt = fewshot_prompt
+
+        self._advance_stage(round_id, round_record, RoundStage.FEWSHOT.value)
+        self._save_intermediate(round_id, "fewshot_done", {
+            "fewshot_report_count": len(fewshot_reports),
+            "fewshot_accepted": any(r.accepted for r in fewshot_reports),
+        })
 
         contribution = build_section_contribution(
             patches=self._unique_patches([*draft_patches, *candidate_patches, *rejected_patches]),
@@ -427,6 +466,7 @@ class RoundRunner:
         round_record.round_metrics_id = metrics.id
         round_record.status = "ROUND_COMPLETED"
         self._update_sample_state(state, evals + dval_evals, round_index)
+        self._advance_stage(round_id, round_record, RoundStage.COMPLETED.value)
 
         self.store.append_jsonl(f"{round_id}/runs/extraction_runs.jsonl", extraction_runs)
         self.store.append_jsonl(f"{round_id}/runs/dynamic_validation_runs.jsonl", dval_runs)
@@ -449,6 +489,7 @@ class RoundRunner:
             self.store.write_json(f"{round_id}/prompts/active_extraction_prompt.json", state.active_extraction_prompt)
         self.store.write_json(f"{round_id}/metrics/round_metrics.json", metrics)
         self.store.write_json(f"{round_id}/round.json", round_record)
+        self._cleanup_intermediate(round_id)
         return round_record, metrics
 
 
@@ -537,6 +578,21 @@ class RoundRunner:
         for patch in patches:
             by_id[patch.id] = patch
         return list(by_id.values())
+
+    def _save_intermediate(self, round_id: str, stage: str, data: dict) -> None:
+        """Save intermediate results after each stage for crash recovery."""
+        self.store.write_json(f"{round_id}/intermediate/{stage}.json", data)
+
+    def _advance_stage(self, round_id: str, round_record: OptimizationRound, stage: str) -> None:
+        """Update current_stage and persist round_record for crash recovery."""
+        round_record.current_stage = stage
+        self.store.write_json(f"{round_id}/round.json", round_record)
+
+    def _cleanup_intermediate(self, round_id: str) -> None:
+        """Remove intermediate files after a round completes successfully."""
+        intermediate_dir = self.store.root / round_id / "intermediate"
+        if intermediate_dir.exists():
+            shutil.rmtree(intermediate_dir)
 
     def _apply_contribution_feedback(self, state: OptimizerState, evaluations: list[EvaluationRecord], contribution) -> None:
         for evaluation in evaluations:

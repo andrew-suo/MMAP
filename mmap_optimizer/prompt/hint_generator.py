@@ -57,6 +57,36 @@ class AutoHintResult:
         return len(self.uncovered_titles) == 0
 
 
+def _extract_json_object(text: str) -> str | None:
+    """Extract the first complete JSON object from text, handling nested braces."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if escape:
+            escape = False
+            continue
+        if c == "\\":
+            escape = True
+            continue
+        if c == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
 def _extract_headings(raw_prompt: str) -> list[str]:
     """Extract heading titles from raw markdown prompt."""
     return [m.group(2).strip() for m in _HEADING_RE.finditer(raw_prompt)]
@@ -118,13 +148,13 @@ def auto_generate_hints(
     response = model_client.complete(messages, model_config=config)
     raw = response.raw_output.strip()
 
-    # Extract JSON from response (handle markdown code fences)
-    json_match = re.search(r"\{[^}]+\}", raw, re.DOTALL)
-    if not json_match:
+    # Extract JSON from response (handle nested braces and markdown code fences)
+    json_str = _extract_json_object(raw)
+    if not json_str:
         return AutoHintResult(uncovered_titles=uncovered)
 
     try:
-        hints = json.loads(json_match.group())
+        hints = json.loads(json_str)
     except json.JSONDecodeError:
         return AutoHintResult(uncovered_titles=uncovered)
 

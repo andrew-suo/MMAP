@@ -68,8 +68,8 @@ def test_tree_reduce_merges_related_non_duplicate_patches():
     assert len(result.final_patches) == 1
     merged = result.final_patches[0]
     assert merged.id == "merge_round_000001_extraction_ambiguity_policy_ADD_RULE"
-    assert "- 检查标签缺失。" in merged.patch_text
-    assert "- 检查安装方向。" in merged.patch_text
+    assert "[p1] 检查标签缺失。" in merged.patch_text
+    assert "[p2] 检查安装方向。" in merged.patch_text
     assert merged.source_sample_ids == ["s1", "s2"]
     assert result.merge_report.merged_patch_ids == [merged.id]
 

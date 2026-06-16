@@ -119,8 +119,12 @@ class TreeReducePatchMerger:
             if normalized in seen_texts:
                 continue
             seen_texts.add(normalized)
-            text_lines.append(line if line.startswith("-") else f"- {line}")
+            # Structured format: preserve intent_name for downstream semantic merge
+            text_lines.append(f"[{patch.intent_name}] {line}")
         merged_id = f"merge_{round_id}_{cluster.target_prompt_type}_{cluster.section_id}_{cluster.operation_type}"
+        intent_descriptions = "; ".join(
+            f"{patch.intent_name}: {patch.intent_description}" for patch in patches
+        )
         return Patch(
             id=merged_id,
             type=first.type,
@@ -131,14 +135,17 @@ class TreeReducePatchMerger:
             operation_type=first.operation_type,
             operation_mode="append",
             intent_name=f"merged_{cluster.section_id}_{cluster.operation_type}",
-            intent_description="Tree-reduced related patches",
+            intent_description=intent_descriptions,
             patch_text="\n".join(text_lines),
             rationale="Tree-reduced from: " + ", ".join(patch.id for patch in patches),
             source_sample_ids=sorted({sid for patch in patches for sid in patch.source_sample_ids}),
             source_analysis_ids=sorted({aid for patch in patches for aid in patch.source_analysis_ids}),
             risk_level=max((patch.risk_level for patch in patches), key=lambda risk: _RISK_RANK.get(risk, 0), default="unknown"),
             possible_side_effects=sorted({effect for patch in patches for effect in patch.possible_side_effects}),
-            extra={"merged_from_patch_ids": [patch.id for patch in patches]},
+            extra={
+                "merged_from_patch_ids": [patch.id for patch in patches],
+                "original_patch_texts": [patch.patch_text.strip() for patch in patches],
+            },
         )
 
     def _conflict_to_dict(self, conflict: PatchConflict) -> dict:

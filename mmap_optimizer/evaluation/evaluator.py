@@ -74,7 +74,7 @@ class Evaluator:
                 overall_status=EvaluationStatus.PARSE_ERROR.value,
                 extra={"no_ground_truth": True, "vote_rounds": len(raw_outputs), "parse_errors": parse_errors},
             )
-        primary_field = contract.primary_answer_fields[0]
+        primary_field = contract.primary_answer_fields[0] if contract.primary_answer_fields else "result"
         policy = contract.validation_policy
         schema_results = [
             self.validator.validate(parsed, contract.schema, extra_fields_allowed=policy.get("extra_fields_allowed", False))
@@ -151,7 +151,7 @@ class Evaluator:
             )
         policy = contract.validation_policy
         schema_result = self.validator.validate(parsed, contract.schema, extra_fields_allowed=policy.get("extra_fields_allowed", False))
-        primary_field = contract.primary_answer_fields[0]
+        primary_field = contract.primary_answer_fields[0] if contract.primary_answer_fields else "result"
         prediction = parsed.get(primary_field)
         norm_prediction = normalize_label(prediction, self.label_mapping)
         norm_gt = normalize_label(ground_truth.primary_answer, self.label_mapping)

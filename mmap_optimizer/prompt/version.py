@@ -36,6 +36,12 @@ class PromptVersion:
         prompt_ir_data = data.get("prompt_ir")
         if isinstance(prompt_ir_data, dict):
             data["prompt_ir"] = PromptIR.from_dict(prompt_ir_data)
+        # Rebuild rendered_prompt: after serialization it becomes a dict, not None
+        rendered_data = data.get("rendered_prompt")
+        if isinstance(rendered_data, dict):
+            data["rendered_prompt"] = RenderedPrompt(
+                **{k: rendered_data[k] for k in RenderedPrompt.__dataclass_fields__ if k in rendered_data}
+            )
         known = set(cls.__dataclass_fields__.keys())
         fields = {k: data[k] for k in known & data.keys()}
         extra = {k: v for k, v in data.items() if k not in known}

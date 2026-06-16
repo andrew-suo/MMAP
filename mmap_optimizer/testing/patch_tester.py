@@ -40,7 +40,9 @@ def summarize_patch_test(round_id: str, patch_id: str | None, suite_id: str, bas
     by_base = {e.sample_id: e for e in base_evals}
     result = PatchTestResult(id=f"ptest_{round_id}_{patch_id or 'bundle'}", round_id=round_id, patch_id=patch_id, test_suite_id=suite_id)
     for patched in patched_evals:
-        base = by_base[patched.sample_id]
+        base = by_base.get(patched.sample_id)
+        if base is None:
+            continue
         transition = classify_transition(base, patched)
         if transition == "fixed":
             result.fixed_sample_ids.append(patched.sample_id)

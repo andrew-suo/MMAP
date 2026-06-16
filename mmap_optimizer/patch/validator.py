@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from mmap_optimizer.prompt.ir import PromptIR
 from .schema import TEXT_LEVEL_OPERATION_MODES, Patch
@@ -23,6 +24,9 @@ class PatchValidationResult:
     valid: bool
     reason: str | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        return {"valid": bool(self.valid), "reason": self.reason}
+
 
 class PatchValidator:
     def validate(self, patch: Patch, prompt_ir: PromptIR) -> PatchValidationResult:
@@ -37,12 +41,31 @@ class PatchValidator:
             return PatchValidationResult(False, "EMPTY_PATCH_TEXT")
         if patch.target_prompt_type == "extraction" and not patch.source_sample_ids:
             return PatchValidationResult(False, "MISSING_SOURCE_SAMPLE")
-        allowed = ALLOWED_BY_SECTION.get(patch.section_id)
-        if allowed is not None and patch.operation_type not in allowed:
-            return PatchValidationResult(False, "OPERATION_NOT_ALLOWED")
-        schema_words = ["新增字段", "删除字段", "修改字段", "output schema", "analysis_output_schema"]
-        if any(word in patch.patch_text for word in schema_words):
+
+        constraints = patch.constraints or {}
+        patch_allowed_ops = constraints.get("allowed_operation_types")
+        if patch_allowed_ops is not None:
+            if patch.operation_type not in set(patch_allowed_ops):
+                return PatchValidationResult(False, "OPERATION_NOT_ALLOWED_BY_CONSTRAINT")
+        else:
+            allowed = ALLOWED_BY_SECTION.get(patch.section_id)
+            if allowed is not None and patch.operation_type not in allowed:
+                return PatchValidationResult(False, "OPERATION_NOT_ALLOWED")
+
+        forbidden_words = constraints.get("forbidden_keywords")
+        default_schema_words = ["新增字段", "删除字段", "修改字段", "output schema", "analysis_output_schema"]
+        check_words = list(forbidden_words) if forbidden_words is not None else default_schema_words
+        if any(word in patch.patch_text for word in check_words):
             return PatchValidationResult(False, "SCHEMA_IMMUTABILITY_VIOLATION")
+
+        must_mention = constraints.get("must_mention_section_ids") or constraints.get("must_mention")
+        if must_mention:
+            normalized = [str(x).strip() for x in must_mention if str(x).strip()]
+            if normalized:
+                haystack = f"{patch.patch_text}\n{patch.section_id}\n{patch.rationale or ''}"
+                if not any(mention in haystack for mention in normalized):
+                    return PatchValidationResult(False, "MUST_MENTION_SECTION_MISSING")
+
         mode = patch.effective_operation_mode
         if mode == "replace_in_section":
             old_text = patch.locator_value("old_text")

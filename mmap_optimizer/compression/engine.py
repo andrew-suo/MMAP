@@ -61,31 +61,37 @@ class CompressionEngine:
         ground_truths: dict[str, GroundTruth],
         contract: OutputSchemaContract,
         base_evaluations: list[EvaluationRecord],
+        token_budget: int | None = None,
     ) -> tuple[PromptVersion, CompressionReport, list, list[EvaluationRecord]]:
         prompt_type_value = getattr(prompt.prompt_type, "value", str(prompt.prompt_type))
-        before_lines = self._line_count(prompt.render().text)
+        rendered_text = prompt.render().text
+        before_lines = self._line_count(rendered_text)
+        before_tokens = self._token_count(rendered_text)
+        line_exceeded = line_budget is not None and before_lines > line_budget
+        token_exceeded = token_budget is not None and before_tokens > token_budget
         report = CompressionReport(
             id=f"compression_{round_id}_{prompt_type_value}",
             round_id=round_id,
             prompt_type=prompt_type_value,
             prompt_version_before_id=prompt.id,
             triggered=False,
-            reason="LINE_BUDGET_NOT_CONFIGURED" if line_budget is None else "WITHIN_LINE_BUDGET",
+            reason="LINE_BUDGET_NOT_CONFIGURED" if line_budget is None and token_budget is None else ("TOKEN_BUDGET_EXCEEDED" if token_exceeded else ("LINE_BUDGET_EXCEEDED" if line_exceeded else "WITHIN_BUDGET")),
             line_count_before=before_lines,
             line_budget=line_budget,
+            token_count_before=before_tokens,
+            token_budget=token_budget,
         )
-        if line_budget is None:
-            return prompt, report, [], []
-        if before_lines <= line_budget:
+        if not (line_exceeded or token_exceeded):
             return prompt, report, [], []
 
         report.triggered = True
-        report.reason = "LINE_BUDGET_EXCEEDED"
+        report.reason = "TOKEN_BUDGET_EXCEEDED" if token_exceeded else "LINE_BUDGET_EXCEEDED"
         candidates = self._candidate_sections(prompt)
         report.candidate_sections = [
             {
                 "section_id": section.id,
                 "line_count": self._line_count(section.content),
+                "token_count": self._token_count(section.content),
                 "compressibility": section.compressibility,
                 "priority": section.priority,
             }
@@ -143,7 +149,9 @@ class CompressionEngine:
             if behavior_failure is not None:
                 report.rejected_sections.append({"section_id": section.id, "reason": behavior_failure})
                 continue
-            after_lines = self._line_count(candidate_prompt.render().text)
+            candidate_text = candidate_prompt.render().text
+            after_lines = self._line_count(candidate_text)
+            after_tokens = self._token_count(candidate_text)
             if after_lines >= before_lines:
                 report.rejected_sections.append({"section_id": section.id, "reason": "NO_LINE_REDUCTION"})
                 continue
@@ -155,6 +163,8 @@ class CompressionEngine:
             report.semantic_check_passed = True
             report.behavior_check_passed = True
             report.line_reduction = before_lines - after_lines
+            report.token_count_after = after_tokens
+            report.token_reduction = before_tokens - after_tokens
             return candidate_prompt, report, all_runs, all_evaluations
 
         report.failure_reason = "NO_SAFE_COMPRESSION_CANDIDATE"
@@ -170,31 +180,37 @@ class CompressionEngine:
         error_evaluations: list[EvaluationRecord],
         sample_metadata: dict[str, dict[str, Any]],
         base_runs: list[RunRecord],
+        token_budget: int | None = None,
     ) -> tuple[PromptVersion, CompressionReport, list[RunRecord], list[EvaluationRecord]]:
         prompt_type_value = getattr(prompt.prompt_type, "value", str(prompt.prompt_type))
-        before_lines = self._line_count(prompt.render().text)
+        rendered_text = prompt.render().text
+        before_lines = self._line_count(rendered_text)
+        before_tokens = self._token_count(rendered_text)
+        line_exceeded = line_budget is not None and before_lines > line_budget
+        token_exceeded = token_budget is not None and before_tokens > token_budget
         report = CompressionReport(
             id=f"compression_{round_id}_{prompt_type_value}",
             round_id=round_id,
             prompt_type=prompt_type_value,
             prompt_version_before_id=prompt.id,
             triggered=False,
-            reason="LINE_BUDGET_NOT_CONFIGURED" if line_budget is None else "WITHIN_LINE_BUDGET",
+            reason="LINE_BUDGET_NOT_CONFIGURED" if line_budget is None and token_budget is None else ("TOKEN_BUDGET_EXCEEDED" if token_exceeded else ("LINE_BUDGET_EXCEEDED" if line_exceeded else "WITHIN_BUDGET")),
             line_count_before=before_lines,
             line_budget=line_budget,
+            token_count_before=before_tokens,
+            token_budget=token_budget,
         )
-        if line_budget is None:
-            return prompt, report, [], []
-        if before_lines <= line_budget:
+        if not (line_exceeded or token_exceeded):
             return prompt, report, [], []
 
         report.triggered = True
-        report.reason = "LINE_BUDGET_EXCEEDED"
+        report.reason = "TOKEN_BUDGET_EXCEEDED" if token_exceeded else "LINE_BUDGET_EXCEEDED"
         candidates = self._candidate_sections(prompt)
         report.candidate_sections = [
             {
                 "section_id": section.id,
                 "line_count": self._line_count(section.content),
+                "token_count": self._token_count(section.content),
                 "compressibility": section.compressibility,
                 "priority": section.priority,
             }
@@ -242,7 +258,9 @@ class CompressionEngine:
             if behavior_failure is not None:
                 report.rejected_sections.append({"section_id": section.id, "reason": behavior_failure})
                 continue
-            after_lines = self._line_count(candidate_prompt.render().text)
+            candidate_text = candidate_prompt.render().text
+            after_lines = self._line_count(candidate_text)
+            after_tokens = self._token_count(candidate_text)
             if after_lines >= before_lines:
                 report.rejected_sections.append({"section_id": section.id, "reason": "NO_LINE_REDUCTION"})
                 continue
@@ -254,6 +272,8 @@ class CompressionEngine:
             report.semantic_check_passed = True
             report.behavior_check_passed = True
             report.line_reduction = before_lines - after_lines
+            report.token_count_after = after_tokens
+            report.token_reduction = before_tokens - after_tokens
             return candidate_prompt, report, all_runs, []
 
         report.failure_reason = "NO_SAFE_COMPRESSION_CANDIDATE"
@@ -407,3 +427,8 @@ class CompressionEngine:
         if not text:
             return 0
         return len(text.splitlines())
+
+    def _token_count(self, text: str) -> int:
+        if not text:
+            return 0
+        return max(1, len(text) // 4)

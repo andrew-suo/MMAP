@@ -20,8 +20,14 @@ class CompressionReport:
     line_budget: int | None = None
     compressed_section_id: str | None = None
     line_reduction: int = 0
+    token_count_before: int = 0
+    token_count_after: int | None = None
+    token_budget: int | None = None
+    token_reduction: int = 0
     semantic_check_passed: bool = False
     behavior_check_passed: bool = False
+    canary_broken_count: int = 0
+    historical_fixed_regression_count: int = 0
     rejected_sections: list[dict] = field(default_factory=list)
     failure_reason: str | None = None
     semantic_retry_count: int = 0

@@ -34,3 +34,20 @@ def save_prompt_snapshot(store: JsonStore, prompt: PromptVersion, snapshot_id: s
 
 def load_prompt_snapshot(store: JsonStore, snapshot_id: str) -> dict[str, Any]:
     return store.read_json(f"snapshots/{snapshot_id}.json")
+
+
+def rollback_to_snapshot(store: JsonStore, snapshot_id: str) -> "PromptVersion":
+    snapshot = load_prompt_snapshot(store, snapshot_id)
+    payload = snapshot.get("prompt_payload") if isinstance(snapshot, dict) else getattr(snapshot, "prompt_payload", None)
+    if not payload:
+        raise ValueError(f"Snapshot {snapshot_id} has no prompt_payload")
+    from mmap_optimizer.prompt.version import PromptVersion
+    return PromptVersion.from_dict(payload)
+
+
+def snapshot_exists(store: JsonStore, snapshot_id: str) -> bool:
+    try:
+        store.read_json(f"snapshots/{snapshot_id}.json")
+        return True
+    except (FileNotFoundError, OSError):
+        return False

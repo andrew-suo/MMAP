@@ -33,6 +33,12 @@ class Patch:
     toxicity_result: str = "not_tested"
     effectiveness_result: str = "not_tested"
     rejection_reason: str | None = None
+    target: dict[str, Any] = field(default_factory=dict)
+    operation: dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, Any] = field(default_factory=dict)
+    risk: dict[str, Any] = field(default_factory=dict)
+    audit: dict[str, Any] = field(default_factory=dict)
+    constraints: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
     # New additive fields for exact text-level patches. Safe default values
     # mean existing callers that don't use these fields continue to work.
@@ -58,7 +64,8 @@ class Patch:
             "risk_level", "possible_side_effects", "fixed_sample_ids",
             "broken_sample_ids", "toxicity_result", "effectiveness_result",
             "rejection_reason", "extra", "insert_text", "insert_position",
-            "locator", "payload",
+            "locator", "payload", "target", "operation", "evidence", "risk",
+            "audit", "constraints",
         }
         kwargs: dict[str, Any] = {key: data[key] for key in known if key in data}
         extra = dict(kwargs.get("extra") or {})
@@ -105,3 +112,60 @@ class Patch:
         """Return whether this patch targets a specific text location within a section."""
 
         return self.effective_operation_mode in TEXT_LEVEL_OPERATION_MODES
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible dict snapshot of the patch."""
+
+        return {
+            "id": self.id,
+            "type": self.type,
+            "status": self.status,
+            "target_prompt_type": self.target_prompt_type,
+            "base_version_id": self.base_version_id,
+            "section_id": self.section_id,
+            "operation_type": self.operation_type,
+            "operation_mode": self.operation_mode,
+            "intent_name": self.intent_name,
+            "intent_description": self.intent_description,
+            "patch_text": self.patch_text,
+            "rationale": self.rationale,
+            "old_text": self.old_text,
+            "target_text": self.target_text,
+            "new_text": self.new_text,
+            "source_sample_ids": list(self.source_sample_ids),
+            "source_analysis_ids": list(self.source_analysis_ids),
+            "risk_level": self.risk_level,
+            "possible_side_effects": list(self.possible_side_effects),
+            "fixed_sample_ids": list(self.fixed_sample_ids),
+            "broken_sample_ids": list(self.broken_sample_ids),
+            "toxicity_result": self.toxicity_result,
+            "effectiveness_result": self.effectiveness_result,
+            "rejection_reason": self.rejection_reason,
+            "target": dict(self.target),
+            "operation": dict(self.operation),
+            "evidence": dict(self.evidence),
+            "risk": dict(self.risk),
+            "audit": dict(self.audit),
+            "constraints": dict(self.constraints),
+            "extra": dict(self.extra),
+            "insert_text": self.insert_text,
+            "insert_position": self.insert_position,
+            "locator": dict(self.locator),
+            "payload": dict(self.payload),
+        }
+
+    def compact_dict(self) -> dict[str, Any]:
+        """Minimal public view – only fields typically needed for UI/logs."""
+
+        return {
+            "id": self.id,
+            "section_id": self.section_id,
+            "operation_type": self.operation_type,
+            "status": self.status,
+            "risk_level": self.risk_level,
+            "rejection_reason": self.rejection_reason,
+            "toxicity_result": self.toxicity_result,
+            "effectiveness_result": self.effectiveness_result,
+            "fixed_sample_ids": list(self.fixed_sample_ids),
+            "broken_sample_ids": list(self.broken_sample_ids),
+        }

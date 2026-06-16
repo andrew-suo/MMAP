@@ -24,6 +24,8 @@ class PatchApplier:
         *,
         new_version: int,
         version_type: PromptVersionType | str = PromptVersionType.OPTIMIZATION,
+        round_id: str | None = None,
+        run_id: str | None = None,
     ) -> PromptVersion:
         apply_start_time = time.perf_counter()
         section = base_prompt.prompt_ir.section_by_id(patch.section_id)
@@ -81,6 +83,8 @@ class PatchApplier:
             prompt_ir=new_ir, output_schema_contract_id=base_prompt.output_schema_contract_id,
             version_type=version_type, parent_version_id=base_prompt.id,
             applied_patch_ids=[*base_prompt.applied_patch_ids, patch.id],
+            created_by_round_id=round_id,
+            created_by_run_id=run_id,
         )
         new_prompt.render()
         apply_duration_ms = int((time.perf_counter() - apply_start_time) * 1000)

@@ -1,7 +1,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
+
+
+class RoundStage(str, Enum):
+    INIT = "init"
+    OPTIMIZATION_BATCH_SELECT = "optimization_batch_select"
+    BASELINE_EVAL = "baseline_eval"
+    DYNAMIC_VALIDATION = "dynamic_validation"
+    PATCH_GENERATION = "patch_generation"
+    PATCH_VALIDATION = "patch_validation"
+    PATCH_TREE_REDUCE = "patch_tree_reduce"
+    PATCH_EVAL = "patch_eval"
+    PATCH_RANKING = "patch_ranking"
+    PATCH_APPLY = "patch_apply"
+    COMPRESSION = "compression"
+    FEWSHOT = "fewshot"
+    ANALYSIS_EVOLUTION = "analysis_evolution"
+    METRICS = "metrics"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 @dataclass
@@ -38,3 +58,4 @@ class OptimizationRound:
     compression_report_ids: list[str] = field(default_factory=list)
     fewshot_report_ids: list[str] = field(default_factory=list)
     failure_reason: str | None = None
+    current_stage: str = RoundStage.INIT.value

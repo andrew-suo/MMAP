@@ -1,20 +1,24 @@
-# MMAP Optimizer MVP
+# MMAP Optimizer
 
-This repository contains an MVP skeleton for a multimodal prompt optimization framework. It implements the foundations discussed in the design phase:
+Multimodal prompt optimization framework that iteratively improves extraction and analysis prompts through automated patch generation, validation, compression, and few-shot optimization.
 
-- Prompt IR with frozen external output-schema contracts.
-- Prompt rendering with section markers.
-- JSON/JSONL file-based logging for reproducible optimization rounds and run-level summaries.
-- Extraction evaluation with parse, schema, and primary-answer checks.
-- Dynamic validation sampling instead of a fixed validation set.
-- A minimal text-patch loop: analysis-output parsing, patch validation, strict individual patch tests, and PromptVersion updates.
-- Conservative extraction and analysis prompt compression that runs after text optimization and accepts only behavior-preserving line reductions.
-- Greedy few-shot slot optimization for stable text prompts.
-- A smoke CLI that runs mock rounds and an OpenAI-compatible adapter that can send local or remote image assets as multimodal message parts.
+## Features
 
-## Quick smoke run
+- **Prompt IR & Versioning** — Structured `PromptIR` with section-level control, immutable output-schema contracts, and `PromptVersion` with full round/run-level provenance tracking
+- **Patch Workflow** — Analysis-driven patch generation, self-describing constraints (`allowed_operation_types` / `forbidden_keywords` / `must_mention_section_ids`), tree-reduce merge, strict individual + bundle testing, and safe application with traceability
+- **Round Stage State Machine** — Explicit `RoundStage` enum (15 stages from `INIT` to `COMPLETED`) for deterministic round progression tracking
+- **Compression** — Line-budget and token-budget dual-threshold compression with behavior-preservation gates for both extraction and analysis prompts
+- **Few-Shot Optimization** — Greedy slot optimization with persistent candidate pool, schema-complete example generation, and accuracy-delta promotion gates
+- **Checkpoint & Snapshot** — `OptimizerCheckpoint` for run-state persistence and `PromptSnapshot` with rollback support for safe prompt mutation
+- **Dynamic Validation** — Non-fixed validation set with label/difficulty coverage and recent-selection penalty
+- **Config Safety** — Safe type conversion (`_int_safe` / `_float_safe`), instance-level `validate()` with range checks, and graceful fallback for invalid inputs
+- **Debug Event Logger** — In-memory event counting, aggregation by stage/round, and JSONL persistence with cleanup controls
+- **Multimodal Support** — OpenAI-compatible adapter for local/remote image assets as multimodal message parts
+
+## Quick Start
 
 ```bash
+# Smoke run with mock model
 python -m mmap_optimizer.cli.main run-smoke \
   --data-dir data \
   --run-dir runs/smoke \
@@ -23,97 +27,156 @@ python -m mmap_optimizer.cli.main run-smoke \
   --rounds 2 \
   --extraction-line-budget 120 \
   --fewshot-enabled
+
+# Configurable run with real model
+python -m mmap_optimizer.cli.main run --config configs/optimizer.yaml
+
+# Prompt health check without starting a run
+python -m mmap_optimizer.cli.main check-prompt --data-dir data
+
+# Resume an interrupted run
+python -m mmap_optimizer.cli.main run-smoke --rounds 1 --run-dir /tmp/mmap-smoke --resume
 ```
 
-The smoke command loads samples, prompts, and schemas; renders prompt IRs; runs mock extraction; evaluates outputs; optionally consumes mock analysis patch outputs; writes per-round logs plus `run_summary.json`; and prints final-round metrics.
+## Architecture
 
-## MVP module map
+```
+mmap_optimizer/
+├── prompt/           # Prompt IR, versioning, rendering, snapshots, health, contracts
+│   ├── ir.py         # PromptSection + PromptIR (structured prompt representation)
+│   ├── version.py    # PromptVersion with from_dict() + round/run provenance
+│   ├── renderer.py   # PromptRenderer (IR → rendered text with section markers)
+│   ├── snapshot.py   # save_prompt_snapshot() + rollback_to_snapshot()
+│   ├── contract.py   # OutputSchemaContract (frozen external schema)
+│   ├── health.py     # Prompt health validation
+│   └── ...
+├── patch/            # Patch schema, validation, merge, application
+│   ├── schema.py     # Patch (with constraints, to_dict, compact_dict)
+│   ├── validator.py  # PatchValidator (constraint-aware, detailed error reasons)
+│   ├── applier.py    # PatchApplier (round_id/run_id traceability)
+│   ├── tree_reduce.py # Tree-reduce merge with conflict detection
+│   └── ...
+├── orchestration/    # Round runner, optimizer loop, records, checkpoint
+│   ├── records.py    # RoundStage enum + OptimizationRound + RunRecord
+│   ├── round_runner.py # Single-round execution with stage tracking
+│   ├── optimizer_loop.py # Serial multi-round loop
+│   ├── checkpoint.py # OptimizerCheckpoint (save/restore active prompts)
+│   └── ...
+├── compression/      # Line/token budget compression
+│   ├── engine.py     # CompressionEngine (line_budget + token_budget)
+│   ├── report.py     # CompressionReport (with token counts)
+│   └── ...
+├── evaluation/       # Extraction evaluation, schema validation, voting
+├── sampling/         # Optimization + dynamic-validation samplers
+├── fewshot/          # Few-shot candidate pool, slot optimization
+├── analysis/         # Analysis output parsing, repair, evolution
+├── core/             # Config, enums, hashing, scenario loading
+│   ├── config.py     # OptimizerConfig with validate() + safe converters
+│   ├── enums.py      # PromptType, PatchStatus, RunType, EvaluationStatus
+│   └── ...
+├── debug/            # Debug event logger with aggregation
+│   └── logger.py     # DebugEventLogger (counts, summary, clear, reset)
+├── model/            # Mock + OpenAI-compatible multimodal client
+├── storage/          # JSON/JSONL persistence
+├── templates/        # Versioned prompt template registry
+├── testing/          # Patch test runner, suite builder, transitions
+├── metrics/          # Round metrics, section contribution, trend
+├── dataset/          # Sample loader and schema
+└── cli/              # Command-line interface
+```
 
-- `mmap_optimizer/prompt`: Prompt IR, immutable schema contracts, rendering, initialization.
-- `mmap_optimizer/evaluation`: schema validation and primary-answer evaluation.
-- `mmap_optimizer/sampling`: optimization and dynamic-validation samplers.
-- `mmap_optimizer/orchestration`: MVP round runner, serial optimizer loop, and run records.
-- `mmap_optimizer/patch`: patch schema, validation, merge, application, and strict update foundations.
-- `mmap_optimizer/testing`: strict fixed/broken transition summaries.
-- `mmap_optimizer/fewshot`: few-shot candidate/example/set schemas and greedy slot optimizer.
-- `mmap_optimizer/compression`: line-budget compression engine and compression report schema.
-- `mmap_optimizer/storage`: JSON/JSONL persistence.
-- `mmap_optimizer/model`: deterministic mock client and OpenAI-compatible multimodal client.
+## Core Concepts
 
-## Current scope
+### Prompt Version Provenance
 
-This implementation slice focuses on stable data models, logging, prompt rendering, evaluation, dynamic validation, and a runnable text-patch round skeleton. Analysis outputs can now be parsed into patch candidates, each candidate is applied to a temporary PromptVersion for model-backed testing, and accepted patches can update the active extraction PromptVersion after strict tests. If extraction or analysis line budgets are configured, the round then tries conservative compression on mutable sections and promotes only candidates that preserve baseline extraction predictions/statuses or parsed analysis outputs on the behavior suite. Full production LLM prompt engineering for patch generation and unified analysis-prompt patch testing remain next implementation steps.
+Every `PromptVersion` carries `created_by_round_id` and `created_by_run_id`, enabling full traceability from any prompt back to the optimization step that produced it. `PromptVersion.from_dict()` reconstructs versions from serialized data while preserving unknown fields in `_extra` to prevent data loss across version upgrades.
 
+### Patch Self-Describing Constraints
 
-## Mock prompt-dependent outputs
+Patches carry their own `constraints` dict with three validation dimensions:
+- `allowed_operation_types` — restrict which operations this patch may use
+- `forbidden_keywords` — reject patches that mention protected terms (e.g., schema mutation)
+- `must_mention_section_ids` — require patch text to reference specific sections
 
-Tests and smoke data can keep model calls deterministic while still exercising temporary PromptVersion rendering. A sample may provide `metadata.mock_prompt_outputs` rules; `MockModelClient` returns the first rule whose `contains` text appears in the rendered system prompt, otherwise it falls back to `metadata.mock_output`. This allows patch tests to validate the real apply-render-run-evaluate path without external API calls.
+`PatchValidator` checks these constraints before any patch is applied, with detailed error reasons for debugging.
 
+### Round Stage State Machine
 
-## Tree-reduce patch merge and bundle safety
+Each `OptimizationRound` tracks its current stage via the `RoundStage` enum:
 
-Before patch testing, candidate patches are clustered by target prompt, section, and operation; duplicates and subsumed patches are removed while preserving source trace; obvious conflicts such as OK-vs-NG label bias, strict-vs-relaxed guidance, frozen targets, and delete/add operation conflicts are rejected. The merge report is written to `round_xxxxxx/patches/merge_report.json`. Each merged patch is then tested individually, and individually accepted patches are re-tested as a bundle before they can update the active extraction prompt. If the full bundle is toxic, the round runner performs greedy safe-subset selection: patches are tried in descending fixed-sample count order, and any patch that introduces bundle-level toxicity is rejected with a bundle rejection reason.
+```
+INIT → OPTIMIZATION_BATCH_SELECT → BASELINE_EVAL → DYNAMIC_VALIDATION
+     → PATCH_GENERATION → PATCH_VALIDATION → PATCH_TREE_REDUCE
+     → PATCH_EVAL → PATCH_RANKING → PATCH_APPLY → COMPRESSION
+     → FEWSHOT → ANALYSIS_EVOLUTION → METRICS → COMPLETED
+                                                     ↘ FAILED
+```
 
-## Prompt template registry and patch locator alignment
+### Dual-Budget Compression
 
-The optimizer now has a versioned prompt-template registry for production LLM-assisted steps that remain gated by deterministic parsing, validation, and behavior tests. The bundled templates cover patch locator translation, text matching, JSON repair fallback, semantic patch merge/root audit, section rewrite, LLM pruning and prune validation, numbering-only refactor, prompt format repair, and lossless prompt standardization. A deterministic patch alignment helper can calibrate legacy/free-form locator fields (`target_section`, `section_id`, `old_text`, and `target_text`) against the current PromptIR while preserving payload fields such as `content`, `patch_text`, `new_text`, and `reasoning` byte-for-byte. Optional feature flags can route analysis parsing through LLM JSON repair, route tree-reduced patches through semantic merge/root audit before validation, and let compression attempt LLM pruning plus semantic validation before the existing behavior-preservation gate. Text-level patch modes (`replace_in_section`, `insert_after`, and `insert_before`) now fail closed when locators do not match. Supporting production-readiness utilities cover section contribution scoring, no-GT eval voting, run-state checkpoints, prompt snapshots/health checks, ordered concurrency, scenario loading, patch repair, and debug JSONL events.
+`CompressionEngine` supports both line-budget and token-budget thresholds. When either budget is exceeded, the engine ranks mutable sections, removes blank/duplicate lines one section at a time, and runs a behavior-preservation gate before promotion. `CompressionReport` records `token_count_before`, `token_count_after`, `token_budget`, and `token_reduction`.
 
+### Config Safety
 
-## Analysis output parsing and repair
+`OptimizerConfig.validate()` performs instance-level range checks on all numeric fields. `_int_safe()` and `_float_safe()` handle `None`, non-numeric strings, and nested types gracefully, falling back to defaults instead of raising exceptions. `optimizer_config_from_mapping()` uses these safe converters throughout.
 
-Analysis model outputs are parsed through a production-oriented parser before any patch enters the patch workflow. The parser strips common markdown fences, extracts embedded JSON objects from surrounding text, validates the required analysis fields, and validates each patch candidate independently. Malformed analysis records are still persisted with parse/schema errors, while invalid patch candidates are counted and filtered out instead of aborting the round. Round metrics include analysis parse success rate, analysis schema valid rate, judgement-match rate, and valid patch candidate rate.
+## Configuration
 
+```yaml
+# configs/optimizer.yaml
+models:
+  extraction:
+    provider: openai_compatible
+    base_url: https://api.openai.com/v1
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+  optimizer:
+    provider: openai_compatible
+    base_url: https://api.openai.com/v1
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
 
-## Analysis prompt evolution
+optimizer:
+  batch_size: 5
+  max_text_rounds: 5
+  extraction_line_budget: 120
+  analysis_line_budget: 80
+  extraction_token_budget: 4000
+  analysis_token_budget: 2000
+  fewshot_enabled: true
 
-The MVP now promotes analysis prompt candidates from deterministic hard-failure signals rather than from self-certifying analysis text. Schema/frozen-target patch violations add schema-guard guidance, and toxic patch results add risk-policy self-check guidance. Candidate analysis prompts pass a simple shadow gate before becoming the active analysis prompt for subsequent rounds.
+dynamic_validation:
+  min_label_count: 1
+  cover_difficulty_bins: true
+  recent_window_rounds: 3
+  max_recent_selections: 2
 
+execution:
+  max_workers: 4
+  timeout_seconds: 120
+```
 
-## Configurable model clients
+## Testing
 
-Use `python -m mmap_optimizer.cli.main run --config configs/optimizer.yaml` for configurable model clients. The optimizer config has separate `models.extraction` and `models.optimizer` blocks, so the multimodal extraction model and backend analysis/optimization model can use different OpenAI-compatible URLs, API keys, and model names. Set `provider: openai_compatible`, `base_url`, `model`, and either `api_key_env` or `api_key`; keeping API keys in environment variables is recommended. The lower-level `RoundRunner` also accepts separate `extraction_client` and `optimizer_client` objects while retaining `model_client` as a backward-compatible single-client fallback.
+```bash
+# Run all tests
+python -m pytest -q
 
+# Run P0-P2 feature coverage tests
+python -m pytest tests/test_p0_p2_feature_coverage.py -v
 
-## OpenAI-compatible multimodal calls
+# Smoke test
+python -m mmap_optimizer.cli.main run-smoke --rounds 1 --run-dir /tmp/mmap-smoke
+```
 
-`OpenAICompatibleClient.complete_multimodal()` now converts `SampleAsset` images into OpenAI-compatible `image_url` message parts. Local images are embedded as `data:<mime>;base64,...` URLs, remote `uri` values are passed through directly, and optional `asset.metadata["openai_image_detail"]` is forwarded as the image detail setting. Non-string user content is serialized as a text part so the existing structured sample context can be sent alongside one or more images.
+## Prompt Migration
 
+The `docs/prompt_migration/` directory contains the migration and absorption plan for integrating capabilities from legacy prompts into the current system. The approach focuses on **capability modules** (patterns) rather than direct text reuse, ensuring safe and reversible integration. See [docs/prompt_migration/README.md](docs/prompt_migration/README.md) for details.
 
-## Serial optimization loop
+## Key Design Decisions
 
-`OptimizerLoop` runs `RoundRunner` for the configured lifecycle instead of requiring callers to invoke one round at a time. By default it plans `max_text_rounds` plus configured few-shot rounds when few-shot is enabled; callers can override this with `--rounds` in the smoke CLI or `max_rounds` in code. The loop deliberately does not early-stop when a text round accepts no extraction patches, because analysis-prompt evolution, difficulty updates, compression, and later few-shot phases still need deterministic round accounting. It persists aggregate progress to `run_summary.json`, including round ids, final prompt versions, first/final/best accuracies, and total accepted/rejected/toxic/compression/few-shot counts.
-
-
-## Compression protocol
-
-Set `OptimizerConfig.extraction_line_budget` / `OptimizerConfig.analysis_line_budget` or pass `--extraction-line-budget` / `--analysis-line-budget` in smoke mode to enable post-round prompt compression. The MVP compressor skips frozen schema sections, ranks mutable compressible sections, removes blank and duplicate lines from one section at a time, and runs a behavior-preservation gate before promotion. Extraction compression rejects candidates that introduce parse/schema errors, change normalized predictions, or change baseline evaluation statuses; analysis compression reruns the analysis behavior suite and rejects candidates whose parsed analysis output changes. Reports are written under `round_xxxxxx/reports/compression_<round>_<prompt_type>.json`, and behavior-test runs are written under `round_xxxxxx/runs/compression_runs.jsonl`.
-
-
-## Few-shot optimization protocol
-
-Set `OptimizerConfig.fewshot_enabled` or pass `--fewshot-enabled` to run few-shot optimization after text rounds have completed (`round_index > max_text_rounds`). The miner records failed samples in a persistent `fewshot_candidate_pool.json`, ranks current and historical candidates by difficulty/gain, generates schema-complete examples with analysis-process text (using sample overrides or the optimizer model), then either adds an empty slot or replaces the lowest-index slot when capacity is full. A candidate is promoted only when individual and bundle few-shot tests improve accuracy by at least the configured delta, create no schema violations, and break no sample that was already correct. Reports are written under `round_xxxxxx/reports/fewshot_<round>_extraction.json`, and few-shot test runs are written under `round_xxxxxx/runs/fewshot_runs.jsonl`.
-
-## Cross-round metrics trend
-
-Every `OptimizerLoop` run now writes a `metrics_trend.json` artifact next to `run_summary.json`. The trend report keeps one point per round with absolute metrics, deltas from the previous round, best extraction/dynamic-validation rounds, aggregate patch/merge counts, and regression round ids. This is designed for the non-fixed validation strategy: a dynamic-validation drop is reported separately from optimization-batch accuracy so later dashboards can distinguish sampled validation noise from direct batch regressions.
-
-
-## Dynamic validation sampling
-
-The dynamic-validation set is intentionally not fixed. Each round excludes the optimization batch, then fills a validation batch with label coverage, optional easy/medium/hard difficulty-bin coverage, and a recent-selection penalty. The persisted `dynamic_validation_batch.json` records label/difficulty composition, target coverage, coverage warnings, recent sample ids, and recent-overlap ratio so the run can be audited without pinning a permanent validation set. Configure this through `dynamic_validation.min_label_count`, `dynamic_validation.cover_difficulty_bins`, `dynamic_validation.recent_window_rounds`, and `dynamic_validation.max_recent_selections`.
-
-## Production-readiness integrations
-
-The command line and round runner now wire several previously standalone helpers into the main flow:
-
-- `run` and `run-smoke` accept `--scenario <dir>`; a scenario directory can provide `optimizer.yaml`, `data/`, `prompts/`, and `schemas/` so task-specific runs do not need long path lists.
-- `check-prompt` performs prompt health validation without starting a run, and every optimization round writes extraction/analysis health reports before sampling. ERROR-level health issues abort the round before any model calls or prompt mutations.
-- Prompt snapshots are saved automatically before accepted patches mutate the active extraction prompt, and run progress is checkpointed to `run_state.json` at initialization, round start, round completion, and final completion.
-- No-GT samples can be evaluated through the integrated voting path: the prompt runner executes multiple extraction calls, and `Evaluator.evaluate_without_ground_truth()` records the majority result and confidence in the evaluation `extra` payload.
-- `execution.max_workers` controls ordered concurrent sample execution for extraction and validation batches. Section contribution reports are persisted per round and feed high-risk section signals back into sample fragility scores for later dynamic-validation sampling.
-
-## Prompt quality and template hardening
-
-The bundled raw prompts now provide stronger extraction and analysis instructions, including explicit role/task scope, CORRECT/INCORRECT/UNCERTAIN definitions, no-hallucination rules, boundary-case handling, schema-oriented output guidance, and patch quality criteria. Optimizer templates are versioned with richer output contracts, embedded examples for semantic merge/root audit/prune validation/JSON repair, a dedicated patch-generation template, and a prompt self-check template for placeholder, contradiction, and schema-alignment audits. Patch locator alignment also records fuzzy-match score and character positions while marking unresolved locators in `extra.unresolved_locators` for manual or LLM-assisted follow-up.
-
-For candidate prompt upgrades, `mmap_optimizer.prompt.ab_test.run_prompt_ab_test()` runs old/new PromptVersions over the same sample slice and promotes only non-regressing candidates that meet the configured accuracy delta.
+- **Frozen output schemas** — External output-schema contracts are immutable; patches that modify schema sections are rejected
+- **Behavior-preservation gates** — Compression and few-shot changes must preserve baseline extraction predictions and evaluation statuses
+- **No early stopping** — The optimizer loop does not early-stop when a text round accepts no patches, because analysis evolution, compression, and few-shot phases still need deterministic round accounting
+- **Dynamic validation** — Validation sets are intentionally not fixed across rounds; composition is driven by label/difficulty coverage with a recent-selection penalty
+- **Parallel IR models** — Runtime optimizer prompts (`mmap_optimizer.prompt.ir.PromptIR`) and evaluation-prompt optimization prompts (`mmap_optimizer.prompts.PromptIR`) are semantically distinct and intentionally separate

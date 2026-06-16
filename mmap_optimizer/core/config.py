@@ -36,6 +36,8 @@ class OptimizerConfig:
     max_text_rounds: int = 10
     extraction_line_budget: int | None = None
     analysis_line_budget: int | None = None
+    extraction_token_budget: int | None = None
+    analysis_token_budget: int | None = None
     fewshot_enabled: bool = False
     fewshot_max_rounds: int = 5
     fewshot_max_slots: int = 5
@@ -57,6 +59,46 @@ class OptimizerConfig:
     scenario_id: str | None = None
     extraction_model: ModelConfig = field(default_factory=ModelConfig)
     optimizer_model: ModelConfig = field(default_factory=ModelConfig)
+
+    def validate(self) -> list[str]:
+        """Return human-readable validation issues; empty list means OK."""
+
+        issues: list[str] = []
+        if self.batch_size < 1:
+            issues.append("text_optimization.batch_size must be >= 1")
+        if self.dynamic_validation_batch_size < 1:
+            issues.append("dynamic_validation.batch_size must be >= 1")
+        if self.dynamic_validation_min_label_count < 1:
+            issues.append("dynamic_validation.min_label_count must be >= 1")
+        if self.dynamic_validation_recent_window_rounds < 1:
+            issues.append("dynamic_validation.recent_window_rounds must be >= 1")
+        if self.dynamic_validation_max_recent_selections < 1:
+            issues.append("dynamic_validation.max_recent_selections must be >= 1")
+        if self.max_text_rounds < 0:
+            issues.append("text_optimization.max_rounds must be >= 0")
+        if self.execution_max_workers < 1:
+            issues.append("execution.max_workers must be >= 1")
+        if self.eval_vote_rounds < 1:
+            issues.append("evaluation.vote_rounds must be >= 1")
+        if self.extraction_line_budget is not None and self.extraction_line_budget < 1:
+            issues.append("compression.extraction_line_budget must be None or >= 1")
+        if self.analysis_line_budget is not None and self.analysis_line_budget < 1:
+            issues.append("compression.analysis_line_budget must be None or >= 1")
+        if self.extraction_token_budget is not None and self.extraction_token_budget < 1:
+            issues.append("compression.extraction_token_budget must be None or >= 1")
+        if self.analysis_token_budget is not None and self.analysis_token_budget < 1:
+            issues.append("compression.analysis_token_budget must be None or >= 1")
+        if self.fewshot_max_rounds < 0:
+            issues.append("fewshot.max_rounds must be >= 0")
+        if self.fewshot_max_slots < 0:
+            issues.append("fewshot.max_slots must be >= 0")
+        if not -1.0 <= self.fewshot_min_accuracy_delta <= 1.0:
+            issues.append("fewshot.min_accuracy_delta must be in [-1.0, 1.0]")
+        if self.patch_repair_max_attempts < 0:
+            issues.append("patch_repair.max_attempts must be >= 0")
+        if self.analysis_json_repair_max_attempts < 0:
+            issues.append("analysis.json_repair_max_attempts must be >= 0")
+        return issues
 
 
 @dataclass
@@ -97,16 +139,9 @@ def validate_optimizer_config_mapping(data: dict[str, Any] | None) -> list[str]:
         config = optimizer_config_from_mapping(data)
     except Exception as exc:  # validation entry point intentionally reports all parse failures
         return [f"CONFIG_PARSE_ERROR: {exc}"]
-    if config.batch_size < 1:
-        errors.append("text_optimization.batch_size must be >= 1")
-    if config.dynamic_validation_batch_size < 1:
-        errors.append("dynamic_validation.batch_size must be >= 1")
-    if config.max_text_rounds < 0:
-        errors.append("text_optimization.max_rounds must be >= 0")
-    if config.execution_max_workers < 1:
-        errors.append("execution.max_workers must be >= 1")
-    if config.eval_vote_rounds < 1:
-        errors.append("evaluation.vote_rounds must be >= 1")
+    issues = config.validate()
+    if issues:
+        errors.extend(issues)
     return errors
 
 
@@ -175,6 +210,27 @@ def _bool_value(value: Any) -> bool:
     return bool(value)
 
 
+def _int_safe(value: Any, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+
+def _float_safe(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def model_config_from_mapping(data: dict[str, Any] | None) -> ModelConfig:
     data = data or {}
     return ModelConfig(
@@ -221,39 +277,41 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
     optimizer_model_data = data.get("optimizer_model") or models.get("optimizer") or {}
     return OptimizerConfig(
         run_dir=data.get("run_dir", "runs"),
-        batch_size=int(text.get("batch_size", data.get("batch_size", 24))),
-        dynamic_validation_batch_size=int(dval.get("batch_size", data.get("dynamic_validation_batch_size", 48))),
-        dynamic_validation_min_label_count=int(
-            dval.get("min_label_count", data.get("dynamic_validation_min_label_count", 1))
+        batch_size=_int_safe(text.get("batch_size", data.get("batch_size", 24)), 24),
+        dynamic_validation_batch_size=_int_safe(dval.get("batch_size", data.get("dynamic_validation_batch_size", 48)), 48),
+        dynamic_validation_min_label_count=_int_safe(
+            dval.get("min_label_count", data.get("dynamic_validation_min_label_count", 1)), 1
         ),
         dynamic_validation_cover_difficulty_bins=_bool_value(
             dval.get("cover_difficulty_bins", data.get("dynamic_validation_cover_difficulty_bins", True))
         ),
-        dynamic_validation_recent_window_rounds=int(
-            dval.get("recent_window_rounds", data.get("dynamic_validation_recent_window_rounds", 3))
+        dynamic_validation_recent_window_rounds=_int_safe(
+            dval.get("recent_window_rounds", data.get("dynamic_validation_recent_window_rounds", 3)), 3
         ),
-        dynamic_validation_max_recent_selections=int(
-            dval.get("max_recent_selections", data.get("dynamic_validation_max_recent_selections", 1))
+        dynamic_validation_max_recent_selections=_int_safe(
+            dval.get("max_recent_selections", data.get("dynamic_validation_max_recent_selections", 1)), 1
         ),
-        max_text_rounds=int(text.get("max_rounds", data.get("max_text_rounds", 10))),
+        max_text_rounds=_int_safe(text.get("max_rounds", data.get("max_text_rounds", 10)), 10),
         extraction_line_budget=compression.get("extraction_line_budget", data.get("extraction_line_budget")),
         analysis_line_budget=compression.get("analysis_line_budget", data.get("analysis_line_budget")),
+        extraction_token_budget=compression.get("extraction_token_budget", data.get("extraction_token_budget")),
+        analysis_token_budget=compression.get("analysis_token_budget", data.get("analysis_token_budget")),
         fewshot_enabled=_bool_value(fewshot.get("enabled", data.get("fewshot_enabled", False))),
-        fewshot_max_rounds=int(fewshot.get("max_rounds", data.get("fewshot_max_rounds", 5))),
-        fewshot_max_slots=int(fewshot.get("max_slots", data.get("fewshot_max_slots", 5))),
-        fewshot_min_accuracy_delta=float(fewshot.get("min_accuracy_delta", data.get("fewshot_min_accuracy_delta", 0.0))),
+        fewshot_max_rounds=_int_safe(fewshot.get("max_rounds", data.get("fewshot_max_rounds", 5)), 5),
+        fewshot_max_slots=_int_safe(fewshot.get("max_slots", data.get("fewshot_max_slots", 5)), 5),
+        fewshot_min_accuracy_delta=_float_safe(fewshot.get("min_accuracy_delta", data.get("fewshot_min_accuracy_delta", 0.0)), 0.0),
         analysis_json_repair_enabled=_bool_value(analysis.get("json_repair_enabled", data.get("analysis_json_repair_enabled", False))),
-        analysis_json_repair_max_attempts=int(analysis.get("json_repair_max_attempts", data.get("analysis_json_repair_max_attempts", 1))),
+        analysis_json_repair_max_attempts=_int_safe(analysis.get("json_repair_max_attempts", data.get("analysis_json_repair_max_attempts", 1)), 1),
         patch_semantic_merge_enabled=_bool_value(patch_merge.get("semantic_enabled", data.get("patch_semantic_merge_enabled", False))),
         patch_root_audit_enabled=_bool_value(patch_merge.get("root_audit_enabled", data.get("patch_root_audit_enabled", False))),
         llm_compression_enabled=_bool_value(compression.get("llm_enabled", data.get("llm_compression_enabled", False))),
         patch_repair_enabled=_bool_value(patch_repair.get("enabled", data.get("patch_repair_enabled", False))),
-        patch_repair_max_attempts=int(patch_repair.get("max_attempts", data.get("patch_repair_max_attempts", 1))),
+        patch_repair_max_attempts=_int_safe(patch_repair.get("max_attempts", data.get("patch_repair_max_attempts", 1)), 1),
         prompt_health_check_enabled=_bool_value(health.get("enabled", data.get("prompt_health_check_enabled", True))),
         prompt_snapshot_enabled=_bool_value(snapshots.get("enabled", data.get("prompt_snapshot_enabled", True))),
         eval_voting_enabled=_bool_value(evaluation.get("voting_enabled", data.get("eval_voting_enabled", True))),
-        eval_vote_rounds=int(evaluation.get("vote_rounds", data.get("eval_vote_rounds", 3))),
-        execution_max_workers=int(execution.get("max_workers", data.get("execution_max_workers", 1))),
+        eval_vote_rounds=_int_safe(evaluation.get("vote_rounds", data.get("eval_vote_rounds", 3)), 3),
+        execution_max_workers=_int_safe(execution.get("max_workers", data.get("execution_max_workers", 1)), 1),
         contribution_feedback_enabled=_bool_value(contribution.get("feedback_enabled", data.get("contribution_feedback_enabled", True))),
         debug_enabled=_bool_value(debug.get("enabled", data.get("debug_enabled", True))),
         scenario_id=data.get("scenario_id"),

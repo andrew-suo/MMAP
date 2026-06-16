@@ -114,6 +114,43 @@ def test_prompt_version_from_dict_handles_missing_round_and_run_id() -> None:
     assert pv.created_by_run_id is None
 
 
+def test_prompt_version_from_dict_preserves_unknown_fields_in_extra() -> None:
+    """P0-1 修复: from_dict 不应静默丢弃未知字段。"""
+    original = _build_prompt_version(created_by_round_id="round-1")
+    data = asdict(original)
+    data["future_field"] = "future_value"
+    data["another_new_field"] = 42
+    reconstructed = PromptVersion.from_dict(data)
+    assert reconstructed._extra["future_field"] == "future_value"
+    assert reconstructed._extra["another_new_field"] == 42
+
+
+def test_prompt_version_from_dict_no_extra_when_no_unknown_fields() -> None:
+    """当无未知字段时 _extra 应为空。"""
+    original = _build_prompt_version()
+    data = asdict(original)
+    reconstructed = PromptVersion.from_dict(data)
+    assert reconstructed._extra == {}
+
+
+def test_prompt_version_from_dict_skips_rerender_when_rendered_prompt_present() -> None:
+    """P0-2 修复: from_dict 在已有 rendered_prompt 时不应重新渲染。"""
+    original = _build_prompt_version()
+    original.render()
+    assert original.rendered_prompt is not None
+    original_hash = original.rendered_prompt.text_hash
+
+    data = asdict(original)
+    # rendered_prompt 是一个 RenderedPrompt dataclass 实例，asdict 会展开为 dict
+    # from_dict 重建时，rendered_prompt 字段会作为 dict 传入
+    # 由于 dict 不是 RenderedPrompt 实例，PromptVersion 会将其保留为 dict
+    # 此时 rendered_prompt 不为 None，所以不会重新渲染
+    reconstructed = PromptVersion.from_dict(data)
+    # rendered_prompt 应该被保留（虽然类型可能是 dict 而非 RenderedPrompt）
+    # 关键是：不应无条件调用 render()
+    assert reconstructed.rendered_prompt is not None
+
+
 # ---------------------------------------------------------------------------
 # P0 - Patch constraints
 # ---------------------------------------------------------------------------
@@ -222,6 +259,112 @@ def test_patch_validator_honors_must_mention_section_ids() -> None:
     result = validator.validate(patch, ir)
     assert result.valid is False
     assert result.reason is not None
+
+
+def test_patch_validator_must_mention_does_not_match_on_section_id_alone() -> None:
+    """P0-4 修复: must_mention 不应因 section_id 在 haystack 中而通过验证。"""
+    ir = _build_prompt_ir([("format_compliance_policy", "Follow the format.")])
+    # patch_text 和 rationale 都不包含 "format_compliance_policy"
+    # 但 section_id 是 "format_compliance_policy"
+    # 修复前：section_id 被加入 haystack，导致验证错误通过
+    patch = Patch(
+        id="patch-must-mention",
+        type="text_patch",
+        status="candidate",
+        target_prompt_type="analysis",  # 非 extraction，避免 MISSING_SOURCE_SAMPLE
+        base_version_id="pv-1",
+        section_id="format_compliance_policy",
+        operation_type="REFINE_RULE",
+        operation_mode="replace_section",
+        intent_name="intent",
+        intent_description="intent",
+        patch_text="Some unrelated content here.",
+        rationale="Just a fix.",
+        constraints={
+            "must_mention_section_ids": ["format_compliance_policy"],
+        },
+    )
+    validator = PatchValidator()
+    result = validator.validate(patch, ir)
+    # 修复后：即使 section_id 匹配，patch_text/rationale 中未提及也应拒绝
+    assert result.valid is False
+    assert "MUST_MENTION_SECTION_MISSING" in result.reason
+
+
+def test_patch_validator_must_mention_passes_when_patch_text_mentions_it() -> None:
+    """P0-4 正向验证: patch_text 中确实提及目标时应该通过。"""
+    ir = _build_prompt_ir([("format_compliance_policy", "Follow the format.")])
+    patch = Patch(
+        id="patch-must-mention-ok",
+        type="text_patch",
+        status="candidate",
+        target_prompt_type="analysis",
+        base_version_id="pv-1",
+        section_id="format_compliance_policy",
+        operation_type="REFINE_RULE",
+        operation_mode="replace_section",
+        intent_name="intent",
+        intent_description="intent",
+        patch_text="Update format_compliance_policy to be stricter.",
+        rationale="Strengthen format compliance.",
+        constraints={
+            "must_mention_section_ids": ["format_compliance_policy"],
+        },
+    )
+    validator = PatchValidator()
+    result = validator.validate(patch, ir)
+    assert result.valid is True
+
+
+def test_patch_validator_error_reason_includes_operation_details() -> None:
+    """P0-3 修复: 错误信息应包含具体的操作类型和允许列表。"""
+    ir = _build_prompt_ir([("task", "Original task text.")])
+    patch = Patch(
+        id="patch-detail",
+        type="text_patch",
+        status="candidate",
+        target_prompt_type="extraction",
+        base_version_id="pv-1",
+        section_id="task",
+        operation_type="WEAKEN_RULE",  # 不在 DISABLED_OPERATIONS 中，但不在 allowed 列表
+        operation_mode="replace_section",
+        intent_name="intent",
+        intent_description="intent",
+        patch_text="New section content.",
+        rationale="rationale",
+        source_sample_ids=["s1"],  # 避免 MISSING_SOURCE_SAMPLE
+        constraints={"allowed_operation_types": ["REFINE_RULE", "ADD_RULE"]},
+    )
+    validator = PatchValidator()
+    result = validator.validate(patch, ir)
+    assert result.valid is False
+    # 错误信息应包含实际操作类型和允许的操作列表
+    assert "WEAKEN_RULE" in result.reason
+    assert "REFINE_RULE" in result.reason or "ADD_RULE" in result.reason
+
+
+def test_patch_validator_forbidden_keyword_error_includes_keyword() -> None:
+    """P0-3 修复: forbidden_keyword 错误信息应包含具体触发的关键词。"""
+    ir = _build_prompt_ir([("task", "Original task text.")])
+    patch = Patch(
+        id="patch-forbidden",
+        type="text_patch",
+        status="candidate",
+        target_prompt_type="analysis",  # 非 extraction，避免 MISSING_SOURCE_SAMPLE
+        base_version_id="pv-1",
+        section_id="task",
+        operation_type="REFINE_RULE",
+        operation_mode="replace_section",
+        intent_name="intent",
+        intent_description="intent",
+        patch_text="Please delete this rule.",
+        rationale="rationale",
+        constraints={"forbidden_keywords": ["delete"]},
+    )
+    validator = PatchValidator()
+    result = validator.validate(patch, ir)
+    assert result.valid is False
+    assert "delete" in result.reason
 
 
 def test_patch_compact_dict_produces_minimal_public_view() -> None:

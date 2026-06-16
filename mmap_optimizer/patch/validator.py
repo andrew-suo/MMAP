@@ -46,25 +46,41 @@ class PatchValidator:
         patch_allowed_ops = constraints.get("allowed_operation_types")
         if patch_allowed_ops is not None:
             if patch.operation_type not in set(patch_allowed_ops):
-                return PatchValidationResult(False, "OPERATION_NOT_ALLOWED_BY_CONSTRAINT")
+                return PatchValidationResult(
+                    False,
+                    f"OPERATION_NOT_ALLOWED_BY_CONSTRAINT: {patch.operation_type!r} not in {patch_allowed_ops}",
+                )
         else:
             allowed = ALLOWED_BY_SECTION.get(patch.section_id)
             if allowed is not None and patch.operation_type not in allowed:
-                return PatchValidationResult(False, "OPERATION_NOT_ALLOWED")
+                return PatchValidationResult(
+                    False,
+                    f"OPERATION_NOT_ALLOWED: {patch.operation_type!r} not in {sorted(allowed)}",
+                )
 
         forbidden_words = constraints.get("forbidden_keywords")
         default_schema_words = ["新增字段", "删除字段", "修改字段", "output schema", "analysis_output_schema"]
         check_words = list(forbidden_words) if forbidden_words is not None else default_schema_words
-        if any(word in patch.patch_text for word in check_words):
-            return PatchValidationResult(False, "SCHEMA_IMMUTABILITY_VIOLATION")
+        for word in check_words:
+            if word in patch.patch_text:
+                return PatchValidationResult(
+                    False,
+                    f"SCHEMA_IMMUTABILITY_VIOLATION: forbidden keyword {word!r} found in patch_text",
+                )
 
         must_mention = constraints.get("must_mention_section_ids") or constraints.get("must_mention")
         if must_mention:
             normalized = [str(x).strip() for x in must_mention if str(x).strip()]
             if normalized:
-                haystack = f"{patch.patch_text}\n{patch.section_id}\n{patch.rationale or ''}"
-                if not any(mention in haystack for mention in normalized):
-                    return PatchValidationResult(False, "MUST_MENTION_SECTION_MISSING")
+                # 仅检查 patch_text 和 rationale，不包含 section_id
+                # （包含 section_id 会导致只要目标是该 section 就通过验证）
+                haystack = f"{patch.patch_text}\n{patch.rationale or ''}"
+                missing = [m for m in normalized if m not in haystack]
+                if missing:
+                    return PatchValidationResult(
+                        False,
+                        f"MUST_MENTION_SECTION_MISSING: {missing!r} not found in patch_text/rationale",
+                    )
 
         mode = patch.effective_operation_mode
         if mode == "replace_in_section":

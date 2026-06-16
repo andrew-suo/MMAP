@@ -11,6 +11,8 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+pinyin = ["pypinyin>=0.49"]
+yaml = ["pyyaml>=6.0"]
 
 [project.scripts]
 mmap-optimizer = "mmap_optimizer.cli.main:main"

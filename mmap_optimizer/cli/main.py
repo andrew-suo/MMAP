@@ -28,6 +28,7 @@ from mmap_optimizer.orchestration.round_runner import OptimizerState, RoundRunne
 from mmap_optimizer.prompt.contract import OutputSchemaContract
 from mmap_optimizer.prompt.health import check_prompt_health
 from mmap_optimizer.prompt.initializer import initialize_prompt_from_file
+from mmap_optimizer.prompt.hint_generator import auto_generate_hints
 from mmap_optimizer.prompt.snapshot import load_prompt_snapshot
 from mmap_optimizer.storage.json_store import JsonStore
 
@@ -236,6 +237,77 @@ def scenario_write_artifacts(args: argparse.Namespace) -> None:
     print(json.dumps(result, ensure_ascii=False))
 
 
+def generate_hints(args: argparse.Namespace) -> None:
+    """Auto-generate section_id_hints for a scenario using LLM and persist to scenario.yaml."""
+    from mmap_optimizer.model.factory import build_model_client
+
+    scenario_path = args.scenario
+    scenario = load_scenario(scenario_path)
+    existing_hints = scenario.section_id_hints
+
+    # Read extraction prompt for heading analysis
+    extraction_prompt_path = scenario.prompts_dir / "extraction.txt"
+    if not extraction_prompt_path.exists():
+        # Try .md extension
+        extraction_prompt_path = scenario.prompts_dir / "extraction.md"
+    if not extraction_prompt_path.exists():
+        # Try system.md as fallback
+        extraction_prompt_path = scenario.prompts_dir / "system.md"
+    if not extraction_prompt_path.exists():
+        print(json.dumps({"error": f"No prompt file found in {scenario.prompts_dir}", "generated_hints": {}}, ensure_ascii=False))
+        raise SystemExit(1)
+
+    raw_prompt = extraction_prompt_path.read_text(encoding="utf-8")
+
+    # Build model client from optimizer config
+    config = scenario.optimizer_config
+    model_client = build_model_client(config.optimizer_model)
+
+    generated = auto_generate_hints(raw_prompt, model_client)
+
+    # Merge: existing manual hints take priority
+    merged = {**generated, **existing_hints}
+
+    if args.write and generated:
+        # Persist to scenario.yaml
+        manifest_path = scenario.root / "scenario.yaml"
+        manifest = load_mapping(manifest_path)
+        manifest["section_id_hints"] = merged
+        # Write back preserving YAML structure
+        _write_yaml_hints(manifest_path, manifest, merged)
+        print(json.dumps({
+            "scenario": scenario.id,
+            "existing_hints": existing_hints,
+            "generated_hints": generated,
+            "merged_hints": merged,
+            "written": True,
+        }, ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps({
+            "scenario": scenario.id,
+            "existing_hints": existing_hints,
+            "generated_hints": generated,
+            "merged_hints": merged,
+            "written": False,
+        }, ensure_ascii=False, indent=2))
+
+
+def _write_yaml_hints(manifest_path: Path, manifest: dict, hints: dict[str, str]) -> None:
+    """Write section_id_hints back to scenario.yaml, preserving other content."""
+    import yaml
+    try:
+        content = manifest_path.read_text(encoding="utf-8")
+        data = yaml.safe_load(content)
+    except ImportError:
+        # Fallback: simple string replacement if pyyaml not available
+        data = manifest
+    if data is None:
+        data = {}
+    data["section_id_hints"] = hints
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="MMAP prompt optimizer MVP CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -265,6 +337,11 @@ def main() -> None:
     write_parser.add_argument("artifact_dir")
     write_parser.add_argument("--scenarios-dir", default=DEFAULT_SCENARIOS_DIR)
     write_parser.set_defaults(func=scenario_write_artifacts)
+
+    gen_hints_parser = sub.add_parser("generate-hints", help="Auto-generate section_id_hints for a scenario using LLM.")
+    gen_hints_parser.add_argument("--scenario", required=True, help="Path to scenario directory")
+    gen_hints_parser.add_argument("--write", action="store_true", help="Persist generated hints to scenario.yaml")
+    gen_hints_parser.set_defaults(func=generate_hints)
 
     smoke = sub.add_parser("run-smoke", help="Run a no-patch MVP round with mock model outputs from sample metadata.")
     smoke.add_argument("--scenario", default=None)

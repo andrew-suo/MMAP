@@ -13,6 +13,7 @@ from mmap_optimizer.prompt.initializer import (
     parse_markdown_sections,
 )
 from mmap_optimizer.prompt.hint_generator import (
+    AutoHintResult,
     auto_generate_hints,
     _extract_headings,
     _headings_covered_by_generic,
@@ -167,11 +168,12 @@ def test_auto_generate_hints_with_mock_model():
     mock_client = MagicMock()
     mock_client.complete.return_value = MagicMock(raw_output=mock_response)
 
-    hints = auto_generate_hints(SCENARIO_PROMPT, mock_client)
-    assert "严重凌乱" in hints
-    assert hints["严重凌乱"] == "cable_check"
-    assert "明显杂物" in hints
-    assert hints["明显杂物"] == "debris_check"
+    result = auto_generate_hints(SCENARIO_PROMPT, mock_client)
+    assert isinstance(result, AutoHintResult)
+    assert "严重凌乱" in result.hints
+    assert result.hints["严重凌乱"] == "cable_check"
+    assert "明显杂物" in result.hints
+    assert result.hints["明显杂物"] == "debris_check"
 
 
 def test_auto_generate_hints_validates_snake_case():
@@ -183,18 +185,19 @@ def test_auto_generate_hints_validates_snake_case():
     mock_client = MagicMock()
     mock_client.complete.return_value = MagicMock(raw_output=mock_response)
 
-    hints = auto_generate_hints(SCENARIO_PROMPT, mock_client)
-    assert "严重凌乱" in hints
-    assert "杂物" not in hints  # Invalid-Id rejected
-    assert "场景" not in hints  # 123bad rejected
+    result = auto_generate_hints(SCENARIO_PROMPT, mock_client)
+    assert "严重凌乱" in result.hints
+    assert "杂物" not in result.hints  # Invalid-Id rejected
+    assert "场景" not in result.hints  # 123bad rejected
 
 
 def test_auto_generate_hints_handles_malformed_json():
     mock_client = MagicMock()
     mock_client.complete.return_value = MagicMock(raw_output="not json at all")
 
-    hints = auto_generate_hints(SCENARIO_PROMPT, mock_client)
-    assert hints == {}
+    result = auto_generate_hints(SCENARIO_PROMPT, mock_client)
+    assert result.hints == {}
+    assert len(result.uncovered_titles) > 0
 
 
 def test_auto_generate_hints_handles_json_in_code_fence():
@@ -202,14 +205,14 @@ def test_auto_generate_hints_handles_json_in_code_fence():
     mock_client = MagicMock()
     mock_client.complete.return_value = MagicMock(raw_output=mock_response)
 
-    hints = auto_generate_hints(SCENARIO_PROMPT, mock_client)
-    assert hints.get("严重凌乱") == "cable_check"
+    result = auto_generate_hints(SCENARIO_PROMPT, mock_client)
+    assert result.hints.get("严重凌乱") == "cable_check"
 
 
 def test_auto_generate_hints_empty_prompt():
     mock_client = MagicMock()
-    hints = auto_generate_hints("", mock_client)
-    assert hints == {}
+    result = auto_generate_hints("", mock_client)
+    assert result.hints == {}
     mock_client.complete.assert_not_called()
 
 
@@ -222,9 +225,24 @@ A
 B
 """
     mock_client = MagicMock()
-    hints = auto_generate_hints(prompt, mock_client)
-    assert hints == {}
+    result = auto_generate_hints(prompt, mock_client)
+    assert result.hints == {}
     mock_client.complete.assert_not_called()
+
+
+def test_auto_generate_hints_coverage_check():
+    """Coverage check detects titles not covered by generated hints."""
+    # LLM only generates hint for one title, leaving others uncovered
+    mock_response = json.dumps({"严重凌乱": "cable_check"})
+    mock_client = MagicMock()
+    mock_client.complete.return_value = MagicMock(raw_output=mock_response)
+
+    result = auto_generate_hints(SCENARIO_PROMPT, mock_client)
+    assert "严重凌乱" in result.hints
+    # Titles containing "明显杂物" or "场景适用性" should be uncovered
+    uncovered_text = " ".join(result.uncovered_titles)
+    assert "明显杂物" in uncovered_text or "场景适用性" in uncovered_text
+    assert not result.is_complete
 
 
 # ─────────── 3. Integration: pinyin fallback in full pipeline ───────────

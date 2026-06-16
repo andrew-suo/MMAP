@@ -279,7 +279,7 @@ def parse_markdown_sections(
             "content": f"{'#' * level} {title}\n{body}" if body else f"{'#' * level} {title}",
         })
 
-    if len(sections) < 2:
+    if len(sections) < 1:
         return []
     return sections
 

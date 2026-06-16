@@ -171,10 +171,12 @@ def test_empty_prompt_returns_empty_sections():
     assert parse_markdown_sections(None) == []  # type: ignore[arg-type]
 
 
-def test_single_heading_prompt_returns_empty_sections():
-    # A single heading cannot produce ≥2 sections — should still fall back.
+def test_single_heading_prompt_produces_structured_ir():
+    # A single heading now produces a structured IR (not legacy fallback).
     text = "# 唯一标题\n内容放在这里。"
-    assert parse_markdown_sections(text) == []
+    sections = parse_markdown_sections(text)
+    assert len(sections) == 1
+    assert sections[0]["title"] == "唯一标题"
 
 
 def test_plain_text_initializer_uses_legacy_unmapped():

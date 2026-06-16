@@ -819,8 +819,8 @@ def test_round_runner_uses_separate_extraction_and_optimizer_clients(tmp_path: P
     assert extraction_client.complete_calls == 0
     assert optimizer_client.complete_calls == 1
     assert optimizer_client.complete_multimodal_calls == 0
-    assert extraction_client.multimodal_model_configs[0] == {"model": "extract-model", "temperature": 0.3, "max_tokens": 111}
-    assert optimizer_client.complete_model_configs[0] == {"model": "optimizer-model", "temperature": 0.7, "max_tokens": 222}
+    assert extraction_client.multimodal_model_configs[0] == {"model": "extract-model", "temperature": 0.3, "max_tokens": 111, "timeout": 120}
+    assert optimizer_client.complete_model_configs[0] == {"model": "optimizer-model", "temperature": 0.7, "max_tokens": 222, "timeout": 120}
 
 
 def test_analysis_runner_repairs_markdown_and_filters_invalid_patch_candidates(tmp_path: Path):

@@ -58,6 +58,15 @@ class OptimizerConfig:
     contribution_feedback_enabled: bool = True
     debug_enabled: bool = True
     scenario_id: str | None = None
+    # Post-apply regression verification
+    post_apply_regression_enabled: bool = True
+    post_apply_regression_sample_ratio: float = 0.3
+    # Canary sample protection
+    canary_protection_enabled: bool = True
+    canary_min_consecutive_correct: int = 3
+    canary_max_count: int = 10
+    # Historical regression detection
+    historical_regression_check_enabled: bool = True
     extraction_model: ModelConfig = field(default_factory=ModelConfig)
     optimizer_model: ModelConfig = field(default_factory=ModelConfig)
 
@@ -99,6 +108,12 @@ class OptimizerConfig:
             issues.append("patch_repair.max_attempts must be >= 0")
         if self.analysis_json_repair_max_attempts < 0:
             issues.append("analysis.json_repair_max_attempts must be >= 0")
+        if not 0.0 < self.post_apply_regression_sample_ratio <= 1.0:
+            issues.append("post_apply_regression.sample_ratio must be in (0.0, 1.0]")
+        if self.canary_min_consecutive_correct < 1:
+            issues.append("canary.min_consecutive_correct must be >= 1")
+        if self.canary_max_count < 1:
+            issues.append("canary.max_count must be >= 1")
         return issues
 
 
@@ -275,6 +290,8 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
     execution = data.get("execution", {}) or {}
     contribution = data.get("contribution", {}) or {}
     debug = data.get("debug", {}) or {}
+    post_apply_regression = data.get("post_apply_regression", {}) or {}
+    canary = data.get("canary", {}) or {}
     models = data.get("models", {}) or {}
     extraction_model_data = data.get("extraction_model") or models.get("extraction") or {}
     optimizer_model_data = data.get("optimizer_model") or models.get("optimizer") or {}
@@ -317,6 +334,12 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
         execution_max_workers=_int_safe(execution.get("max_workers", data.get("execution_max_workers", 1)), 1),
         contribution_feedback_enabled=_bool_value(contribution.get("feedback_enabled", data.get("contribution_feedback_enabled", True))),
         debug_enabled=_bool_value(debug.get("enabled", data.get("debug_enabled", True))),
+        post_apply_regression_enabled=_bool_value(post_apply_regression.get("enabled", data.get("post_apply_regression_enabled", True))),
+        post_apply_regression_sample_ratio=_float_safe(post_apply_regression.get("sample_ratio", data.get("post_apply_regression_sample_ratio", 0.3)), 0.3),
+        canary_protection_enabled=_bool_value(canary.get("protection_enabled", data.get("canary_protection_enabled", True))),
+        canary_min_consecutive_correct=_int_safe(canary.get("min_consecutive_correct", data.get("canary_min_consecutive_correct", 3)), 3),
+        canary_max_count=_int_safe(canary.get("max_count", data.get("canary_max_count", 10)), 10),
+        historical_regression_check_enabled=_bool_value(post_apply_regression.get("historical_check_enabled", data.get("historical_regression_check_enabled", True))),
         scenario_id=data.get("scenario_id"),
         extraction_model=model_config_from_mapping(extraction_model_data),
         optimizer_model=model_config_from_mapping(optimizer_model_data),

@@ -40,6 +40,8 @@ class PatchTester:
         assets: dict[str, SampleAsset],
         ground_truths: dict[str, GroundTruth],
         contract: OutputSchemaContract,
+        canary_sample_ids: list[str] | None = None,
+        historically_fixed_sample_ids: list[str] | None = None,
     ) -> PatchRunResult:
         temp_prompt = PatchApplier().apply(base_prompt, patch, new_version=base_prompt.version + 1)
         sample_by_id = {sample.id: sample for sample in samples}
@@ -56,7 +58,7 @@ class PatchTester:
         )
         base_by_sample = {evaluation.sample_id: evaluation for evaluation in base_evaluations}
         ordered_base_evals = [base_by_sample[evaluation.sample_id] for evaluation in run_result.evaluations if evaluation.sample_id in base_by_sample]
-        test_result = summarize_patch_test(round_id, patch.id, suite.id, ordered_base_evals, run_result.evaluations)
+        test_result = summarize_patch_test(round_id, patch.id, suite.id, ordered_base_evals, run_result.evaluations, canary_sample_ids=canary_sample_ids, historically_fixed_sample_ids=historically_fixed_sample_ids)
         return PatchRunResult(temp_prompt=temp_prompt, runs=run_result.runs, evaluations=run_result.evaluations, test_result=test_result)
 
     def test_bundle(
@@ -71,6 +73,8 @@ class PatchTester:
         assets: dict[str, SampleAsset],
         ground_truths: dict[str, GroundTruth],
         contract: OutputSchemaContract,
+        canary_sample_ids: list[str] | None = None,
+        historically_fixed_sample_ids: list[str] | None = None,
     ) -> PatchRunResult:
         temp_prompt = base_prompt
         next_version = base_prompt.version + 1
@@ -92,5 +96,5 @@ class PatchTester:
         )
         base_by_sample = {evaluation.sample_id: evaluation for evaluation in base_evaluations}
         ordered_base_evals = [base_by_sample[evaluation.sample_id] for evaluation in run_result.evaluations if evaluation.sample_id in base_by_sample]
-        test_result = summarize_patch_test(round_id, bundle_id, suite.id, ordered_base_evals, run_result.evaluations)
+        test_result = summarize_patch_test(round_id, bundle_id, suite.id, ordered_base_evals, run_result.evaluations, canary_sample_ids=canary_sample_ids, historically_fixed_sample_ids=historically_fixed_sample_ids)
         return PatchRunResult(temp_prompt=temp_prompt, runs=run_result.runs, evaluations=run_result.evaluations, test_result=test_result)

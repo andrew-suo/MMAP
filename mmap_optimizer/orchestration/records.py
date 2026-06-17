@@ -37,7 +37,6 @@ class RunRecord:
     parsed_output: dict[str, Any] | None = None
     success: bool = True
     error_type: str | None = None
-    retry_count: int = 0
 
 
 @dataclass

@@ -13,8 +13,6 @@ class OutputSchemaContract:
     version: int
     schema: dict[str, Any]
     primary_answer_fields: list[str]
-    immutable: bool = True
-    schema_format: str = "json_schema"
     validation_policy: dict[str, Any] = field(default_factory=lambda: {
         "extra_fields_allowed": False,
         "missing_required_fields_allowed": False,

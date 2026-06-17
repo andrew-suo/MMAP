@@ -17,10 +17,7 @@ class PromptSection:
     compressibility: str = "medium"
     mutability: str = "normal"
     rendering_enabled: bool = True
-    metrics: dict[str, Any] = field(default_factory=dict)
     constraints: dict[str, Any] = field(default_factory=dict)
-    source_map: dict[str, Any] = field(default_factory=dict)
-    provenance: dict[str, Any] = field(default_factory=dict)
 
     def clone_with_content(self, content: str, *, rendering_enabled: bool | None = None) -> "PromptSection":
         return replace(self, content=content, rendering_enabled=self.rendering_enabled if rendering_enabled is None else rendering_enabled)
@@ -39,8 +36,6 @@ class PromptIR:
     parent_prompt_ir_id: str | None = None
     applied_patch_ids: list[str] = field(default_factory=list)
     compression_patch_ids: list[str] = field(default_factory=list)
-    initialization: dict[str, Any] = field(default_factory=dict)
-    history: dict[str, Any] = field(default_factory=dict)
 
     def section_by_id(self, section_id: str) -> PromptSection | None:
         return next((s for s in self.sections if s.id == section_id), None)

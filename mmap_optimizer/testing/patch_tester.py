@@ -26,7 +26,6 @@ class PatchTestResult:
     unchanged_wrong_sample_ids: list[str] = field(default_factory=list)
     unchanged_correct_sample_ids: list[str] = field(default_factory=list)
     schema_violation_count: int = 0
-    format_error_count: int = 0
     parse_error_count: int = 0
     canary_broken_count: int = 0
     historical_fixed_regression_count: int = 0

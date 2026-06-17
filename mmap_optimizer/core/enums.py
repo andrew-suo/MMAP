@@ -31,8 +31,6 @@ class PatchStatus(str, Enum):
 
 class RunType(str, Enum):
     EXTRACTION = "extraction"
-    ANALYSIS = "analysis"
-    PATCH_TEST_EXTRACTION = "patch_test_extraction"
     DYNAMIC_VALIDATION_EXTRACTION = "dynamic_validation_extraction"
     ANALYSIS_SHADOW_CURRENT = "analysis_shadow_current"
     ANALYSIS_SHADOW_CANDIDATE = "analysis_shadow_candidate"

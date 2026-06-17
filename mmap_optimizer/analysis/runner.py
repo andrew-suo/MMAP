@@ -112,6 +112,7 @@ class AnalysisRunner:
                 analysis_run.error_type = "SCHEMA_ERROR"
             analysis_id = f"analysis_{round_id}_{evaluation.sample_id}"
             judgement = parse_result.parsed.get("judgement", {}) if isinstance(parse_result.parsed, dict) else {}
+            prompt_section_attribution = parse_result.parsed.get("prompt_section_attribution", []) if isinstance(parse_result.parsed, dict) else []
             record = AnalysisRecord(
                 id=analysis_id,
                 round_id=round_id,
@@ -129,6 +130,7 @@ class AnalysisRunner:
                 repair_actions=parse_result.repair_actions,
                 invalid_patch_candidate_count=len(parse_result.invalid_patch_candidates),
                 invalid_patch_count=len(parse_result.invalid_patch_candidates),
+                prompt_section_attribution=prompt_section_attribution if isinstance(prompt_section_attribution, list) else [],
             )
             for idx, candidate in enumerate(parse_result.valid_patch_candidates):
                 normalized_candidate = candidate

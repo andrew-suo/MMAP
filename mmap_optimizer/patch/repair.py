@@ -85,9 +85,10 @@ class PatchRepairEngine:
     ``"INVALID_TARGET_SECTION"`` signals a hard refusal.
     """
 
-    def __init__(self, model_client: ModelClient | None = None, model_config: dict[str, Any] | None = None):
+    def __init__(self, model_client: ModelClient | None = None, model_config: dict[str, Any] | None = None, *, max_attempts: int = 1):
         self.model_client = model_client
         self.model_config = model_config or {}
+        self.max_attempts = max(1, max_attempts)
         self.registry = build_default_template_registry()
 
     # ------------------------------------------------------------------

@@ -9,7 +9,6 @@ class FewShotCandidate:
     id: str
     sample_id: str
     candidate_score: float = 0.0
-    eligible: bool = True
     rejection_reason: str | None = None
     status: str = "mined"
 
@@ -36,4 +35,3 @@ class FewShotSetVersion:
     slot_count: int
     slots: list[dict[str, Any]] = field(default_factory=list)
     status: str = "candidate"
-    metrics: dict[str, Any] = field(default_factory=dict)

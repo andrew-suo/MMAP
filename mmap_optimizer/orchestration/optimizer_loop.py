@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from mmap_optimizer.core.config import OptimizerConfig
+from mmap_optimizer.dataset.sample import SampleState
 from mmap_optimizer.logging import get_logger, log_stage
 from mmap_optimizer.metrics.round_metrics import RoundMetrics
 from mmap_optimizer.metrics.trend import MetricsTrend, build_metrics_trend
+from mmap_optimizer.prompt.version import PromptVersion
 from mmap_optimizer.storage.json_store import JsonStore
 from .checkpoint import OptimizerCheckpoint
 from .records import OptimizationRound
-from .run_state import RunState, RunStateStore
 from .round_runner import OptimizerState, RoundRunner
 
 logger = get_logger(__name__)
@@ -56,7 +57,6 @@ class OptimizerLoop:
         self.runner = runner
         self.store = store
         self.config = config or runner.config
-        self.run_state_store = RunStateStore(store)
         self.resume = resume
 
     def run(self, state: OptimizerState, *, start_round: int = 1, max_rounds: int | None = None) -> tuple[list[OptimizationRound], list[RoundMetrics], OptimizationRunSummary]:
@@ -68,18 +68,17 @@ class OptimizerLoop:
             existing = self._load_existing_checkpoint()
             if existing is not None:
                 effective_start = existing.round_index + 1
+                self._restore_state_from_checkpoint(state, existing)
         summary = OptimizationRunSummary(id="optimization_run_summary", status="RUNNING", planned_round_count=planned_rounds)
         rounds: list[OptimizationRound] = []
         metrics_records: list[RoundMetrics] = []
         self.store.write_json("run_summary.json", summary)
-        self.run_state_store.save(RunState(run_id=summary.id, iteration=effective_start - 1, stage="initialized", completed_round_ids=[]))
         log_stage(logger, "optimizer_start", planned_rounds=planned_rounds, start_round=effective_start, resume=self.resume)
 
         try:
             for offset in range(planned_rounds):
                 round_index = effective_start + offset
                 round_start_time = time.perf_counter()
-                self.run_state_store.save(RunState(run_id=summary.id, iteration=round_index, stage="round_started", completed_round_ids=[record.id for record in rounds]))
                 log_stage(logger, "round_start", round=round_index, planned_rounds=planned_rounds,
                           input_extraction_prompt_id=state.active_extraction_prompt.id,
                           input_analysis_prompt_id=state.active_analysis_prompt.id)
@@ -93,7 +92,6 @@ class OptimizerLoop:
                 summary.final_extraction_prompt_version_id = state.active_extraction_prompt.id
                 summary.final_analysis_prompt_version_id = state.active_analysis_prompt.id
                 self._write_trend_and_summary(summary, metrics_records)
-                self.run_state_store.save(RunState(run_id=summary.id, iteration=round_index, stage="round_completed", completed_round_ids=summary.round_ids))
                 self._save_checkpoint(round_index, state, metrics, fewshot_pool_path=None)
                 log_stage(logger, "round_done", round=round_index, duration_ms=round_duration_ms,
                           accepted_patch_count=len(round_record.accepted_patch_ids) if round_record.accepted_patch_ids else 0,
@@ -103,7 +101,6 @@ class OptimizerLoop:
             summary.status = "COMPLETED"
             summary.stopped_reason = "PLANNED_ROUNDS_COMPLETED"
             self._write_trend_and_summary(summary, metrics_records)
-            self.run_state_store.save(RunState(run_id=summary.id, iteration=effective_start + planned_rounds - 1, stage="completed", completed_round_ids=summary.round_ids))
             log_stage(logger, "optimizer_done", status="COMPLETED", completed_rounds=len(rounds),
                       final_batch_accuracy=summary.final_batch_accuracy,
                       total_accepted_patches=summary.total_accepted_patches,
@@ -120,20 +117,8 @@ class OptimizerLoop:
         checkpoint = OptimizerCheckpoint(
             round_index=round_index,
             active_prompts={
-                "extraction": {
-                    "id": state.active_extraction_prompt.id,
-                    "version": state.active_extraction_prompt.version,
-                    "output_schema_contract_id": state.active_extraction_prompt.output_schema_contract_id,
-                    "version_type": str(state.active_extraction_prompt.version_type),
-                    "parent_version_id": state.active_extraction_prompt.parent_version_id,
-                },
-                "analysis": {
-                    "id": state.active_analysis_prompt.id,
-                    "version": state.active_analysis_prompt.version,
-                    "output_schema_contract_id": state.active_analysis_prompt.output_schema_contract_id,
-                    "version_type": str(state.active_analysis_prompt.version_type),
-                    "parent_version_id": state.active_analysis_prompt.parent_version_id,
-                },
+                "extraction": asdict(state.active_extraction_prompt),
+                "analysis": asdict(state.active_analysis_prompt),
             },
             sample_states = [
             {
@@ -164,6 +149,30 @@ class OptimizerLoop:
         if not Path(checkpoint_path).exists():
             return None
         return OptimizerCheckpoint.load(checkpoint_path)
+
+    def _restore_state_from_checkpoint(self, state: OptimizerState, checkpoint: OptimizerCheckpoint) -> None:
+        """Restore active prompts and sample states from a checkpoint."""
+        extraction_data = checkpoint.active_prompts.get("extraction")
+        if isinstance(extraction_data, dict) and "prompt_ir" in extraction_data:
+            state.active_extraction_prompt = PromptVersion.from_dict(extraction_data)
+        analysis_data = checkpoint.active_prompts.get("analysis")
+        if isinstance(analysis_data, dict) and "prompt_ir" in analysis_data:
+            state.active_analysis_prompt = PromptVersion.from_dict(analysis_data)
+        for sample_state_data in checkpoint.sample_states:
+            sample_id = sample_state_data.get("sample_id")
+            if sample_id is None:
+                continue
+            existing = state.sample_states.get(sample_id)
+            if existing is None:
+                continue
+            existing.difficulty_ema = sample_state_data.get("difficulty_ema", existing.difficulty_ema)
+            existing.fragility_score = sample_state_data.get("fragility_score", existing.fragility_score)
+            existing.last_selected_round = sample_state_data.get("last_selected_round", existing.last_selected_round)
+            existing.consecutive_correct_count = sample_state_data.get("consecutive_correct_count", existing.consecutive_correct_count)
+            existing.consecutive_wrong_count = sample_state_data.get("consecutive_wrong_count", existing.consecutive_wrong_count)
+            existing.selected_count_recent_window = sample_state_data.get("selected_count_recent_window", existing.selected_count_recent_window)
+            existing.historical_fixed = sample_state_data.get("historical_fixed", existing.historical_fixed)
+            existing.toxic_trigger = sample_state_data.get("toxic_trigger", existing.toxic_trigger)
 
     def _write_trend_and_summary(self, summary: OptimizationRunSummary, metrics_records: list[RoundMetrics]) -> MetricsTrend:
         trend = build_metrics_trend(metrics_records)

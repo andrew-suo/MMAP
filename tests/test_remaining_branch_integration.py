@@ -86,9 +86,5 @@ def test_semantic_output_constraints_and_report_fields():
         prompt_version_before_id="p1",
         triggered=True,
         reason="budget",
-        semantic_retry_count=2,
-        validation_errors=["retry"],
-        output_constraint_violations=failing.violations,
     )
-    assert report.semantic_retry_count == 2
-    assert report.output_constraint_violations
+    assert report.triggered

@@ -11,7 +11,6 @@ class RenderedPrompt:
     text: str
     text_hash: str
     line_count: int
-    token_count: int | None = None
 
 
 class PromptRenderer:

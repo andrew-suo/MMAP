@@ -381,7 +381,7 @@ def _build_ir_from_parsed(
                 id=target_schema_id, type="output_schema", content=merged,
                 name=title, scope="framework", priority="critical",
                 compressibility="none", mutability="frozen",
-                rendering_enabled=True, metrics=metrics,
+                rendering_enabled=True,
             ))
             schema_emitted_in = target_schema_id
         else:
@@ -389,7 +389,7 @@ def _build_ir_from_parsed(
                 id=sid, type=sid, content=content,
                 name=title, scope="task", priority="medium",
                 compressibility="medium", mutability="normal",
-                rendering_enabled=True, metrics=metrics,
+                rendering_enabled=True,
             ))
         rendering_order.append(sections[-1].id)
 

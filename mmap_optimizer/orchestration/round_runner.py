@@ -204,21 +204,27 @@ class RoundRunner:
             repair_engine = PatchRepairEngine(
                 model_client=self.optimizer_client if self.config.patch_repair_enabled else None,
                 model_config=self._optimizer_model_config(),
+                max_attempts=self.config.patch_repair_max_attempts,
             )
             for patch in draft_patches:
                 validation = validator.validate(patch, state.active_extraction_prompt.prompt_ir)
                 if not validation.valid and self.config.patch_repair_enabled:
-                    repair_result = repair_engine.repair_locator(
-                        patch=asdict(patch),
-                        prompt_ir=state.active_extraction_prompt.prompt_ir,
-                        failure_info=validation.reason or "validation_failed",
-                    )
-                    repaired_patch = Patch(**repair_result.repaired_patch)
-                    repaired_validation = validator.validate(repaired_patch, state.active_extraction_prompt.prompt_ir)
-                    repaired_patch.extra["repair_attempts"] = 1
+                    repair_attempts = 0
+                    for attempt in range(self.config.patch_repair_max_attempts):
+                        repair_result = repair_engine.repair_locator(
+                            patch=asdict(patch),
+                            prompt_ir=state.active_extraction_prompt.prompt_ir,
+                            failure_info=validation.reason or "validation_failed",
+                        )
+                        repair_attempts += 1
+                        repaired_patch = Patch(**repair_result.repaired_patch)
+                        repaired_validation = validator.validate(repaired_patch, state.active_extraction_prompt.prompt_ir)
+                        if repaired_validation.valid:
+                            break
+                    repaired_patch.extra["repair_attempts"] = repair_attempts
                     repaired_patch.extra["repair_unresolved_fields"] = repair_result.unresolved_fields
                     repaired_patch.extra["original_patch_id"] = patch.id
-                    self._debug("patch_repair", round_id=round_id, patch_id=patch.id, repaired=repaired_validation.valid, reason=repaired_validation.reason, unresolved_fields=repair_result.unresolved_fields)
+                    self._debug("patch_repair", round_id=round_id, patch_id=patch.id, repaired=repaired_validation.valid, reason=repaired_validation.reason, unresolved_fields=repair_result.unresolved_fields, attempts=repair_attempts)
                     if repaired_validation.valid:
                         patch = repaired_patch
                         validation = repaired_validation
@@ -391,6 +397,7 @@ class RoundRunner:
             round_id=round_id,
             prompt=state.active_extraction_prompt,
             line_budget=self.config.extraction_line_budget,
+            token_budget=self.config.extraction_token_budget,
             samples=optimization_batch,
             assets=state.assets,
             ground_truths=state.ground_truths,
@@ -417,6 +424,7 @@ class RoundRunner:
                     round_id=round_id,
                     prompt=state.active_analysis_prompt,
                     line_budget=self.config.analysis_line_budget,
+                    token_budget=self.config.analysis_token_budget,
                     error_evaluations=wrong_evals,
                     sample_metadata={sample.id: sample.metadata for sample in state.samples},
                     base_runs=analysis_runs,
@@ -626,7 +634,10 @@ class RoundRunner:
 
     def _debug(self, event_type: str, **payload) -> None:
         if self.debug_logger is not None:
-            self.debug_logger.log(event_type, payload)
+            round_id = payload.pop("round_id", None)
+            stage = payload.pop("stage", None)
+            message = payload.pop("message", event_type)
+            self.debug_logger.log(event_type, message, stage=stage, round_id=round_id, payload=payload)
 
     def _unique_patches(self, patches: list[Patch]) -> list[Patch]:
         by_id: dict[str, Patch] = {}
@@ -635,10 +646,13 @@ class RoundRunner:
         return list(by_id.values())
 
     def _save_intermediate(self, round_id: str, stage: str, data: dict) -> None:
-        """Save intermediate results after each stage for crash recovery (Stage 1).
-        
-        NOTE: Stage 2 (loading intermediate files on resume) is not yet implemented.
-        Currently intermediate files are used for debugging and audit only.
+        """Save intermediate results after each stage for debugging and audit.
+
+        These files are written to {round_id}/intermediate/{stage}.json and
+        removed by _cleanup_intermediate when the round completes successfully.
+        They are NOT used for crash recovery (resume logic relies on
+        OptimizerCheckpoint, not intermediate files). They serve as per-stage
+        audit artifacts that survive only if the round crashes mid-execution.
         """
         self.store.write_json(f"{round_id}/intermediate/{stage}.json", data)
 

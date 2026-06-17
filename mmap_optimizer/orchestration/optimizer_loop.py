@@ -135,18 +135,23 @@ class OptimizerLoop:
                     "parent_version_id": state.active_analysis_prompt.parent_version_id,
                 },
             },
-            sample_states=[
-                {
-                    "sample_id": sample_state.sample_id,
-                    "difficulty_ema": sample_state.difficulty_ema,
-                    "fragility_score": sample_state.fragility_score,
-                    "last_selected_round": sample_state.last_selected_round,
-                }
-                for sample_state in state.sample_states.values()
-            ],
+            sample_states = [
+            {
+                "sample_id": sample_state.sample_id,
+                "difficulty_ema": sample_state.difficulty_ema,
+                "fragility_score": sample_state.fragility_score,
+                "last_selected_round": sample_state.last_selected_round,
+                "consecutive_correct_count": sample_state.consecutive_correct_count,
+                "consecutive_wrong_count": sample_state.consecutive_wrong_count,
+                "selected_count_recent_window": sample_state.selected_count_recent_window,
+                "historical_fixed": sample_state.historical_fixed,
+                "toxic_trigger": sample_state.toxic_trigger,
+            }
+            for sample_state in state.sample_states.values()
+        ],
             fewshot_pool_path=fewshot_pool_path,
             metrics_summary={
-                "round_id": round_index,
+                "round_index": round_index,
                 "batch_accuracy": metrics.batch_accuracy,
                 "accepted_count": metrics.accepted_count,
                 "rejected_count": metrics.rejected_count,

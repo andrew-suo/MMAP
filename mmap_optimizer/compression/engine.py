@@ -153,7 +153,7 @@ class CompressionEngine:
             candidate_text = candidate_prompt.render().text
             after_lines = self._line_count(candidate_text)
             after_tokens = self._token_count(candidate_text)
-            if after_lines >= before_lines:
+            if line_exceeded and after_lines >= before_lines:
                 report.rejected_sections.append({"section_id": section.id, "reason": "NO_LINE_REDUCTION"})
                 continue
             report.accepted = True
@@ -183,6 +183,12 @@ class CompressionEngine:
         base_runs: list[RunRecord],
         token_budget: int | None = None,
     ) -> tuple[PromptVersion, CompressionReport, list[RunRecord], list[EvaluationRecord]]:
+        """Compress analysis prompt if needed.
+        
+        Note: This method does not run evaluations on compressed candidates,
+        so the fourth return value (evaluations) is always an empty list.
+        Use compress_if_needed() for extraction compression which includes evaluations.
+        """
         prompt_type_value = getattr(prompt.prompt_type, "value", str(prompt.prompt_type))
         rendered_text = prompt.render().text
         before_lines = self._line_count(rendered_text)
@@ -262,7 +268,7 @@ class CompressionEngine:
             candidate_text = candidate_prompt.render().text
             after_lines = self._line_count(candidate_text)
             after_tokens = self._token_count(candidate_text)
-            if after_lines >= before_lines:
+            if line_exceeded and after_lines >= before_lines:
                 report.rejected_sections.append({"section_id": section.id, "reason": "NO_LINE_REDUCTION"})
                 continue
             report.accepted = True

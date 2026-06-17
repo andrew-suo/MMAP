@@ -51,7 +51,7 @@ class OptimizerState:
     active_extraction_prompt: PromptVersion
     active_analysis_prompt: PromptVersion
     extraction_output_schema_contract: OutputSchemaContract
-    analysis_output_schema_contract: OutputSchemaContract
+    analysis_output_schema_contract: OutputSchemaContract  # Reserved for future analysis evolution pipeline
 
 
 @dataclass
@@ -91,15 +91,21 @@ class RoundRunner:
         )
         self.store.write_json(f"{round_id}/round.json", round_record)
         if self.config.prompt_health_check_enabled:
-            for prompt_name, prompt in [("extraction", state.active_extraction_prompt), ("analysis", state.active_analysis_prompt)]:
-                health_report = check_prompt_health(prompt.prompt_ir)
-                self.store.write_json(f"{round_id}/health/{prompt_name}_prompt_health.json", health_report)
-                if not health_report.ok:
-                    round_record.status = "ROUND_ABORTED"
-                    round_record.failure_reason = f"{prompt_name.upper()}_PROMPT_HEALTH_ERROR"
-                    self.store.write_json(f"{round_id}/round.json", round_record)
-                    self._debug("guardrail_detention", round_id=round_id, prompt=prompt_name, issues=[issue.__dict__ for issue in health_report.issues])
-                    raise ValueError(round_record.failure_reason)
+            try:
+                for prompt_name, prompt in [("extraction", state.active_extraction_prompt), ("analysis", state.active_analysis_prompt)]:
+                    health_report = check_prompt_health(prompt.prompt_ir)
+                    self.store.write_json(f"{round_id}/health/{prompt_name}_prompt_health.json", health_report)
+                    if not health_report.ok:
+                        round_record.status = "ROUND_ABORTED"
+                        round_record.failure_reason = f"{prompt_name.upper()}_PROMPT_HEALTH_ERROR"
+                        self.store.write_json(f"{round_id}/round.json", round_record)
+                        self._debug("guardrail_detention", round_id=round_id, prompt=prompt_name, issues=[issue.__dict__ for issue in health_report.issues])
+                        raise ValueError(round_record.failure_reason)
+            except Exception:
+                round_record.current_stage = RoundStage.FAILED.value
+                round_record.status = "ROUND_FAILED"
+                self.store.write_json(f"{round_id}/round.json", round_record)
+                raise
 
         optimization_batch = select_optimization_batch(state.samples, state.sample_states, self.config.batch_size, round_index=round_index)
         round_record.optimization_batch_ids = [s.id for s in optimization_batch]
@@ -116,6 +122,7 @@ class RoundRunner:
         )
         round_record.dynamic_validation_batch_id = dval_batch.id
         self.store.write_json(f"{round_id}/dynamic_validation_batch.json", dval_batch)
+        self._advance_stage(round_id, round_record, RoundStage.OPTIMIZATION_BATCH_SELECT.value)
         log_stage(logger, "batch_selection_done", round=round_index, optimization_batch_size=len(optimization_batch), dval_batch_size=len(dval_batch.sample_ids))
 
         log_stage(logger, "extraction_run_start", round=round_index, sample_count=len(optimization_batch))
@@ -143,6 +150,7 @@ class RoundRunner:
         )
         dval_runs, dval_evals = dval_result.runs, dval_result.evaluations
         log_stage(logger, "dval_run_done", round=round_index, sample_count=len(dynamic_samples), evaluation_count=len(dval_evals))
+        self._advance_stage(round_id, round_record, RoundStage.DYNAMIC_VALIDATION.value)
         round_record.extraction_run_ids = [r.id for r in extraction_runs]
         round_record.dynamic_validation_run_ids = [r.id for r in dval_runs]
         self._advance_stage(round_id, round_record, RoundStage.BASELINE_EVAL.value)
@@ -172,6 +180,7 @@ class RoundRunner:
 
         wrong_evals = [evaluation for evaluation in evals if evaluation.overall_status != "correct"]
         if wrong_evals:
+            self._advance_stage(round_id, round_record, RoundStage.PATCH_GENERATION.value)
             log_stage(logger, "patch_generation_start", round=round_index, failed_sample_count=len(wrong_evals))
             analysis_result = AnalysisRunner(
                 self.optimizer_client,
@@ -231,6 +240,7 @@ class RoundRunner:
             })
 
             merge_result = TreeReducePatchMerger().merge(round_id=round_id, patches=candidate_patches, prompt_ir=state.active_extraction_prompt.prompt_ir)
+            self._advance_stage(round_id, round_record, RoundStage.PATCH_TREE_REDUCE.value)
             merge_report = merge_result.merge_report
             merged_patches = merge_result.final_patches
             rejected_patches.extend(merge_result.rejected_patches)
@@ -251,6 +261,7 @@ class RoundRunner:
                         patch.rejection_reason = validation.reason
                         rejected_patches.append(patch)
                 merged_patches = semantic_validated
+            self._advance_stage(round_id, round_record, RoundStage.PATCH_RANKING.value)
             log_stage(logger, "patch_testing_start", round=round_index, patch_count=len(merged_patches))
             accepted_patches: list[Patch] = []
             suite_builder = PatchTestSuiteBuilder()
@@ -356,6 +367,7 @@ class RoundRunner:
                 "rejected_patch_ids": round_record.rejected_patch_ids,
             })
 
+        self._advance_stage(round_id, round_record, RoundStage.ANALYSIS_EVOLUTION.value)
         analysis_evolution_report = AnalysisEvolutionEngine().evolve(
             round_id=round_id,
             current_prompt=state.active_analysis_prompt,
@@ -460,6 +472,7 @@ class RoundRunner:
             "fewshot_accepted": any(r.accepted for r in fewshot_reports),
         })
 
+        self._advance_stage(round_id, round_record, RoundStage.METRICS.value)
         contribution = build_section_contribution(
             patches=self._unique_patches([*draft_patches, *candidate_patches, *rejected_patches]),
             analysis_records=analysis_records,
@@ -622,7 +635,11 @@ class RoundRunner:
         return list(by_id.values())
 
     def _save_intermediate(self, round_id: str, stage: str, data: dict) -> None:
-        """Save intermediate results after each stage for crash recovery."""
+        """Save intermediate results after each stage for crash recovery (Stage 1).
+        
+        NOTE: Stage 2 (loading intermediate files on resume) is not yet implemented.
+        Currently intermediate files are used for debugging and audit only.
+        """
         self.store.write_json(f"{round_id}/intermediate/{stage}.json", data)
 
     def _advance_stage(self, round_id: str, round_record: OptimizationRound, stage: str) -> None:

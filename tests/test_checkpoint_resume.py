@@ -74,7 +74,7 @@ def test_checkpoint_schema_stable_keys(tmp_path: Path) -> None:
     expected_keys = {"round_index", "active_prompts", "sample_states", "fewshot_pool_path", "metrics_summary", "created_at"}
     assert expected_keys.issubset(data.keys()), f"checkpoint should have keys: {expected_keys}, got {sorted(data.keys())}"
     assert "batch_accuracy" in data["metrics_summary"]
-    assert "round_id" in data["metrics_summary"]
+    assert "round_index" in data["metrics_summary"]
 
 
 def test_resume_without_checkpoint_starts_from_beginning(tmp_path: Path) -> None:

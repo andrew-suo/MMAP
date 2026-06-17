@@ -239,7 +239,7 @@ class FewShotOptimizationEngine:
             asset_ids=sample.asset_ids,
             reasoning_text=reasoning_text,
             final_output=final_output,
-            schema_valid=schema_result.valid and bool(reasoning_text.strip()),
+            schema_valid=schema_result.valid,
             matches_ground_truth=primary_matches,
             visual_evidence_grounded=sample.metadata.get("fewshot_visual_evidence_grounded"),
             status="validated" if schema_result.valid and primary_matches and reasoning_text.strip() else "rejected",
@@ -317,7 +317,16 @@ class FewShotOptimizationEngine:
     def _replacement_slot(self, slots: list[dict[str, Any]]) -> dict[str, Any] | None:
         if not slots:
             return None
-        return sorted(slots, key=lambda item: int(item.get("slot_index", 0)))[0]
+        valid_slots = []
+        for item in slots:
+            try:
+                slot_index = int(item.get("slot_index", 0))
+                valid_slots.append((slot_index, item))
+            except (ValueError, TypeError):
+                continue
+        if not valid_slots:
+            return None
+        return sorted(valid_slots, key=lambda x: x[0])[0][1]
 
     def _parse_slots(self, prompt: PromptVersion) -> list[dict[str, Any]]:
         section = prompt.prompt_ir.section_by_id(self.SECTION_ID)

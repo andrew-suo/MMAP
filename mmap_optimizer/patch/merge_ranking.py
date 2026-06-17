@@ -1,5 +1,9 @@
 """Risk-aware patch merge candidate ranking and selection helpers.
 
+DEPRECATED: This module is not yet integrated into the default optimizer pipeline.
+The default merge pipeline uses TreeReducePatchMerger (patch/tree_reduce.py) instead.
+This module provides optional ranking/scoring helpers for future integration.
+
 This module exposes lightweight pure-function helpers for scoring, ranking,
 and selecting patch merge candidates based on:
 

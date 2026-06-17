@@ -107,7 +107,13 @@ class FewShotOptimizationEngine:
                 report.rejected_candidates.append({"candidate_id": candidate.id, "reason": candidate.rejection_reason})
                 candidate_pool.mark_tested(candidate_id=candidate.id, round_id=round_id, accuracy_delta=0.0, accepted=False, rejection_reason=candidate.rejection_reason)
                 continue
-            example = self._generate_example(candidate, source_sample, ground_truths[source_sample.ground_truth_id], contract)
+            ground_truth = ground_truths.get(source_sample.ground_truth_id)
+            if ground_truth is None:
+                candidate.rejection_reason = "GROUND_TRUTH_NOT_FOUND"
+                report.rejected_candidates.append({"candidate_id": candidate.id, "reason": candidate.rejection_reason})
+                candidate_pool.mark_tested(candidate_id=candidate.id, round_id=round_id, accuracy_delta=0.0, accepted=False, rejection_reason=candidate.rejection_reason)
+                continue
+            example = self._generate_example(candidate, source_sample, ground_truth, contract)
             if not example.schema_valid or not example.matches_ground_truth:
                 candidate.rejection_reason = "EXAMPLE_CONTRACT_FAILED"
                 report.rejected_candidates.append({"candidate_id": candidate.id, "reason": candidate.rejection_reason})
@@ -223,7 +229,8 @@ class FewShotOptimizationEngine:
     def _generate_example(self, candidate: FewShotCandidate, sample: Sample, ground_truth: GroundTruth, contract: OutputSchemaContract) -> FewShotExample:
         final_output = self._schema_complete_output(ground_truth.value, ground_truth.primary_answer, contract)
         schema_result = self.evaluator.validator.validate(final_output, contract.schema)
-        primary_matches = all(final_output.get(field) == ground_truth.value.get(field, ground_truth.primary_answer) for field in contract.primary_answer_fields)
+        primary_fields = contract.primary_answer_fields if contract.primary_answer_fields else ["result"]
+        primary_matches = all(final_output.get(field) == ground_truth.value.get(field, ground_truth.primary_answer) for field in primary_fields)
         reasoning_text = sample.metadata.get("fewshot_reasoning") or self._generate_reasoning_text(sample, ground_truth, final_output)
         return FewShotExample(
             id=f"fewshot_example_{sample.id}",
@@ -232,7 +239,7 @@ class FewShotOptimizationEngine:
             asset_ids=sample.asset_ids,
             reasoning_text=reasoning_text,
             final_output=final_output,
-            schema_valid=schema_result.valid and bool(reasoning_text.strip()),
+            schema_valid=schema_result.valid,
             matches_ground_truth=primary_matches,
             visual_evidence_grounded=sample.metadata.get("fewshot_visual_evidence_grounded"),
             status="validated" if schema_result.valid and primary_matches and reasoning_text.strip() else "rejected",
@@ -310,7 +317,16 @@ class FewShotOptimizationEngine:
     def _replacement_slot(self, slots: list[dict[str, Any]]) -> dict[str, Any] | None:
         if not slots:
             return None
-        return sorted(slots, key=lambda item: int(item.get("slot_index", 0)))[0]
+        valid_slots = []
+        for item in slots:
+            try:
+                slot_index = int(item.get("slot_index", 0))
+                valid_slots.append((slot_index, item))
+            except (ValueError, TypeError):
+                continue
+        if not valid_slots:
+            return None
+        return sorted(valid_slots, key=lambda x: x[0])[0][1]
 
     def _parse_slots(self, prompt: PromptVersion) -> list[dict[str, Any]]:
         section = prompt.prompt_ir.section_by_id(self.SECTION_ID)

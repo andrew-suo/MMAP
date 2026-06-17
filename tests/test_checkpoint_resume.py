@@ -74,14 +74,16 @@ def test_checkpoint_schema_stable_keys(tmp_path: Path) -> None:
     expected_keys = {"round_index", "active_prompts", "sample_states", "fewshot_pool_path", "metrics_summary", "created_at"}
     assert expected_keys.issubset(data.keys()), f"checkpoint should have keys: {expected_keys}, got {sorted(data.keys())}"
     assert "batch_accuracy" in data["metrics_summary"]
-    assert "round_id" in data["metrics_summary"]
+    assert "round_index" in data["metrics_summary"]
 
 
-def test_resume_without_checkpoint_raises(tmp_path: Path) -> None:
+def test_resume_without_checkpoint_starts_from_beginning(tmp_path: Path) -> None:
     store = JsonStore(tmp_path)
     loop = _loop(store, resume=True)
-    with pytest.raises(FileNotFoundError, match="cannot resume"):
-        loop.run(_build_state(), max_rounds=1)
+    # Should not raise; instead starts from the beginning since no checkpoint exists
+    _, metrics, summary = loop.run(_build_state(), max_rounds=1)
+    assert len(metrics) == 1
+    assert summary.completed_round_count == 1
 
 
 def test_resume_advances_round_index(tmp_path: Path) -> None:

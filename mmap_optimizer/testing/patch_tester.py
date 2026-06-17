@@ -82,4 +82,8 @@ def summarize_patch_test(
     if result.canary_broken_count > 0:
         result.accepted = False
         result.rejection_reason = "CANARY_BROKEN"
+    # Historical regression: previously fixed sample regressed means rejection
+    elif result.historical_fixed_regression_count > 0:
+        result.accepted = False
+        result.rejection_reason = "HISTORICAL_REGRESSION"
     return result

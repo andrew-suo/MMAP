@@ -292,6 +292,7 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
     debug = data.get("debug", {}) or {}
     post_apply_regression = data.get("post_apply_regression", {}) or {}
     canary = data.get("canary", {}) or {}
+    historical_regression = data.get("historical_regression", {}) or {}
     models = data.get("models", {}) or {}
     extraction_model_data = data.get("extraction_model") or models.get("extraction") or {}
     optimizer_model_data = data.get("optimizer_model") or models.get("optimizer") or {}
@@ -339,7 +340,7 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
         canary_protection_enabled=_bool_value(canary.get("protection_enabled", data.get("canary_protection_enabled", True))),
         canary_min_consecutive_correct=_int_safe(canary.get("min_consecutive_correct", data.get("canary_min_consecutive_correct", 3)), 3),
         canary_max_count=_int_safe(canary.get("max_count", data.get("canary_max_count", 10)), 10),
-        historical_regression_check_enabled=_bool_value(post_apply_regression.get("historical_check_enabled", data.get("historical_regression_check_enabled", True))),
+        historical_regression_check_enabled=_bool_value(historical_regression.get("enabled", data.get("historical_regression_check_enabled", True))),
         scenario_id=data.get("scenario_id"),
         extraction_model=model_config_from_mapping(extraction_model_data),
         optimizer_model=model_config_from_mapping(optimizer_model_data),

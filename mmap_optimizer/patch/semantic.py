@@ -38,7 +38,14 @@ class SemanticPatchProcessor:
             return patches
         if not isinstance(payload, list):
             return patches
-        converted = [_patch_from_dict(item, patches[index if index < len(patches) else -1]) for index, item in enumerate(payload) if isinstance(item, dict)]
+        converted = []
+        for index, item in enumerate(payload):
+            if not isinstance(item, dict):
+                continue
+            fallback_patch = patches[index] if index < len(patches) else None
+            if fallback_patch is None:
+                continue
+            converted.append(_patch_from_dict(item, fallback_patch))
         return converted or patches
 
 
@@ -93,5 +100,5 @@ def _patch_from_dict(data: dict[str, Any], fallback: Patch) -> Patch:
         old_text=data.get("old_text") or fallback.old_text,
         target_text=data.get("target_text") or fallback.target_text,
         new_text=data.get("new_text") or fallback.new_text,
-        extra={**fallback.extra, "semantic_template_id": data.get("semantic_template_id"), "semantic_processed": True},
+        extra={k: v for k, v in {**fallback.extra, "semantic_processed": True, "semantic_template_id": data.get("semantic_template_id")}.items() if v is not None},
     )

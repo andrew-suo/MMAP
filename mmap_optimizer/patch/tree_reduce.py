@@ -98,7 +98,7 @@ class TreeReducePatchMerger:
         if not reduced:
             return [], [*conflict_patches, *[patch for patch in non_conflict if patch.status == "rejected"]], info
         if len(reduced) == 1:
-            reduced[0].status = "merged"
+            reduced[0].status = "accepted"
             info["output_patch_ids"].append(reduced[0].id)
             return [reduced[0]], [*conflict_patches, *[patch for patch in non_conflict if patch.status == "rejected"]], info
 
@@ -133,11 +133,11 @@ class TreeReducePatchMerger:
             base_version_id=first.base_version_id,
             section_id=first.section_id,
             operation_type=first.operation_type,
-            operation_mode="append",
+            operation_mode=first.operation_mode,
             intent_name=f"merged_{cluster.section_id}_{cluster.operation_type}",
             intent_description=intent_descriptions,
             patch_text="\n".join(text_lines),
-            rationale="Tree-reduced from: " + ", ".join(patch.id for patch in patches),
+            rationale="Tree-reduced from: " + ", ".join(f"{patch.intent_name}({patch.id})" for patch in patches),
             source_sample_ids=sorted({sid for patch in patches for sid in patch.source_sample_ids}),
             source_analysis_ids=sorted({aid for patch in patches for aid in patch.source_analysis_ids}),
             risk_level=max((patch.risk_level for patch in patches), key=lambda risk: _RISK_RANK.get(risk, 0), default="unknown"),

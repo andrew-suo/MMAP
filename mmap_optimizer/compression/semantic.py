@@ -47,7 +47,7 @@ class SemanticCompressionEngine:
         prune_template = self.registry.get("llm_prune")
         prune_prompt = prune_template.render(section_header=section_header, section_content=section_content)
         prune_response = self.model_client.complete(
-            [{"role": "system", "content": prune_prompt}, {"role": "user", "content": {"section_header": section_header, "section_content": section_content}}],
+            [{"role": "system", "content": prune_prompt}, {"role": "user", "content": json.dumps({"section_header": section_header, "section_content": section_content}, ensure_ascii=False)}],
             model_config=self.model_config,
             response_format=prune_template.output_contract,
         )
@@ -55,21 +55,16 @@ class SemanticCompressionEngine:
         if not pruned or pruned.strip() == section_content.strip():
             return SemanticCompressionCandidate(content=section_content, semantic_valid=False, reason="NO_SEMANTIC_PRUNE_CHANGE")
         validation = self.validate_prune(original_section=section_content, pruned_section=pruned)
-        retry_count = 0
-        while not validation.semantic_valid and retry_count < self.max_validation_retries:
-            retry_count += 1
-            validation = self.validate_prune(original_section=section_content, pruned_section=pruned)
         if not validation.semantic_valid:
-            validation.retry_count = retry_count
             validation.validation_errors.append(validation.reason or "SEMANTIC_VALIDATION_FAILED")
             return validation
-        return SemanticCompressionCandidate(content=pruned, semantic_valid=True, reason=validation.reason, retry_count=retry_count)
+        return SemanticCompressionCandidate(content=pruned, semantic_valid=True, reason=validation.reason)
 
     def validate_prune(self, *, original_section: str, pruned_section: str) -> SemanticCompressionCandidate:
         validation_template = self.registry.get("llm_prune_validation")
         validation_prompt = validation_template.render(original_section=original_section, pruned_section=pruned_section)
         response = self.model_client.complete(
-            [{"role": "system", "content": validation_prompt}, {"role": "user", "content": {"original_section": original_section, "pruned_section": pruned_section}}],
+            [{"role": "system", "content": validation_prompt}, {"role": "user", "content": json.dumps({"original_section": original_section, "pruned_section": pruned_section}, ensure_ascii=False)}],
             model_config=self.model_config,
             response_format=validation_template.output_contract,
         )

@@ -37,10 +37,9 @@ def check_output_constraints(text: str, *, required_terms: list[str] | None = No
 
 
 class SemanticCompressionEngine:
-    def __init__(self, model_client: ModelClient, model_config: dict[str, Any] | None = None, max_validation_retries: int = 0):
+    def __init__(self, model_client: ModelClient, model_config: dict[str, Any] | None = None):
         self.model_client = model_client
         self.model_config = model_config or {}
-        self.max_validation_retries = max(0, max_validation_retries)
         self.registry = build_default_template_registry()
 
     def prune_section(self, *, section_header: str, section_content: str) -> SemanticCompressionCandidate:

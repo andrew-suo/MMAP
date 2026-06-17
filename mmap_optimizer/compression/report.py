@@ -26,10 +26,5 @@ class CompressionReport:
     token_reduction: int = 0
     semantic_check_passed: bool = False
     behavior_check_passed: bool = False
-    canary_broken_count: int = 0
-    historical_fixed_regression_count: int = 0
     rejected_sections: list[dict] = field(default_factory=list)
     failure_reason: str | None = None
-    semantic_retry_count: int = 0
-    validation_errors: list[str] = field(default_factory=list)
-    output_constraint_violations: list[str] = field(default_factory=list)

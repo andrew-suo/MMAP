@@ -24,5 +24,4 @@ class AnalysisRecord:
     generated_patch_count: int = 0
     invalid_patch_count: int = 0
     invalid_patch_candidate_count: int = 0
-    schema_violation_patch_count: int = 0
-    frozen_target_patch_count: int = 0
+    prompt_section_attribution: list = field(default_factory=list)

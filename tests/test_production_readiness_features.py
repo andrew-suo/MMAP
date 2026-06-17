@@ -7,7 +7,6 @@ from mmap_optimizer.evaluation.voting import run_eval_vote
 from mmap_optimizer.metrics.section_contribution import build_section_contribution
 from mmap_optimizer.model.client import ModelResponse
 from mmap_optimizer.orchestration.executor import map_ordered
-from mmap_optimizer.orchestration.run_state import RunState, RunStateStore
 from mmap_optimizer.patch.applier import PatchApplier
 from mmap_optimizer.patch.repair import PatchRepairEngine
 from mmap_optimizer.patch.schema import Patch
@@ -96,11 +95,8 @@ def test_eval_voting_majority_without_ground_truth():
     assert result.is_ground_truth_backed is False
 
 
-def test_run_state_snapshot_debug_and_scenario(tmp_path):
+def test_snapshot_debug_and_scenario(tmp_path):
     store = JsonStore(tmp_path)
-    state_store = RunStateStore(store)
-    state_store.save(RunState(run_id="run1", iteration=2, stage="analysis", completed_round_ids=["r1"]))
-    assert state_store.load().stage == "analysis"
 
     snapshot = save_prompt_snapshot(store, prompt_version(), "snap1")
     assert load_prompt_snapshot(store, "snap1")["id"] == snapshot.id

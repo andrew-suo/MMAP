@@ -9,7 +9,6 @@ from typing import Any, Protocol
 @dataclass
 class ModelResponse:
     raw_output: str
-    parsed_output: Any | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

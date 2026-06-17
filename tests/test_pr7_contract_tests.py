@@ -871,7 +871,6 @@ class TestCompressionHelperContract:
             line_count_before=120,
             line_count_after=None,
             failure_reason="output constraint violated",
-            validation_errors=[],
         )
         payload = json.loads(json.dumps(report.__dict__, ensure_ascii=False))
         assert payload["id"] == "compression-1"

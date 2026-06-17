@@ -12,7 +12,6 @@ class SampleAsset:
     uri: str | None = None
     local_path: str | None = None
     mime_type: str | None = None
-    hash: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -22,7 +21,6 @@ class GroundTruth:
     sample_id: str
     value: dict[str, Any]
     primary_answer: Any
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

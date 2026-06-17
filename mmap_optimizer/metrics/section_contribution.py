@@ -47,7 +47,7 @@ def build_section_contribution(
         contribution.broken_count += len(patch.broken_sample_ids)
 
     for record in analysis_records or []:
-        for attribution in getattr(record, "prompt_section_attribution", []):
+        for attribution in record.prompt_section_attribution:
             if isinstance(attribution, dict):
                 section_id = attribution.get("section_id") or attribution.get("target_section")
             else:

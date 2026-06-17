@@ -62,6 +62,13 @@ class AnalysisRunner:
         patches: list[Patch] = []
         runs: list[RunRecord] = []
         for evaluation in error_evaluations:
+            source_run = extraction_runs.get(evaluation.sample_id)
+            if source_run is None:
+                logger.warning(
+                    "No extraction run found for sample_id=%s, skipping analysis",
+                    evaluation.sample_id,
+                )
+                continue
             metadata = sample_metadata.get(evaluation.sample_id, {})
             mock_output = metadata.get("mock_analysis_output")
             messages = [
@@ -103,13 +110,6 @@ class AnalysisRunner:
             elif not parse_result.schema_valid:
                 analysis_run.success = False
                 analysis_run.error_type = "SCHEMA_ERROR"
-            source_run = extraction_runs.get(evaluation.sample_id)
-            if source_run is None:
-                logger.warning(
-                    "No extraction run found for sample_id=%s, skipping analysis",
-                    evaluation.sample_id,
-                )
-                continue
             analysis_id = f"analysis_{round_id}_{evaluation.sample_id}"
             judgement = parse_result.parsed.get("judgement", {}) if isinstance(parse_result.parsed, dict) else {}
             record = AnalysisRecord(

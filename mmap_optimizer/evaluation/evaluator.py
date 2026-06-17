@@ -155,7 +155,8 @@ class Evaluator:
         prediction = parsed.get(primary_field)
         norm_prediction = normalize_label(prediction, self.label_mapping)
         norm_gt = normalize_label(ground_truth.primary_answer, self.label_mapping)
-        correct = schema_result.valid and norm_prediction == norm_gt
+        require_schema_valid = policy.get("require_schema_valid_for_correct", True)
+        correct = (schema_result.valid or not require_schema_valid) and norm_prediction == norm_gt
         status = EvaluationStatus.CORRECT.value if correct else (EvaluationStatus.SCHEMA_ERROR.value if not schema_result.valid else EvaluationStatus.WRONG.value)
         return EvaluationRecord(
             id=f"eval_{run_id}", round_id=round_id, run_id=run_id, sample_id=sample_id, ground_truth_id=ground_truth.id,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import shutil
 from dataclasses import asdict, dataclass, field
 
@@ -257,7 +258,7 @@ class RoundRunner:
             canary_sample_ids = self._select_canary_samples(state.sample_states) if self.config.canary_protection_enabled else []
             historically_fixed_ids = self._collect_historically_fixed_sample_ids(state.sample_states) if self.config.historical_regression_check_enabled else []
             for patch in merged_patches:
-                suite = suite_builder.build_individual_suite(round_id=round_id, patch=patch, current_evaluations=evals, canary_sample_ids=canary_sample_ids)
+                suite = suite_builder.build_individual_suite(round_id=round_id, patch=patch, current_evaluations=evals, canary_sample_ids=canary_sample_ids, historically_fixed_sample_ids=historically_fixed_ids)
                 base_suite_evals = [evaluation for evaluation in evals if evaluation.sample_id in set(suite.sample_ids)]
                 patch_run = patch_tester.test_individual(
                     round_id=round_id,
@@ -311,7 +312,8 @@ class RoundRunner:
                 patch_test_runs.extend(bundle_runs)
                 patch_test_evals.extend(bundle_evals)
                 patch_test_results.extend(bundle_results)
-                rejected_patches.extend([patch for patch in accepted_patches if patch not in final_patches])
+                final_patch_ids = {p.id for p in final_patches}
+                rejected_patches.extend([patch for patch in accepted_patches if patch.id not in final_patch_ids])
 
             if final_patches:
                 log_stage(logger, "patch_apply_start", round=round_index, patch_count=len(final_patches))
@@ -543,7 +545,7 @@ class RoundRunner:
         runs: list[RunRecord] = []
         evaluations: list[EvaluationRecord] = []
         results: list[PatchTestResult] = []
-        all_suite = suite_builder.build_bundle_suite(round_id=round_id, patches=accepted_patches, current_evaluations=base_evaluations, canary_sample_ids=canary_sample_ids)
+        all_suite = suite_builder.build_bundle_suite(round_id=round_id, patches=accepted_patches, current_evaluations=base_evaluations, canary_sample_ids=canary_sample_ids, historically_fixed_sample_ids=historically_fixed_sample_ids)
         all_base_evals = [evaluation for evaluation in base_evaluations if evaluation.sample_id in set(all_suite.sample_ids)]
         all_bundle = patch_tester.test_bundle(
             round_id=round_id,
@@ -567,7 +569,7 @@ class RoundRunner:
         safe: list[Patch] = []
         for patch in sorted(accepted_patches, key=lambda item: len(item.fixed_sample_ids), reverse=True):
             trial = [*safe, patch]
-            trial_suite = suite_builder.build_bundle_suite(round_id=round_id, patches=trial, current_evaluations=base_evaluations, canary_sample_ids=canary_sample_ids)
+            trial_suite = suite_builder.build_bundle_suite(round_id=round_id, patches=trial, current_evaluations=base_evaluations, canary_sample_ids=canary_sample_ids, historically_fixed_sample_ids=historically_fixed_sample_ids)
             trial_base_evals = [evaluation for evaluation in base_evaluations if evaluation.sample_id in set(trial_suite.sample_ids)]
             trial_bundle = patch_tester.test_bundle(
                 round_id=round_id,
@@ -657,8 +659,6 @@ class RoundRunner:
         state: OptimizerState,
     ) -> _RegressionCheckResult:
         """Run regression check after patches are applied. Returns regression info."""
-        import random
-
         correct_base_evals = [e for e in base_evaluations if e.overall_status == "correct"]
         if not correct_base_evals:
             return _RegressionCheckResult(regression_count=0, regression_sample_ids=[])
@@ -713,6 +713,7 @@ class RoundRunner:
     def _update_sample_state(self, state: OptimizerState, evals: list[EvaluationRecord], round_index: int) -> None:
         for evaluation in evals:
             sample_state = state.sample_states.setdefault(evaluation.sample_id, SampleState(sample_id=evaluation.sample_id))
+            was_correct = sample_state.consecutive_correct_count > 0
             error = 0.0 if evaluation.overall_status == "correct" else 1.0
             sample_state.difficulty_ema = 0.2 * error + 0.8 * sample_state.difficulty_ema
             window_expired = (
@@ -724,8 +725,12 @@ class RoundRunner:
             sample_state.last_selected_round = round_index
             sample_state.selected_count_recent_window += 1
             if error:
+                if was_correct:
+                    sample_state.toxic_trigger = True
                 sample_state.consecutive_wrong_count += 1
                 sample_state.consecutive_correct_count = 0
             else:
+                if sample_state.consecutive_wrong_count > 0:
+                    sample_state.historical_fixed = True
                 sample_state.consecutive_correct_count += 1
                 sample_state.consecutive_wrong_count = 0

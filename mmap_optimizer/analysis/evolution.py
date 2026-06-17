@@ -136,7 +136,7 @@ class AnalysisEvolutionEngine:
 
     def _trigger_reasons(self, rejected_patches: list[Patch], patch_test_results: list[PatchTestResult]) -> list[str]:
         reasons: list[str] = []
-        if any(p.rejection_reason == "SCHEMA_IMMUTABILITY_VIOLATION" for p in rejected_patches):
+        if any(p.rejection_reason and p.rejection_reason.startswith("SCHEMA_IMMUTABILITY_VIOLATION") for p in rejected_patches):
             reasons.append("schema_violation_patch")
         if any(p.rejection_reason == "TARGET_SECTION_FROZEN" for p in rejected_patches):
             reasons.append("frozen_target_patch")

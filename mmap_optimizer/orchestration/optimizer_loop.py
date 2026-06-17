@@ -157,7 +157,7 @@ class OptimizerLoop:
     def _load_existing_checkpoint(self) -> OptimizerCheckpoint | None:
         checkpoint_path = self.store.root / "checkpoint.json"
         if not Path(checkpoint_path).exists():
-            raise FileNotFoundError(f"cannot resume without checkpoint: {checkpoint_path}")
+            return None
         return OptimizerCheckpoint.load(checkpoint_path)
 
     def _write_trend_and_summary(self, summary: OptimizationRunSummary, metrics_records: list[RoundMetrics]) -> MetricsTrend:

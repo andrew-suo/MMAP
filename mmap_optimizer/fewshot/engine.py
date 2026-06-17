@@ -107,7 +107,13 @@ class FewShotOptimizationEngine:
                 report.rejected_candidates.append({"candidate_id": candidate.id, "reason": candidate.rejection_reason})
                 candidate_pool.mark_tested(candidate_id=candidate.id, round_id=round_id, accuracy_delta=0.0, accepted=False, rejection_reason=candidate.rejection_reason)
                 continue
-            example = self._generate_example(candidate, source_sample, ground_truths[source_sample.ground_truth_id], contract)
+            ground_truth = ground_truths.get(source_sample.ground_truth_id)
+            if ground_truth is None:
+                candidate.rejection_reason = "GROUND_TRUTH_NOT_FOUND"
+                report.rejected_candidates.append({"candidate_id": candidate.id, "reason": candidate.rejection_reason})
+                candidate_pool.mark_tested(candidate_id=candidate.id, round_id=round_id, accuracy_delta=0.0, accepted=False, rejection_reason=candidate.rejection_reason)
+                continue
+            example = self._generate_example(candidate, source_sample, ground_truth, contract)
             if not example.schema_valid or not example.matches_ground_truth:
                 candidate.rejection_reason = "EXAMPLE_CONTRACT_FAILED"
                 report.rejected_candidates.append({"candidate_id": candidate.id, "reason": candidate.rejection_reason})
@@ -223,7 +229,8 @@ class FewShotOptimizationEngine:
     def _generate_example(self, candidate: FewShotCandidate, sample: Sample, ground_truth: GroundTruth, contract: OutputSchemaContract) -> FewShotExample:
         final_output = self._schema_complete_output(ground_truth.value, ground_truth.primary_answer, contract)
         schema_result = self.evaluator.validator.validate(final_output, contract.schema)
-        primary_matches = all(final_output.get(field) == ground_truth.value.get(field, ground_truth.primary_answer) for field in contract.primary_answer_fields)
+        primary_fields = contract.primary_answer_fields if contract.primary_answer_fields else ["result"]
+        primary_matches = all(final_output.get(field) == ground_truth.value.get(field, ground_truth.primary_answer) for field in primary_fields)
         reasoning_text = sample.metadata.get("fewshot_reasoning") or self._generate_reasoning_text(sample, ground_truth, final_output)
         return FewShotExample(
             id=f"fewshot_example_{sample.id}",

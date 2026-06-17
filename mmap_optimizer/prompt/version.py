@@ -47,7 +47,7 @@ class PromptVersion:
         extra = {k: v for k, v in data.items() if k not in known}
         obj = cls(**fields)
         if extra:
-            obj._extra = extra
+            obj._extra = {**obj._extra, **extra}
         # 仅在无已渲染结果时重新渲染，避免重复计算
         if obj.rendered_prompt is None:
             obj.render()

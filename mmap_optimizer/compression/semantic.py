@@ -47,7 +47,7 @@ class SemanticCompressionEngine:
         prune_template = self.registry.get("llm_prune")
         prune_prompt = prune_template.render(section_header=section_header, section_content=section_content)
         prune_response = self.model_client.complete(
-            [{"role": "system", "content": prune_prompt}, {"role": "user", "content": {"section_header": section_header, "section_content": section_content}}],
+            [{"role": "system", "content": prune_prompt}, {"role": "user", "content": json.dumps({"section_header": section_header, "section_content": section_content}, ensure_ascii=False)}],
             model_config=self.model_config,
             response_format=prune_template.output_contract,
         )
@@ -69,7 +69,7 @@ class SemanticCompressionEngine:
         validation_template = self.registry.get("llm_prune_validation")
         validation_prompt = validation_template.render(original_section=original_section, pruned_section=pruned_section)
         response = self.model_client.complete(
-            [{"role": "system", "content": validation_prompt}, {"role": "user", "content": {"original_section": original_section, "pruned_section": pruned_section}}],
+            [{"role": "system", "content": validation_prompt}, {"role": "user", "content": json.dumps({"original_section": original_section, "pruned_section": pruned_section}, ensure_ascii=False)}],
             model_config=self.model_config,
             response_format=validation_template.output_contract,
         )

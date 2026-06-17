@@ -17,5 +17,5 @@ def build_model_client(config: ModelConfig) -> ModelClient:
         if not config.model:
             raise ValueError("OpenAI-compatible model config requires model")
         api_key = config.api_key or (os.environ.get(config.api_key_env) if config.api_key_env else None)
-        return OpenAICompatibleClient(base_url=config.base_url, api_key=api_key, model=config.model)
+        return OpenAICompatibleClient(base_url=config.base_url, api_key=api_key, model=config.model, verify_ssl=config.verify_ssl)
     raise ValueError(f"Unsupported model provider: {config.provider}")

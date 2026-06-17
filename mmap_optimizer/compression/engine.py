@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from typing import Any
 
@@ -366,11 +367,11 @@ class CompressionEngine:
                 {"role": "system", "content": rendered.text},
                 {
                     "role": "user",
-                    "content": {
+                    "content": json.dumps({
                         "sample_id": evaluation.sample_id,
                         "evaluation": evaluation.__dict__,
                         "mock_output": metadata.get("mock_analysis_output"),
-                    },
+                    }, ensure_ascii=False),
                 },
             ]
             response = self.model_client.complete(messages, model_config=self.model_config)

@@ -1,3 +1,8 @@
+# NOTE: BlindEvaluationRunner is currently NOT wired into the production pipeline
+# (round_runner.py drives analysis optimization directly via AnalysisRunner). This
+# module is reserved for future use — e.g. a standalone blind-evaluation step that
+# compares analysis judgements against ground truth without exposing the truth to
+# the analysis prompt. The code is intentionally kept for future integration.
 from __future__ import annotations
 
 import json
@@ -103,6 +108,7 @@ class BlindEvaluationRunner:
         rendered = analysis_prompt.render()
         blind_records: dict[str, BlindEvaluationRecord] = {}
         analysis_runs: list[RunRecord] = []
+        three_outputs: list[dict] | None = None
 
         for evaluation in evaluations:
             source_run = extraction_runs.get(evaluation.sample_id)
@@ -219,7 +225,7 @@ class BlindEvaluationRunner:
                 blind_judgement=blind_judgement,
                 ground_truth_label=ground_truth_label,
                 voted_truth_label=resolved_truth if used_voted_truth else None,
-                three_analysis_outputs=three_outputs if used_voted_truth and "three_outputs" in locals() else None,
+                three_analysis_outputs=three_outputs if used_voted_truth else None,
                 matches_truth=matches_truth,
                 overall_status=evaluation.overall_status,
                 parse_success=parse_result.parse_success,

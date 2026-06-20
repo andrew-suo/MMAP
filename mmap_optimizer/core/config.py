@@ -67,6 +67,13 @@ class OptimizerConfig:
     canary_max_count: int = 10
     # Historical regression detection
     historical_regression_check_enabled: bool = True
+    # Blind evaluation & analysis prompt optimization (v4.0)
+    blind_evaluation_enabled: bool = True
+    blind_eval_three_analysis_vote_enabled: bool = True
+    max_restart_attempts: int = 3
+    analysis_prompt_optimization_enabled: bool = True
+    analysis_patch_semantic_merge_enabled: bool = True
+    patch_toxic_test_sample_ratio: float = 0.5
     extraction_model: ModelConfig = field(default_factory=ModelConfig)
     optimizer_model: ModelConfig = field(default_factory=ModelConfig)
 
@@ -114,6 +121,10 @@ class OptimizerConfig:
             issues.append("canary.min_consecutive_correct must be >= 1")
         if self.canary_max_count < 1:
             issues.append("canary.max_count must be >= 1")
+        if self.max_restart_attempts < 1:
+            issues.append("max_restart_attempts must be >= 1")
+        if not 0.0 < self.patch_toxic_test_sample_ratio <= 1.0:
+            issues.append("patch_toxic_test_sample_ratio must be in (0.0, 1.0]")
         return issues
 
 
@@ -293,6 +304,8 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
     post_apply_regression = data.get("post_apply_regression", {}) or {}
     canary = data.get("canary", {}) or {}
     historical_regression = data.get("historical_regression", {}) or {}
+    blind_eval = data.get("blind_evaluation", {}) or {}
+    analysis_prompt_opt = data.get("analysis_prompt_optimization", {}) or {}
     models = data.get("models", {}) or {}
     extraction_model_data = data.get("extraction_model") or models.get("extraction") or {}
     optimizer_model_data = data.get("optimizer_model") or models.get("optimizer") or {}
@@ -341,6 +354,15 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
         canary_min_consecutive_correct=_int_safe(canary.get("min_consecutive_correct", data.get("canary_min_consecutive_correct", 3)), 3),
         canary_max_count=_int_safe(canary.get("max_count", data.get("canary_max_count", 10)), 10),
         historical_regression_check_enabled=_bool_value(historical_regression.get("enabled", data.get("historical_regression_check_enabled", True))),
+        blind_evaluation_enabled=_bool_value(blind_eval.get("enabled", data.get("blind_evaluation_enabled", True))),
+        blind_eval_three_analysis_vote_enabled=_bool_value(blind_eval.get("three_analysis_vote_enabled", data.get("blind_eval_three_analysis_vote_enabled", True))),
+        max_restart_attempts=_int_safe(data.get("max_restart_attempts", 3), 3),
+        analysis_prompt_optimization_enabled=_bool_value(analysis_prompt_opt.get("enabled", data.get("analysis_prompt_optimization_enabled", True))),
+        analysis_patch_semantic_merge_enabled=_bool_value(analysis_prompt_opt.get("semantic_merge_enabled", data.get("analysis_patch_semantic_merge_enabled", True))),
+        patch_toxic_test_sample_ratio=_float_safe(
+            data.get("patch_toxic_test_sample_ratio", 0.5),
+            0.5,
+        ),
         scenario_id=data.get("scenario_id"),
         extraction_model=model_config_from_mapping(extraction_model_data),
         optimizer_model=model_config_from_mapping(optimizer_model_data),

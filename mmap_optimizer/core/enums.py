@@ -37,6 +37,7 @@ class RunType(str, Enum):
     COMPRESSION_BEHAVIOR_TEST = "compression_behavior_test"
     FEW_SHOT_TEST = "few_shot_test"
     REGRESSION_CHECK = "regression_check"
+    PATCH_TEST_EXTRACTION = "patch_test_extraction"
 
 
 class EvaluationStatus(str, Enum):

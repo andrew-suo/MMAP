@@ -152,6 +152,8 @@ class FewShotOptimizationEngine:
             candidate_report.operation_type = operation_type
             candidate_report.replaced_slot_index = replace_slot.get("slot_index") if replace_slot else None
             candidate_report.replaced_sample_id = replace_slot.get("source_sample_id") if replace_slot else None
+            if operation_type == "REPLACE_SLOT":
+                candidate_report.replacement_count = 1
             candidate_report.prompt_version_after_id = candidate_prompt.id
             candidate_report.fewshot_set_version_id = fewshot_set.id
             candidate_report.selected_candidate_id = candidate.id

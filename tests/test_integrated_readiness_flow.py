@@ -156,9 +156,9 @@ def test_round_runner_saves_snapshot_before_promoting_patch(tmp_path: Path):
         model_client=MockModelClient(),
         evaluator=Evaluator(),
         store=JsonStore(tmp_path),
-        config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0, prompt_snapshot_enabled=True),
+        config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0, prompt_snapshot_enabled=True, blind_evaluation_enabled=False, analysis_prompt_optimization_enabled=False),
     )
-    round_record, _ = runner.run_round(state, round_index=1)
+    round_record, _, _ = runner.run_round(state, round_index=1)
     assert round_record.accepted_patch_ids
     assert list((tmp_path / "snapshots").glob("*.json"))
 

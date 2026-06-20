@@ -89,7 +89,7 @@ def test_round_runner_writes_metrics(tmp_path: Path):
         config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     assert round_record.status == "ROUND_COMPLETED"
     assert metrics.batch_accuracy == 0.5
@@ -152,7 +152,7 @@ def test_round_runner_accepts_analysis_patch_and_updates_prompt(tmp_path: Path):
         config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     assert round_record.accepted_patch_ids
     assert metrics.accepted_count == 1
@@ -220,7 +220,7 @@ def test_round_runner_rejects_toxic_temp_prompt_patch(tmp_path: Path):
         config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     assert not round_record.accepted_patch_ids
     assert metrics.toxic_count == 1
@@ -292,7 +292,7 @@ def test_round_runner_applies_all_patches_when_bundle_passes(tmp_path: Path):
         config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     rendered = state.active_extraction_prompt.render().text
     assert len(round_record.accepted_patch_ids) == 2
@@ -364,7 +364,7 @@ def test_round_runner_uses_greedy_safe_subset_when_bundle_is_toxic(tmp_path: Pat
         config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     rendered = state.active_extraction_prompt.render().text
     assert round_record.accepted_patch_ids == ["patch_round_000001_s1_00"]
@@ -414,7 +414,7 @@ def test_schema_or_frozen_target_violation_promotes_analysis_schema_guard(tmp_pa
         config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0),
     )
 
-    round_record, _ = runner.run_round(state, round_index=1)
+    round_record, _, _ = runner.run_round(state, round_index=1)
 
     rendered_analysis = state.active_analysis_prompt.render().text
     assert round_record.analysis_evolution_report_id == "analysis_evolution_round_000001"
@@ -480,7 +480,7 @@ def test_toxic_patch_promotes_analysis_risk_policy(tmp_path: Path):
         config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     rendered_analysis = state.active_analysis_prompt.render().text
     assert not round_record.accepted_patch_ids
@@ -521,7 +521,7 @@ def test_round_runner_compresses_extraction_prompt_after_text_round(tmp_path: Pa
         config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0, extraction_line_budget=1),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     assert metrics.compression_triggered
     assert metrics.compression_accepted
@@ -579,7 +579,7 @@ def test_round_runner_rejects_compression_when_behavior_changes(tmp_path: Path):
         config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0, extraction_line_budget=1),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     assert metrics.compression_triggered
     assert not metrics.compression_accepted
@@ -631,7 +631,7 @@ def test_round_runner_adds_fewshot_after_text_rounds(tmp_path: Path):
         config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0, max_text_rounds=0, fewshot_enabled=True, fewshot_max_slots=2),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     assert metrics.fewshot_triggered
     assert metrics.fewshot_accepted
@@ -695,7 +695,7 @@ def test_round_runner_rejects_fewshot_when_it_breaks_correct_sample(tmp_path: Pa
         config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0, max_text_rounds=0, fewshot_enabled=True, fewshot_max_slots=1),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     assert metrics.fewshot_triggered
     assert not metrics.fewshot_accepted
@@ -867,7 +867,7 @@ def test_analysis_runner_repairs_markdown_and_filters_invalid_patch_candidates(t
         config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0),
     )
 
-    _, metrics = runner.run_round(state, round_index=1)
+    _, metrics, _ = runner.run_round(state, round_index=1)
 
     records_path = tmp_path / "round_000001" / "analyses" / "analysis_records.jsonl"
     record = JsonStore(tmp_path).read_json("round_000001/metrics/round_metrics.json")
@@ -927,7 +927,7 @@ def test_round_runner_tree_reduce_deduplicates_patches_and_writes_report(tmp_pat
         config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     assert round_record.accepted_patch_ids == ["patch_round_000001_s1_00"]
     assert "patch_round_000001_s1_01" in round_record.rejected_patch_ids
@@ -981,7 +981,7 @@ def test_round_runner_compresses_analysis_prompt_when_budget_exceeded(tmp_path: 
         config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0, analysis_line_budget=1),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     assert metrics.compression_triggered
     assert metrics.compression_accepted
@@ -1063,7 +1063,7 @@ def test_round_runner_replaces_fewshot_slot_when_capacity_full(tmp_path: Path):
         config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0, max_text_rounds=0, fewshot_enabled=True, fewshot_max_slots=1),
     )
 
-    round_record, metrics = runner.run_round(state, round_index=1)
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
 
     rendered = state.active_extraction_prompt.render().text
     assert metrics.fewshot_accepted
@@ -1115,7 +1115,7 @@ def test_round_runner_generates_fewshot_reasoning_with_optimizer_client(tmp_path
         config=OptimizerConfig(batch_size=1, dynamic_validation_batch_size=0, max_text_rounds=0, fewshot_enabled=True, fewshot_max_slots=2),
     )
 
-    _, metrics = runner.run_round(state, round_index=1)
+    _, metrics, _ = runner.run_round(state, round_index=1)
 
     assert metrics.fewshot_accepted
     assert "由优化模型生成的分析过程示例。" in state.active_extraction_prompt.render().text

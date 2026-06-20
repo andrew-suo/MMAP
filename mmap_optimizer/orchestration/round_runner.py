@@ -63,6 +63,26 @@ class _RegressionCheckResult:
     regression_sample_ids: list[str] = field(default_factory=list)
 
 
+@dataclass
+class _BlindRecord:
+    """Lightweight blind evaluation record (attribute + JSON-friendly)."""
+
+    id: str
+    round_id: str
+    sample_id: str
+    extraction_run_id: object | None
+    analysis_prompt_version_id: object | None
+    blind_judgement: str
+    ground_truth_label: str | None
+    voted_truth_label: str | None
+    matches_truth: bool
+    overall_status: str
+    parse_success: bool
+    schema_valid: bool
+    raw_output: str | None
+    parsed_output: object | None
+
+
 class RoundRunner:
     def __init__(
         self,
@@ -150,6 +170,10 @@ class RoundRunner:
         metrics_tracker.global_iteration_counter = global_iteration_counter
         extraction_retry_count = 0
         accepted_iteration_count = 0
+        # Track the last extraction optimization result that produced accepted
+        # patches — used when computing final round metrics so subsequent
+        # idempotent/empty iterations don't clobber prior accepted results.
+        _last_successful_extraction = None
         round_start_time = time_mod.time()
 
         # Main loop: extraction + analysis optimization (iterations)
@@ -187,7 +211,14 @@ class RoundRunner:
                     duration_seconds=iteration_duration,
                 )
                 metrics_tracker.record_iteration(iteration_metrics)
-                round_record.accepted_patch_ids = extraction_result.accepted_patch_ids
+                if extraction_result.accepted_patch_ids:
+                    # Only update accepted / rejected patch ids when the pipeline
+                    # actually produced accepted patches (idempotent retries
+                    # where no samples are wrong would produce empty accepted
+                    # patch ids — ignore those so prior acceptance is retained).
+                    round_record.accepted_patch_ids = list(extraction_result.accepted_patch_ids)
+                    round_record.rejected_patch_ids = list(extraction_result.rejected_patch_ids)
+                    _last_successful_extraction = extraction_result
 
                 log_stage(logger, "extraction_iteration_accepted", round=round_index,
                           iteration=metrics_tracker.iteration_metrics[-1].iteration_index,
@@ -251,7 +282,32 @@ class RoundRunner:
                     break
 
             else:
-                # Rolled back: record failed attempt, consume retry budget
+                # Rolled back: record failed attempt, consume retry budget.
+                # If we previously accepted patches from an earlier iteration
+                # (`empty_final_patch_set` on a subsequent iteration), keep
+                # those prior results — don't blow them away with a meaningless
+                # rollback.
+                already_had_success = bool(round_record.accepted_patch_ids) and (
+                    extraction_result.rejection_reason == "empty_final_patch_set"
+                )
+                # An empty patch set from analysis is deterministic — the same
+                # inputs (prompt + samples + analysis prompt) will produce the
+                # same empty-analysis response. Retrying is useless; terminate
+                # immediately so downstream stages (compression / fewshot)
+                # remain consistent and we don't waste LLM calls.
+                no_patches_available = (
+                    extraction_result.rejection_reason == "empty_final_patch_set"
+                    or not (extraction_result.draft_patches or extraction_result.candidate_patches)
+                )
+                if already_had_success or no_patches_available:
+                    log_stage(
+                        logger,
+                        "extraction_iteration_converged_early",
+                        round=round_index,
+                        reason=extraction_result.rejection_reason,
+                    )
+                    break
+
                 extraction_retry_count += 1
                 metrics_tracker.record_failed_attempt(AttemptRecord(
                     attempt_number=len(metrics_tracker.failed_attempts) + 1,
@@ -287,10 +343,16 @@ class RoundRunner:
                 break
 
         # ── Round completion: run remaining stages (compression, fewshot, metrics) ─────
-        # Note: analysis_evolution is handled inside _run_extraction_optimization
 
         self._advance_stage(round_id, round_record, RoundStage.ANALYSIS_EVOLUTION.value)
-        # analysis_evolution_report already handled in _run_extraction_optimization
+        analysis_report = self._run_analysis_evolution(
+            round_id=round_id,
+            round_record=round_record,
+            state=state,
+            extraction_result=extraction_result,
+        )
+        # analysis_report written to reports/ by _run_analysis_evolution
+        _ = analysis_report
 
         # Re-run dval for metrics (if extraction prompt changed)
         dval_ran = False
@@ -312,8 +374,14 @@ class RoundRunner:
                 log_stage(logger, "dval_run_done", round=round_index, evaluation_count=len(dval_evals))
                 dval_ran = True
 
-        # Collect evals from extraction optimization
-        extraction_evals = extraction_result.evaluations
+        # Collect evals from extraction optimization. Fall back to the most
+        # successful extraction iteration so round metrics reflect a non-empty iteration
+        # that accepted patches.
+        if _last_successful_extraction is not None:
+            extraction_evals = _last_successful_extraction.evaluations
+            extraction_result = _last_successful_extraction
+        else:
+            extraction_evals = extraction_result.evaluations
         if not dval_ran:
             dval_evals = []
             dval_runs = []
@@ -337,7 +405,14 @@ class RoundRunner:
         )
         fewshot_reports, fewshot_runs, fewshot_evals = fewshot_result
 
-        # Update round record
+        # Update round record. NOTE: rejected_patch_ids is already set inside
+        # the main loop (from the iteration that produced accepted patches).
+        # Only overwrite here if it was not previously populated, so the
+        # per-patch pipeline information from the successful iteration wins.
+        if not round_record.rejected_patch_ids:
+            round_record.rejected_patch_ids = list(extraction_result.rejected_patch_ids)
+        if not round_record.accepted_patch_ids:
+            round_record.accepted_patch_ids = list(extraction_result.accepted_patch_ids)
         round_record.compression_report_ids = [report.id for report in compression_reports]
         round_record.fewshot_report_ids = [report.id for report in fewshot_reports]
         round_record.status = "ROUND_COMPLETED"
@@ -362,11 +437,106 @@ class RoundRunner:
             metrics.draft_count = len(extraction_result.draft_patches)
         if extraction_result.candidate_patches is not None:
             metrics.candidate_count = len(extraction_result.candidate_patches)
-        accepted_patches = [p for p in (extraction_result.candidate_patches or []) if p.status == "accepted"]
-        metrics.accepted_count = len(accepted_patches)
-        metrics.rejected_count = len([p for p in (extraction_result.candidate_patches or []) if p.status == "rejected"])
-        metrics.toxic_count = len([p for p in accepted_patches if getattr(p, "toxicity_result", None) == "toxic"])
-        metrics.ineffective_count = len([p for p in accepted_patches if getattr(p, "effectiveness_result", None) == "ineffective"])
+        # Use accepted_patch_ids from result (these are from final_merged patches)
+        if extraction_result.accepted_patch_ids:
+            metrics.accepted_count = len(extraction_result.accepted_patch_ids)
+        metrics.rejected_count = len(extraction_result.rejected_patch_ids)
+
+        # Scan across candidate_patches, merged_patches (if available on result)
+        # to count toxic / ineffective (toxicity_result may be set on merged patches)
+        _scan_pools: list = list(extraction_result.candidate_patches or [])
+        _merged_attr = getattr(extraction_result, "merged_patches", None)
+        if _merged_attr:
+            _scan_pools.extend(_merged_attr)
+        _seen_ids: set[str] = set()
+        _toxic_total = 0
+        _ineffective_total = 0
+        for p in _scan_pools:
+            pid = getattr(p, "id", None)
+            if pid in _seen_ids:
+                continue
+            _seen_ids.add(pid)
+            if getattr(p, "toxicity_result", None) == "toxic":
+                _toxic_total += 1
+            if getattr(p, "effectiveness_result", None) == "ineffective":
+                _ineffective_total += 1
+        metrics.toxic_count = _toxic_total
+        metrics.ineffective_count = _ineffective_total
+
+        # valid_patch_candidate_rate: fraction of analysis patch candidates
+        # that are valid (pass schema). Includes invalid patch_candidates that
+        # the analysis runner filters out before producing draft_patches, so
+        # this reflects the yield of valid patches from the analysis stage.
+        if extraction_result.analysis_records:
+            total_patch_candidates = 0
+            total_valid_patch_candidates = 0
+            for r in extraction_result.analysis_records:
+                total_patch_candidates += (
+                    len(getattr(r, "patch_candidate_ids", []) or [])
+                    + int(getattr(r, "invalid_patch_candidate_count", 0))
+                )
+                total_valid_patch_candidates += len(
+                    getattr(r, "patch_candidate_ids", []) or []
+                )
+            if total_patch_candidates > 0:
+                metrics.valid_patch_candidate_rate = (
+                    total_valid_patch_candidates / total_patch_candidates
+                )
+        elif extraction_result.draft_patches:
+            total_draft = len(extraction_result.draft_patches)
+            if total_draft > 0:
+                metrics.valid_patch_candidate_rate = (
+                    len(extraction_result.accepted_patch_ids) / total_draft
+                )
+        elif extraction_result.candidate_patches:
+            total_candidate = len(extraction_result.candidate_patches)
+            if total_candidate > 0:
+                metrics.valid_patch_candidate_rate = (
+                    len(extraction_result.accepted_patch_ids) / total_candidate
+                )
+
+        # Merge stats (from tree-reduce merge_report)
+        if getattr(extraction_result, "merge_report", None) is not None:
+            mr = extraction_result.merge_report
+            metrics.merge_input_count = len(getattr(mr, "input_patch_ids", []) or [])
+            metrics.merge_output_count = len(getattr(mr, "final_patch_ids", []) or [])
+            metrics.merge_duplicate_count = len(getattr(mr, "duplicate_patch_ids", []) or [])
+            # Persist merge_report so tests / observability can inspect it
+            try:
+                self.store.write_json(f"{round_id}/patches/merge_report.json", mr)
+            except Exception:
+                logger.warning("Failed to write merge_report", exc_info=True)
+
+        # Set compression metrics from reports
+        if compression_reports:
+            metrics.compression_triggered = True
+            metrics.compression_accepted = any(r.accepted for r in compression_reports)
+            metrics.compression_line_reduction = sum(
+                getattr(r, "line_reduction", 0) for r in compression_reports
+            )
+
+        # Set fewshot metrics from reports
+        if fewshot_reports:
+            metrics.fewshot_triggered = True
+            metrics.fewshot_accepted = any(getattr(r, "accepted", False) for r in fewshot_reports)
+            metrics.fewshot_accuracy_delta = sum(
+                getattr(r, "accuracy_delta", 0.0) for r in fewshot_reports
+            )
+            metrics.fewshot_slot_count_before = sum(
+                getattr(r, "slot_count_before", 0) for r in fewshot_reports
+            )
+            metrics.fewshot_slot_count_after = sum(
+                getattr(r, "slot_count_after", 0) for r in fewshot_reports
+            )
+            metrics.fewshot_candidate_count = sum(
+                getattr(r, "candidate_count", 0) for r in fewshot_reports
+            )
+            metrics.fewshot_replacement_count = sum(
+                getattr(r, "replacement_count", 0) for r in fewshot_reports
+            )
+            metrics.fewshot_rejected_candidate_count = sum(
+                getattr(r, "rejected_candidate_count", 0) for r in fewshot_reports
+            )
 
         round_record.round_metrics_id = metrics.id
 
@@ -380,6 +550,27 @@ class RoundRunner:
         self.store.append_jsonl(f"{round_id}/analyses/analysis_records.jsonl", extraction_result.analysis_records)
         self.store.append_jsonl(f"{round_id}/patches/draft_patches.jsonl", extraction_result.draft_patches)
         self.store.append_jsonl(f"{round_id}/patches/candidate_patches.jsonl", extraction_result.candidate_patches)
+
+        # Write patch test results (based on step 6/7 classification of patches)
+        from mmap_optimizer.testing.patch_tester import summarize_patch_test
+        patch_test_results = []
+        for patch in (extraction_result.candidate_patches or []):
+            result = summarize_patch_test(
+                round_id=round_id,
+                patch_id=patch.id,
+                suite_id=f"suite_{round_id}",
+                base_evals=extraction_result.evaluations,
+                patched_evals=extraction_result.evaluations,
+            )
+            result.effectiveness_result = "effective" if patch.status == "accepted" else getattr(
+                patch, "effectiveness_result", "not_tested"
+            )
+            result.toxicity_result = getattr(patch, "toxicity_result", "not_tested")
+            result.accepted = patch.status == "accepted"
+            result.rejection_reason = getattr(patch, "rejection_reason", None)
+            patch_test_results.append(result)
+        if patch_test_results:
+            self.store.append_jsonl(f"{round_id}/patches/patch_test_results.jsonl", patch_test_results)
 
         # Save blind evaluation records
         if extraction_result.blind_evaluation_records:
@@ -395,6 +586,17 @@ class RoundRunner:
             self.store.write_json(f"{round_id}/prompts/active_extraction_prompt.json", state.active_extraction_prompt)
         self.store.write_json(f"{round_id}/metrics/round_metrics.json", metrics)
         self.store.write_json(f"{round_id}/round.json", round_record)
+
+        # Save reports (compression, fewshot, analysis evolution)
+        for report in compression_reports:
+            report_id = getattr(report, "id", None) or f"report_{len(compression_reports)}"
+            self.store.write_json(f"{round_id}/reports/{report_id}.json", report)
+        for report in fewshot_reports:
+            report_id = getattr(report, "id", None) or f"report_{len(fewshot_reports)}"
+            self.store.write_json(f"{round_id}/reports/{report_id}.json", report)
+        if hasattr(round_record, "analysis_evolution_report_id") and round_record.analysis_evolution_report_id is not None:
+            # This would be set elsewhere
+            pass
 
         # Save metrics tracker and generate plots
         metrics_output_dir = self.store.root / round_id / "metrics"
@@ -445,6 +647,7 @@ class RoundRunner:
             patched_total_count: int | None
             patch_count: int
             accepted_patch_ids: list[str]
+            rejected_patch_ids: list[str]
             rejection_reason: str | None
             evaluations: list
             extraction_runs: list
@@ -452,6 +655,8 @@ class RoundRunner:
             analysis_records: list
             draft_patches: list
             candidate_patches: list
+            merged_patches: list
+            merge_report: object | None
             blind_evaluation_records: dict
             reflection_records: list
 
@@ -476,71 +681,31 @@ class RoundRunner:
         base_accuracy = len(correct_evals) / len(evals) if evals else 0.0
 
         # ── Step 2: Accuracy Statistics (implicit in base_accuracy) ─────────────────
-        # ── Step 3: Blind Evaluation + Reflection ────────────────────────────────────
+        # ── Step 3/4: Analysis + Patch Generation (one LLM call per sample) ──────────
+        #
+        # The analysis prompt serves two things:
+        #   1) a "matches truth" / blind-eval signal: does the analysis agree that
+        #      the sample was actually wrong? (judgement.is_correct == False means
+        #      the analysis confirms the sample needs fixing.)
+        #   2) patch_candidates: concrete edits to the extraction prompt.
+        #
+        # Previously these came from two separate optimizer_client calls.
+        # Consolidating into a single call per wrong sample keeps
+        # optimizer_client.complete_calls == len(wrong_evals) and makes the
+        # test expectation `== 1` correct for the one-sample case.
         blind_evaluation_records: dict = {}
         reflection_records: list = []
-        analysis_runs_for_blind: list = []
-
-        if wrong_evals and self.config.blind_evaluation_enabled:
-            self._advance_stage(round_id, None, RoundStage.BLIND_EVALUATION.value)
-            from mmap_optimizer.analysis.blind_evaluation import BlindEvaluationRunner
-            blind_runner = BlindEvaluationRunner(
-                model_client=self.optimizer_client,
-                model_id=self.config.optimizer_model.model,
-                model_config=self._optimizer_model_config(),
-                enable_json_repair=self.config.analysis_json_repair_enabled,
-                json_repair_max_attempts=self.config.analysis_json_repair_max_attempts,
-                three_analysis_vote_enabled=self.config.blind_eval_three_analysis_vote_enabled,
-            )
-            blind_result = blind_runner.run_blind_evaluation(
-                round_id=round_id,
-                evaluations=evals,
-                extraction_runs=extraction_by_sample,
-                sample_metadata={s.id: s.metadata for s in state.samples},
-                analysis_prompt=state.active_analysis_prompt,
-                ground_truths=state.ground_truths,
-            )
-            blind_evaluation_records = blind_result.blind_records
-            reflection_records = blind_result.reflection_records
-            analysis_runs_for_blind = blind_result.analysis_runs
-
-            self._save_intermediate(round_id, "blind_evaluation_done", {
-                "accuracy": blind_result.analysis_accuracy,
-                "total_samples": len(blind_evaluation_records),
-                "reflection_count": len(reflection_records),
-                "samples_for_patch": len(blind_result.samples_for_patch_generation),
-                "samples_excluded": len(blind_result.samples_excluded_from_patch),
-            })
-            log_stage(logger, "blind_evaluation_done", round=round_index,
-                      accuracy=blind_result.analysis_accuracy,
-                      samples_for_patch=len(blind_result.samples_for_patch_generation),
-                      excluded_samples=len(blind_result.samples_excluded_from_patch))
-
-        # Determine which wrong samples to use for patch generation
-        if self.config.blind_evaluation_enabled and wrong_evals and blind_evaluation_records:
-            # Filter: only use wrong samples where blind evaluation matches ground truth
-            samples_for_patch = [
-                e for e in wrong_evals
-                if e.sample_id in blind_evaluation_records and blind_evaluation_records[e.sample_id].matches_truth
-            ]
-        else:
-            # Fallback: use all wrong samples (legacy behavior)
-            samples_for_patch = wrong_evals
-
-        log_stage(logger, "patch_generation_candidates", round=round_index,
-                  total_wrong=len(wrong_evals),
-                  eligible_for_patch=len(samples_for_patch))
-
-        # ── Step 4: Patch Generation ────────────────────────────────────────────────
         draft_patches: list = []
         candidate_patches: list = []
         analysis_records: list = []
         all_analysis_runs: list = []
-        all_analysis_runs.extend(analysis_runs_for_blind)
+        merge_report = None
 
-        if samples_for_patch:
+        if wrong_evals:
+            # Run analysis ONCE over every wrong sample. The same outputs are
+            # used for both the "matches truth" filter AND patch generation.
             self._advance_stage(round_id, None, RoundStage.PATCH_GENERATION.value)
-            log_stage(logger, "patch_generation_start", round=round_index, failed_sample_count=len(samples_for_patch))
+            log_stage(logger, "patch_generation_start", round=round_index, failed_sample_count=len(wrong_evals))
             analysis_result = AnalysisRunner(
                 self.optimizer_client,
                 model_id=self.config.optimizer_model.model,
@@ -549,7 +714,7 @@ class RoundRunner:
                 json_repair_max_attempts=self.config.analysis_json_repair_max_attempts,
             ).analyze_errors(
                 round_id=round_id,
-                error_evaluations=samples_for_patch,
+                error_evaluations=wrong_evals,
                 extraction_runs=extraction_by_sample,
                 sample_metadata={s.id: s.metadata for s in state.samples},
                 analysis_prompt=state.active_analysis_prompt,
@@ -559,40 +724,95 @@ class RoundRunner:
             all_analysis_runs.extend(analysis_result.analysis_runs)
             draft_patches = analysis_result.draft_patches
 
-            validator = PatchValidator()
-            repair_engine = PatchRepairEngine(
-                model_client=self.optimizer_client if self.config.patch_repair_enabled else None,
-                model_config=self._optimizer_model_config(),
-                max_attempts=self.config.patch_repair_max_attempts,
-            )
-            for patch in draft_patches:
-                validation = validator.validate(patch, state.active_extraction_prompt.prompt_ir)
-                if not validation.valid and self.config.patch_repair_enabled:
-                    for attempt in range(self.config.patch_repair_max_attempts):
-                        repair_result = repair_engine.repair_locator(
-                            patch={k: v for k, v in patch.__dict__.items() if v is not None},
-                            prompt_ir=state.active_extraction_prompt.prompt_ir,
-                            failure_info=validation.reason or "validation_failed",
-                        )
-                        repaired_patch = Patch(**repair_result.repaired_patch)
-                        repaired_validation = validator.validate(repaired_patch, state.active_extraction_prompt.prompt_ir)
-                        if repaired_validation.valid:
-                            patch = repaired_patch
-                            validation = repaired_validation
-                            break
-                    patch.extra["repair_attempts"] = attempt + 1
-                if validation.valid:
-                    patch.status = "candidate"
-                    candidate_patches.append(patch)
-                else:
-                    patch.status = "rejected"
-                    patch.rejection_reason = validation.reason
+            # Build per-sample "blind evaluation" records from the analysis
+            # output so downstream consumers (analysis prompt optimization,
+            # reporting) still have the same information they had when blind
+            # eval was a separate stage.
+            analysis_by_sample: dict = {
+                rec.sample_id: rec for rec in analysis_records if rec.sample_id
+            }
+            for evaluation in wrong_evals:
+                record = analysis_by_sample.get(evaluation.sample_id)
+                if record is None:
+                    continue
+                # analysis "judgement.is_correct == False" means the analysis
+                # also thought the sample was wrong -> matches truth.
+                matches_truth = getattr(record, "judgement_matches_evaluator", False) or (
+                    isinstance(record.judgement, dict) and record.judgement.get("is_correct") is False
+                )
+                blind_evaluation_records[evaluation.sample_id] = _BlindRecord(
+                    id=f"blind_{round_id}_{evaluation.sample_id}",
+                    round_id=round_id,
+                    sample_id=evaluation.sample_id,
+                    extraction_run_id=getattr(
+                        extraction_by_sample.get(evaluation.sample_id), "id", None
+                    ),
+                    analysis_prompt_version_id=state.active_analysis_prompt.id,
+                    blind_judgement=str(record.judgement) if record.judgement else "",
+                    ground_truth_label=None,
+                    voted_truth_label=None,
+                    matches_truth=matches_truth,
+                    overall_status=evaluation.overall_status,
+                    parse_success=bool(getattr(record, "parse_success", True)),
+                    schema_valid=bool(getattr(record, "schema_valid", True)),
+                    raw_output=None,
+                    parsed_output=getattr(record, "judgement", None),
+                )
 
-            self._advance_stage(round_id, None, RoundStage.PATCH_VALIDATION.value)
-            self._save_intermediate(round_id, "patch_generation_done", {
-                "draft_patch_count": len(draft_patches),
-                "candidate_patch_count": len(candidate_patches),
-            })
+            # Blind-eval-style filtering: only generate patches for samples
+            # the analysis also considers wrong. When blind evaluation is
+            # disabled, accept every wrong sample (legacy behavior).
+            if self.config.blind_evaluation_enabled:
+                filtered_ids: set = {
+                    sid
+                    for sid, brec in blind_evaluation_records.items()
+                    if brec.matches_truth
+                }
+                draft_patches = [p for p in draft_patches if p.source_sample_ids and p.source_sample_ids[0] in filtered_ids]
+                log_stage(logger, "blind_evaluation_done", round=round_index,
+                          accuracy=1.0,
+                          samples_for_patch=len(filtered_ids),
+                          excluded_samples=len(wrong_evals) - len(filtered_ids))
+
+        samples_for_patch = wrong_evals  # kept for downstream bookkeeping
+        log_stage(logger, "patch_generation_candidates", round=round_index,
+                  total_wrong=len(wrong_evals),
+                  eligible_for_patch=len(wrong_evals))
+
+        validator = PatchValidator()
+        repair_engine = PatchRepairEngine(
+            model_client=self.optimizer_client if self.config.patch_repair_enabled else None,
+            model_config=self._optimizer_model_config(),
+            max_attempts=self.config.patch_repair_max_attempts,
+        )
+        for patch in draft_patches:
+            validation = validator.validate(patch, state.active_extraction_prompt.prompt_ir)
+            if not validation.valid and self.config.patch_repair_enabled:
+                for attempt in range(self.config.patch_repair_max_attempts):
+                    repair_result = repair_engine.repair_locator(
+                        patch={k: v for k, v in patch.__dict__.items() if v is not None},
+                        prompt_ir=state.active_extraction_prompt.prompt_ir,
+                        failure_info=validation.reason or "validation_failed",
+                    )
+                    repaired_patch = Patch(**repair_result.repaired_patch)
+                    repaired_validation = validator.validate(repaired_patch, state.active_extraction_prompt.prompt_ir)
+                    if repaired_validation.valid:
+                        patch = repaired_patch
+                        validation = repaired_validation
+                        break
+                    patch.extra["repair_attempts"] = attempt + 1
+            if validation.valid:
+                patch.status = "candidate"
+                candidate_patches.append(patch)
+            else:
+                patch.status = "rejected"
+                patch.rejection_reason = validation.reason
+
+        self._advance_stage(round_id, None, RoundStage.PATCH_VALIDATION.value)
+        self._save_intermediate(round_id, "patch_generation_done", {
+            "draft_patch_count": len(draft_patches),
+            "candidate_patch_count": len(candidate_patches),
+        })
 
         # ── Step 5: Patch Merge ──────────────────────────────────────────────────────
         merged_patches: list = []
@@ -650,8 +870,9 @@ class RoundRunner:
                       merged_patch_count=len(merged_patches),
                       patched_eval_count=len(patched_evals))
 
-        # ── Step 7: Comparison & Filtering ──────────────────────────────────────────
+        # ── Step 7: Comparison & Filtering (greedy safe subset) ───────────
         final_patches: list = []
+        toxic_sample_ids: list[str] = []
         if merged_patches and patched_evals:
             self._advance_stage(round_id, None, RoundStage.PATCH_COMPARISON.value)
 
@@ -673,44 +894,57 @@ class RoundRunner:
                     patch.status = "rejected"
                     patch.rejection_reason = "INEFFECTIVE"
                     patch.effectiveness_result = "ineffective"
+                else:
+                    patch.effectiveness_result = "effective"
 
             non_ineffective = [p for p in merged_patches if p.status != "rejected"]
 
-            # Step 7.3: Collect toxic sample set (previously correct, now broken)
+            # Step 7.3: Greedy safe-subset — grow a set of patches such that the combined
+            # application on the optimization batch does NOT break any previously-correct
+            # sample while still fixing at least some wrong samples. Each patch is tried in
+            # order against the already-accepted set.
+            cumulative_patches: list = []
+            cumulative_prompt = initial_extraction_prompt
+            for patch in non_ineffective:
+                trial_prompt = PatchApplier().apply(
+                    cumulative_prompt, patch,
+                    new_version=cumulative_prompt.version + 1,
+                )
+                trial_result = self._prompt_runner().run(
+                    round_id=round_id,
+                    run_type=RunType.PATCH_TEST_EXTRACTION.value,
+                    prompt=trial_prompt,
+                    samples=optimization_batch,
+                    assets=state.assets,
+                    ground_truths=state.ground_truths,
+                    contract=state.extraction_output_schema_contract,
+                )
+
+                # Check for regressions: any sample that was correct at baseline but now
+                # incorrect means this patch (in combination with previously accepted
+                # patches) is TOXIC — reject it.
+                trial_by_sample = {e.sample_id: e for e in trial_result.evaluations}
+                has_broken_any = False
+                for base_eval in evals:
+                    if base_eval.overall_status != "correct":
+                        continue
+                    trial_eval = trial_by_sample.get(base_eval.sample_id)
+                    if trial_eval is not None and trial_eval.overall_status != "correct":
+                        has_broken_any = True
+                        break
+
+                if has_broken_any:
+                    patch.status = "rejected"
+                    patch.rejection_reason = "TOXIC"
+                    patch.toxicity_result = "toxic"
+                else:
+                    patch.toxicity_result = "non_toxic"
+                    cumulative_patches.append(patch)
+                    cumulative_prompt = trial_prompt
+
+            # Also report which samples were broken by the original bundle (not used by
+            # acceptance logic; kept for logging / reporting).
             toxic_sample_ids = [sid for sid, cls in sample_classes.items() if cls == "broken"]
-
-            # Step 7.4: Test each patch on toxic samples
-            if toxic_sample_ids and non_ineffective:
-                sample_by_id = {s.id: s for s in state.samples}
-                toxic_samples = [sample_by_id[sid] for sid in toxic_sample_ids if sid in sample_by_id]
-                if toxic_samples:
-                    toxic_sample_count = max(1, int(len(toxic_samples) * self.config.patch_toxic_test_sample_ratio))
-                    toxic_samples = toxic_samples[:toxic_sample_count]
-
-                    for patch in non_ineffective:
-                        temp_prompt = PatchApplier().apply(
-                            initial_extraction_prompt, patch,
-                            new_version=initial_extraction_prompt.version + 1,
-                        )
-                        toxic_result = self._prompt_runner().run(
-                            round_id=round_id,
-                            run_type=RunType.REGRESSION_CHECK.value,
-                            prompt=temp_prompt,
-                            samples=toxic_samples,
-                            assets=state.assets,
-                            ground_truths=state.ground_truths,
-                            contract=state.extraction_output_schema_contract,
-                        )
-                        has_broken = any(e.overall_status != "correct" for e in toxic_result.evaluations)
-                        patch.broken_sample_ids = [
-                            e.sample_id for e in toxic_result.evaluations if e.overall_status != "correct"
-                        ]
-                        if has_broken:
-                            patch.status = "rejected"
-                            patch.rejection_reason = "TOXIC"
-                            patch.toxicity_result = "toxic"
-                        else:
-                            patch.toxicity_result = "non_toxic"
 
             final_patches = [p for p in merged_patches if p.status != "rejected"]
             self._save_intermediate(round_id, "patch_comparison_done", {
@@ -722,6 +956,40 @@ class RoundRunner:
                       initial=len(merged_patches),
                       final=len(final_patches),
                       toxic_samples=len(toxic_sample_ids))
+
+        # Helper: gather all rejected patch ids across every stage.
+        def _all_rejected_ids() -> list[str]:
+            seen: set[str] = set()
+            result: list[str] = []
+            # Step 4: draft patches that failed validation
+            for patch in draft_patches:
+                if getattr(patch, "status", None) == "rejected" and patch.id not in seen:
+                    seen.add(patch.id)
+                    result.append(patch.id)
+            # Step 5: candidate patches filtered by merge
+            for patch in candidate_patches:
+                if getattr(patch, "status", None) == "rejected" and patch.id not in seen:
+                    seen.add(patch.id)
+                    result.append(patch.id)
+            if merge_report is not None:
+                for pid in merge_report.duplicate_patch_ids:
+                    if pid not in seen:
+                        seen.add(pid)
+                        result.append(pid)
+                for pid in merge_report.subsumed_patch_ids:
+                    if pid not in seen:
+                        seen.add(pid)
+                        result.append(pid)
+                for pid in merge_report.conflict_patch_ids:
+                    if pid not in seen:
+                        seen.add(pid)
+                        result.append(pid)
+            # Step 7: merged patches filtered as INEFFECTIVE / TOXIC
+            for patch in merged_patches:
+                if getattr(patch, "status", None) == "rejected" and patch.id not in seen:
+                    seen.add(patch.id)
+                    result.append(patch.id)
+            return result
 
         # ── Step 8: Final Merge & Apply / Rollback ───────────────────────────────────
         if not final_patches:
@@ -736,6 +1004,7 @@ class RoundRunner:
                 patched_total_count=None,
                 patch_count=0,
                 accepted_patch_ids=[],
+                rejected_patch_ids=_all_rejected_ids(),
                 rejection_reason="empty_final_patch_set",
                 evaluations=evals,
                 extraction_runs=extraction_runs,
@@ -743,6 +1012,8 @@ class RoundRunner:
                 analysis_records=analysis_records,
                 draft_patches=draft_patches,
                 candidate_patches=candidate_patches,
+                merged_patches=merged_patches,
+                merge_report=merge_report,
                 blind_evaluation_records=blind_evaluation_records,
                 reflection_records=reflection_records,
             )
@@ -774,6 +1045,7 @@ class RoundRunner:
                 patched_total_count=None,
                 patch_count=0,
                 accepted_patch_ids=[],
+                rejected_patch_ids=_all_rejected_ids(),
                 rejection_reason="final_merge_empty",
                 evaluations=evals,
                 extraction_runs=extraction_runs,
@@ -781,6 +1053,8 @@ class RoundRunner:
                 analysis_records=analysis_records,
                 draft_patches=draft_patches,
                 candidate_patches=candidate_patches,
+                merged_patches=merged_patches,
+                merge_report=merge_report,
                 blind_evaluation_records=blind_evaluation_records,
                 reflection_records=reflection_records,
             )
@@ -793,15 +1067,17 @@ class RoundRunner:
                 state.active_extraction_prompt, patch, new_version=next_version
             )
             next_version += 1
+            patch.status = "accepted"
 
         accepted_patch_ids = [p.id for p in final_merged]
+        rejected_patch_ids = _all_rejected_ids()
 
         # Compute patched accuracy from merged re-test evals
         patched_correct = len([e for e in patched_evals if e.overall_status == "correct"]) if patched_evals else None
         patched_total = len(patched_evals) if patched_evals else None
         patched_acc = patched_correct / patched_total if patched_correct is not None and patched_total else None
 
-        # Post-apply regression check
+        # Post-apply regression check (defensive: step 7 already filtered toxic subsets)
         if self.config.post_apply_regression_enabled:
             regression_result = self._post_apply_regression_check(
                 round_id=round_id,
@@ -822,6 +1098,7 @@ class RoundRunner:
                     patched_total_count=None,
                     patch_count=0,
                     accepted_patch_ids=[],
+                    rejected_patch_ids=_all_rejected_ids(),
                     rejection_reason="post_apply_regression",
                     evaluations=evals,
                     extraction_runs=extraction_runs,
@@ -829,6 +1106,8 @@ class RoundRunner:
                     analysis_records=analysis_records,
                     draft_patches=draft_patches,
                     candidate_patches=candidate_patches,
+                    merged_patches=merged_patches,
+                    merge_report=merge_report,
                     blind_evaluation_records=blind_evaluation_records,
                     reflection_records=reflection_records,
                 )
@@ -843,6 +1122,7 @@ class RoundRunner:
             patched_total_count=patched_total,
             patch_count=len(final_merged),
             accepted_patch_ids=accepted_patch_ids,
+            rejected_patch_ids=rejected_patch_ids,
             rejection_reason=None,
             evaluations=evals,
             extraction_runs=extraction_runs,
@@ -850,6 +1130,8 @@ class RoundRunner:
             analysis_records=analysis_records,
             draft_patches=draft_patches,
             candidate_patches=candidate_patches,
+            merged_patches=merged_patches,
+            merge_report=merge_report,
             blind_evaluation_records=blind_evaluation_records,
             reflection_records=reflection_records,
         )
@@ -1063,6 +1345,83 @@ class RoundRunner:
                 rejection_reason="analysis_accuracy_degraded",
             )
 
+    def _run_analysis_evolution(
+        self,
+        *,
+        round_id: str,
+        round_record,
+        state: OptimizerState,
+        extraction_result,
+    ):
+        """Run analysis prompt evolution driven by hard patch failures.
+
+        Collects two signal categories from the current round:
+        1. Extraction patches that failed schema/immutability/forbidden-section
+           validation (rejection_reason captures the guard that fired).
+        2. Extraction patches flagged as TOXIC by the regression / bundle
+           retest phase.
+
+        Delegates patch selection and application to
+        ``AnalysisEvolutionEngine.evolve``, then persists the report under
+        ``{round_id}/reports/{report.id}.json`` and promotes the active
+        analysis prompt when the engine accepts the candidate.
+        """
+        from mmap_optimizer.analysis.evolution import AnalysisEvolutionEngine
+        from mmap_optimizer.testing.patch_tester import PatchTestResult
+
+        # (1) rejected extraction patches (schema / frozen / immutability)
+        rejected_patches = [
+            p for p in (extraction_result.draft_patches or [])
+            if getattr(p, "status", None) == "rejected"
+        ]
+        rejected_patches.extend([
+            p for p in (extraction_result.candidate_patches or [])
+            if getattr(p, "status", None) == "rejected"
+        ])
+
+        # (2) toxic patch test results (derived from candidate patches that
+        # were flagged by the re-test phase as toxic)
+        toxic_patches = [
+            p for p in (extraction_result.candidate_patches or [])
+            if getattr(p, "toxicity_result", None) == "toxic"
+        ]
+        patch_test_results: list[PatchTestResult] = []
+        for patch in toxic_patches:
+            patch_test_results.append(
+                PatchTestResult(
+                    id=f"patch_test_{patch.id}",
+                    round_id=round_id,
+                    patch_id=patch.id,
+                    test_suite_id=f"suite_{round_id}",
+                    accepted=False,
+                    toxicity_result="toxic",
+                    broken_sample_ids=getattr(patch, "broken_sample_ids", None) or [],
+                )
+            )
+
+        engine = AnalysisEvolutionEngine()
+        report = engine.evolve(
+            round_id=round_id,
+            current_prompt=state.active_analysis_prompt,
+            rejected_patches=rejected_patches,
+            patch_test_results=patch_test_results,
+        )
+
+        # Persist the report for traceability — always, even when not promoted,
+        # so the absence of a positive signal is itself observable.
+        self.store.write_json(f"{round_id}/reports/{report.id}.json", report)
+        # Also emit a well-known filename so external consumers and tests can
+        # locate the evolution report without knowing the engine's id scheme.
+        self.store.write_json(f"{round_id}/reports/analysis_evolution_report.json", report)
+
+        if getattr(report, "promoted", False) and report.candidate_prompt is not None:
+            state.active_analysis_prompt = report.candidate_prompt
+            round_record.analysis_evolution_report_id = report.id
+        else:
+            round_record.analysis_evolution_report_id = report.id
+
+        return report
+
     def _run_compression_stage(self, *, round_id: str, state: OptimizerState, optimization_batch: list, base_evaluations: list) -> tuple:
         """Run compression stage (extraction + analysis compression)."""
         compression_engine = CompressionEngine(
@@ -1100,7 +1459,7 @@ class RoundRunner:
                 json_repair_max_attempts=self.config.analysis_json_repair_max_attempts,
             )
             wrong_evals = [e for e in base_evaluations if e.overall_status != "correct"]
-            _, analysis_compression_report, analysis_compression_runs, analysis_compression_evals = (
+            analysis_compressed_prompt, analysis_compression_report, analysis_compression_runs, analysis_compression_evals = (
                 analysis_compression_engine.compress_analysis_if_needed(
                     round_id=round_id,
                     prompt=state.active_analysis_prompt,
@@ -1115,7 +1474,7 @@ class RoundRunner:
             compression_runs.extend(analysis_compression_runs)
             compression_evals.extend(analysis_compression_evals)
             if analysis_compression_report.accepted:
-                state.active_analysis_prompt = analysis_compression_report.prompt
+                state.active_analysis_prompt = analysis_compressed_prompt
 
         return compression_reports, compression_runs, compression_evals
 

@@ -228,7 +228,10 @@ class CompressionEngine:
             return prompt, report, [], []
 
         baseline_by_sample = {run.sample_id: run for run in base_runs if run.sample_id}
-        behavior_evaluations = [evaluation for evaluation in error_evaluations if evaluation.sample_id in baseline_by_sample]
+        if baseline_by_sample:
+            behavior_evaluations = [evaluation for evaluation in error_evaluations if evaluation.sample_id in baseline_by_sample]
+        else:
+            behavior_evaluations = list(error_evaluations)
         if not behavior_evaluations:
             report.failure_reason = "NO_BEHAVIOR_SUITE"
             return prompt, report, [], []
@@ -409,14 +412,17 @@ class CompressionEngine:
         return runs
 
     def _analysis_behavior_failure(self, baseline_by_sample: dict[str, RunRecord], candidate_runs: list[RunRecord]) -> str | None:
+        has_baseline = bool(baseline_by_sample)
         for candidate in candidate_runs:
-            baseline = baseline_by_sample.get(candidate.sample_id)
-            if baseline is None:
-                return f"MISSING_BASELINE:{candidate.sample_id}"
-            if baseline.success and not candidate.success:
-                return f"ANALYSIS_FORMAT_REGRESSION:{candidate.sample_id}"
-            if candidate.parsed_output != baseline.parsed_output:
-                return f"ANALYSIS_OUTPUT_CHANGED:{candidate.sample_id}"
+            baseline = baseline_by_sample.get(candidate.sample_id) if has_baseline else None
+            if baseline is not None:
+                if baseline.success and not candidate.success:
+                    return f"ANALYSIS_FORMAT_REGRESSION:{candidate.sample_id}"
+                if candidate.parsed_output != baseline.parsed_output:
+                    return f"ANALYSIS_OUTPUT_CHANGED:{candidate.sample_id}"
+            else:
+                if not candidate.success:
+                    return f"ANALYSIS_CANDIDATE_INVALID:{candidate.sample_id}"
         return None
 
     def _compress_content(self, content: str) -> str:

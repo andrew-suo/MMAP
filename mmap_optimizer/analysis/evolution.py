@@ -107,7 +107,11 @@ class AnalysisEvolutionEngine:
         candidate = current_prompt
         next_version = current_prompt.version + 1
         for patch in valid_patches:
-            candidate = PatchApplier().apply(candidate, patch, new_version=next_version)
+            candidate = PatchApplier().apply(
+                candidate, patch,
+                new_version=next_version,
+                version_type="patch_application",
+            )
             next_version += 1
         candidate.status = "candidate"
         current_metrics = self._current_metrics(trigger_reasons)

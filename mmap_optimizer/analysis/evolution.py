@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from mmap_optimizer.core.enums import PromptVersionType
 from mmap_optimizer.patch.applier import PatchApplier
 from mmap_optimizer.patch.schema import Patch
 from mmap_optimizer.patch.validator import PatchValidator
@@ -41,6 +42,8 @@ class AnalysisEvolutionReport:
     round_id: str
     triggered: bool
     trigger_reasons: list[str]
+    # NOTE: generated_patch_ids only contains patches that PASSED validation.
+    # Rejected patches are tracked separately in rejected_patch_ids.
     generated_patch_ids: list[str] = field(default_factory=list)
     rejected_patch_ids: list[str] = field(default_factory=list)
     candidate_prompt_version_id: str | None = None
@@ -57,6 +60,13 @@ class AnalysisEvolutionEngine:
     self-certifying free-form analysis text: schema/frozen-target violations improve
     schema guards; toxic patch results improve risk policy. The generated candidate
     is promoted only if hard gates are satisfied and at least one proxy metric improves.
+
+    NOTE: Shadow evaluation currently runs in "auto-accept" mode — candidate metrics
+    are derived deterministically from the trigger signals rather than measured by
+    re-running the candidate prompt against a held-out set. This means promotion is
+    a rubber stamp as long as hard gates pass and a proxy metric improves. Real
+    shadow evaluation (running the candidate against samples and comparing outputs)
+    is reserved for future work.
     """
 
     def evolve(
@@ -110,7 +120,8 @@ class AnalysisEvolutionEngine:
             candidate = PatchApplier().apply(
                 candidate, patch,
                 new_version=next_version,
-                version_type="patch_application",
+                version_type=PromptVersionType.ANALYSIS_SHADOW_PROMOTION,
+                round_id=round_id,
             )
             next_version += 1
         candidate.status = "candidate"
@@ -208,6 +219,11 @@ class AnalysisEvolutionEngine:
         )
 
     def _candidate_metrics(self, current: AnalysisShadowMetrics, trigger_reasons: list[str]) -> tuple[AnalysisShadowMetrics, list[str]]:
+        # NOTE: This method runs in "auto-accept" mode — candidate metrics are
+        # deterministically assumed to be ideal (e.g. schema_violation_patch_rate=0.0,
+        # toxic_risk_recall=1.0) rather than measured by re-running the candidate
+        # prompt. Promotion is effectively a rubber stamp when hard gates pass and
+        # a proxy metric improves. Real shadow measurement is reserved for future work.
         candidate = AnalysisShadowMetrics(
             judgement_alignment_accuracy=current.judgement_alignment_accuracy,
             false_error_rate=current.false_error_rate,

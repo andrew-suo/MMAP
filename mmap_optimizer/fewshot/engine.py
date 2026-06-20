@@ -56,7 +56,7 @@ class FewShotOptimizationEngine:
         contract: OutputSchemaContract,
         base_evaluations: list[EvaluationRecord],
         max_slots: int,
-        min_accuracy_delta: float = 0.0,
+        min_accuracy_delta: float = 0.01,
         candidate_pool: FewShotCandidatePool | None = None,
     ) -> tuple[PromptVersion, FewShotOptimizationReport, list, list[EvaluationRecord]]:
         candidate_pool = candidate_pool or FewShotCandidatePool()
@@ -121,6 +121,9 @@ class FewShotOptimizationEngine:
                 continue
             operation_type = "ADD_SLOT" if slot_count < max_slots else "REPLACE_SLOT"
             replace_slot = None if operation_type == "ADD_SLOT" else self._replacement_slot(slots)
+            if replace_slot is None and slot_count >= max_slots:
+                report.failure_reason = "NO_REPLACEMENT_SLOT_AND_CAPACITY_FULL"
+                return prompt, report, all_runs, all_evaluations
             candidate_prompt, fewshot_set = self._candidate_prompt(prompt, example, new_version=prompt.version + 1, max_slots=max_slots, replace_slot=replace_slot)
             run_result = self._run_prompt(round_id, candidate_prompt, behavior_samples, assets, ground_truths, contract, candidate.id, RunType.FEW_SHOT_TEST.value)
             all_runs.extend(run_result.runs)
@@ -173,6 +176,8 @@ class FewShotOptimizationEngine:
         if best_safe is not None:
             _, best_prompt, best_report = best_safe
             if best_report.selected_candidate_id:
+                # 此处有意使用 bundle_accuracy_delta 而非单候选 accuracy_delta：
+                # 接受决策基于 bundle 测试结果，记录 bundle delta 以保持候选池状态与决策一致。
                 candidate_pool.mark_tested(
                     candidate_id=best_report.selected_candidate_id,
                     round_id=round_id,
@@ -276,7 +281,7 @@ class FewShotOptimizationEngine:
         existing_content = existing.content.strip() if existing is not None else ""
         slots = self._parse_slots(prompt)
         if replace_slot is None:
-            slot_index = len(slots) + 1
+            slot_index = max([s["slot_index"] for s in slots], default=0) + 1
             example_block = self._render_example(example, slot_index=slot_index)
             new_content = "\n\n".join(chunk for chunk in [existing_content, example_block] if chunk)
         else:
@@ -294,12 +299,17 @@ class FewShotOptimizationEngine:
             new_ir = prompt.prompt_ir.with_replaced_section(self.SECTION_ID, new_content)
             new_ir = replace(new_ir, version=new_version, parent_prompt_ir_id=prompt.prompt_ir.id)
         prompt_type_value = getattr(prompt.prompt_type, "value", str(prompt.prompt_type))
+        new_slot = {"slot_index": slot_index, "example_id": example.id, "source_sample_id": example.source_sample_id}
+        if replace_slot is None:
+            fewshot_slots = [*slots, new_slot]
+        else:
+            fewshot_slots = [new_slot if int(s["slot_index"]) == slot_index else s for s in slots]
         fewshot_set = FewShotSetVersion(
             id=f"fewshot_set_{prompt_type_value}_v{new_version}",
             base_text_prompt_version_id=prompt.id,
             version=new_version,
             slot_count=min(max_slots, len(self._parse_slots_from_content(new_content))),
-            slots=[{"slot_index": slot_index, "example_id": example.id, "source_sample_id": example.source_sample_id}],
+            slots=fewshot_slots,
             status="accepted",
         )
         candidate_prompt = PromptVersion(
@@ -328,7 +338,9 @@ class FewShotOptimizationEngine:
                 continue
         if not valid_slots:
             return None
-        return sorted(valid_slots, key=lambda x: x[0])[0][1]
+        # 选择最后一个槽位而非第一个，避免反复替换同一个槽位。
+        # 已知限制：运行时无法获知每个槽位的单独贡献，无法精确淘汰最低价值示例。
+        return sorted(valid_slots, key=lambda x: x[0])[-1][1]
 
     def _parse_slots(self, prompt: PromptVersion) -> list[dict[str, Any]]:
         section = prompt.prompt_ir.section_by_id(self.SECTION_ID)
@@ -341,7 +353,12 @@ class FewShotOptimizationEngine:
             if line.startswith("FEW_SHOT_SLOT:"):
                 if current is not None:
                     slots.append(current)
-                current = {"slot_index": int(line.split(":", 1)[1]), "source_sample_id": None}
+                try:
+                    slot_index = int(line.split(":", 1)[1])
+                except (ValueError, IndexError):
+                    current = None
+                    continue
+                current = {"slot_index": slot_index, "source_sample_id": None}
             elif line.startswith("FEW_SHOT_SAMPLE:") and current is not None:
                 current["source_sample_id"] = line.split(":", 1)[1]
         if current is not None:

@@ -33,5 +33,6 @@ class FewShotOptimizationReport:
     broken_sample_ids: list[str] = field(default_factory=list)
     schema_violation_sample_ids: list[str] = field(default_factory=list)
     rejected_candidates: list[dict] = field(default_factory=list)
+    rejected_candidate_count: int = 0
     failure_reason: str | None = None
     replacement_count: int = 0

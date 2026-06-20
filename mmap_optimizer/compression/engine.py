@@ -232,6 +232,14 @@ class CompressionEngine:
             behavior_evaluations = [evaluation for evaluation in error_evaluations if evaluation.sample_id in baseline_by_sample]
         else:
             behavior_evaluations = list(error_evaluations)
+            baseline_runs = self._run_analysis_behavior_suite(
+                round_id=round_id,
+                prompt=prompt,
+                evaluations=behavior_evaluations,
+                sample_metadata=sample_metadata,
+                run_id_suffix="baseline",
+            )
+            baseline_by_sample = {run.sample_id: run for run in baseline_runs if run.sample_id}
         if not behavior_evaluations:
             report.failure_reason = "NO_BEHAVIOR_SUITE"
             return prompt, report, [], []
@@ -418,7 +426,7 @@ class CompressionEngine:
             if baseline is not None:
                 if baseline.success and not candidate.success:
                     return f"ANALYSIS_FORMAT_REGRESSION:{candidate.sample_id}"
-                if candidate.parsed_output != baseline.parsed_output:
+                if baseline.success and candidate.success and candidate.parsed_output != baseline.parsed_output:
                     return f"ANALYSIS_OUTPUT_CHANGED:{candidate.sample_id}"
             else:
                 if not candidate.success:

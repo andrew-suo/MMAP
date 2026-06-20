@@ -38,6 +38,9 @@ from mmap_optimizer.testing.suite_builder import PatchTestSuiteBuilder
 from mmap_optimizer.testing.transition import classify_transition
 from mmap_optimizer.storage.json_store import JsonStore
 from .records import OptimizationRound, RoundStage, RunRecord
+from copy import deepcopy
+import random as random_mod
+import time as time_mod
 
 logger = get_logger(__name__)
 

@@ -52,3 +52,50 @@ class PatchTestSuiteBuilder:
                 "bundle_patch_count": len(patches),
             },
         )
+
+    def build_toxic_suite(self, *, round_id: str, toxic_sample_ids: list[str], max_samples: int = 48) -> PatchTestSuite:
+        """Build a test suite for toxic patch detection.
+
+        Used in Step 6.4: after identifying "previously correct, now broken"
+        samples, each candidate patch is re-applied individually and tested
+        on this toxic sample set.
+        """
+        sample_ids = list(dict.fromkeys(toxic_sample_ids))[:max_samples]
+        return PatchTestSuite(
+            id=f"suite_{round_id}_toxic",
+            round_id=round_id,
+            sample_ids=sample_ids,
+            suite_type="toxic_detection",
+            composition={
+                "toxic_sample_count": len(sample_ids),
+            },
+        )
+
+    def build_analysis_test_suite(
+        self,
+        *,
+        round_id: str,
+        analysis_error_sample_ids: list[str],
+        analysis_reflection_sample_ids: list[str] | None = None,
+        max_samples: int = 48,
+    ) -> PatchTestSuite:
+        """Build a test suite for analysis prompt optimization.
+
+        Used in Step 6 of analysis prompt optimization: collects samples
+        where the analysis prompt made errors (blind evaluation mismatches)
+        plus samples with reflection records for targeted testing.
+        """
+        error_ids = list(dict.fromkeys(analysis_error_sample_ids))
+        reflection_ids = list(dict.fromkeys(analysis_reflection_sample_ids or []))
+        combined = list(dict.fromkeys(error_ids + reflection_ids))[:max_samples]
+        return PatchTestSuite(
+            id=f"suite_{round_id}_analysis",
+            round_id=round_id,
+            sample_ids=combined,
+            suite_type="analysis_prompt_test",
+            composition={
+                "analysis_error_count": len([s for s in combined if s in set(error_ids)]),
+                "reflection_count": len([s for s in combined if s in set(reflection_ids)]),
+                "total_samples": len(combined),
+            },
+        )

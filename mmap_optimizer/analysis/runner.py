@@ -176,3 +176,205 @@ class AnalysisRunner:
             target_text=candidate.get("target_text"),
             new_text=candidate.get("new_text"),
         )
+
+    def run_single_analysis(
+        self,
+        *,
+        round_id: str,
+        sample_id: str,
+        extraction_output: Any,
+        analysis_prompt: PromptVersion,
+        ground_truth_label: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run analysis prompt on a single sample.
+
+        Used for analysis prompt optimization: runs the analysis prompt on
+        a specific sample and returns the parsed judgement for comparison
+        with ground truth.
+
+        Returns: dict with keys:
+            - judgement: the parsed analysis judgement
+            - matches_truth: bool (if ground_truth_label provided)
+            - raw_output: raw model response
+            - parse_success: bool
+        """
+        rendered = analysis_prompt.render()
+        metadata = metadata or {}
+        mock_output = metadata.get("mock_analysis_output")
+
+        messages = [
+            {"role": "system", "content": rendered.text},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "sample_id": sample_id,
+                        "extraction_output": extraction_output,
+                        "mock_output": mock_output,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        response = self.model_client.complete(messages, model_config=self.model_config)
+
+        parse_result = parse_analysis_output_with_repair(
+            response.raw_output,
+            repair_client=self.model_client,
+            repair_model_config=self.model_config,
+            enable_llm_repair=self.enable_json_repair,
+            max_attempts=self.json_repair_max_attempts,
+        )
+
+        judgement = parse_result.parsed.get("judgement", {}) if isinstance(parse_result.parsed, dict) else {}
+        if isinstance(judgement, dict):
+            judgement_label = str(judgement.get("primary_label", ""))
+        else:
+            judgement_label = str(judgement)
+
+        matches_truth = (ground_truth_label is not None and judgement_label == ground_truth_label)
+
+        return {
+            "sample_id": sample_id,
+            "judgement": judgement_label,
+            "matches_truth": matches_truth,
+            "raw_output": response.raw_output,
+            "parsed_output": parse_result.parsed,
+            "parse_success": parse_result.parse_success,
+            "schema_valid": parse_result.schema_valid,
+        }
+
+    def generate_analysis_patch(
+        self,
+        *,
+        round_id: str,
+        sample_id: str,
+        extraction_output: Any,
+        original_analysis_result: dict[str, Any],
+        ground_truth_label: str,
+        reflection_record: dict[str, Any] | None = None,
+        analysis_prompt: PromptVersion,
+        sample_metadata: dict[str, Any] | None = None,
+    ) -> AnalysisRunResult:
+        """Generate a patch for the analysis prompt itself.
+
+        Used in the analysis prompt optimization loop. Given that a sample
+        was mis-analyzed (blind evaluation gave wrong answer), this method
+        generates patches aimed at fixing the analysis prompt so it can
+        correctly judge similar cases in the future.
+
+        Uses reflection records (from the blind evaluation reflection step)
+        to provide richer patch generation context.
+        """
+        rendered = analysis_prompt.render()
+        sample_metadata = sample_metadata or {}
+        records: list[AnalysisRecord] = []
+        patches: list[Patch] = []
+        runs: list[RunRecord] = []
+
+        # Build enhanced prompt: include original analysis result, truth, and reflection
+        user_content = {
+            "sample_id": sample_id,
+            "original_judgement": original_analysis_result.get("judgement", ""),
+            "ground_truth_label": ground_truth_label,
+            "extraction_output": extraction_output,
+            "original_raw_output": original_analysis_result.get("raw_output"),
+        }
+        if reflection_record:
+            user_content["reflection"] = {
+                "why_wrong": reflection_record.get("why_blind_was_wrong", ""),
+                "should_have_checked": reflection_record.get("what_should_have_been_checked", ""),
+                "how_to_improve": reflection_record.get("how_to_improve_analysis", ""),
+            }
+        user_content["mock_output"] = sample_metadata.get("mock_analysis_output")
+
+        # Override system message: ask specifically for analysis prompt patches
+        analysis_system_prompt = (
+            f"{rendered.text}\n\nSPECIAL INSTRUCTION: Your task is to analyze the "
+            "MISMATCH between the analysis judgement and ground truth above. "
+            "Provide patches that would fix the ANALYSIS PROMPT to correctly "
+            "judge this and similar cases. Focus on: (1) what signal the analysis "
+            "prompt missed, (2) what check it should perform differently, "
+            "(3) what explicit rule to add or modify. "
+            "Respond with JSON containing 'judgement' (stating this IS a mismatch), "
+            "'patch_candidates' (array of patches with section_id, operation, "
+            "intent, content, rationale), and 'risk_level'."
+        )
+
+        messages = [
+            {"role": "system", "content": analysis_system_prompt},
+            {"role": "user", "content": json.dumps(user_content, ensure_ascii=False)},
+        ]
+
+        response = self.model_client.complete(messages, model_config=self.model_config)
+
+        analysis_run = RunRecord(
+            id=f"run_{round_id}_analysis_patch_{sample_id}",
+            round_id=round_id,
+            run_type="analysis_patch_generation",
+            sample_id=sample_id,
+            prompt_version_id=analysis_prompt.id,
+            rendered_prompt_hash=rendered.text_hash,
+            model_id=self.model_id,
+            raw_output=response.raw_output,
+        )
+        runs.append(analysis_run)
+
+        parse_result = parse_analysis_output_with_repair(
+            response.raw_output,
+            repair_client=self.model_client,
+            repair_model_config=self.model_config,
+            enable_llm_repair=self.enable_json_repair,
+            max_attempts=self.json_repair_max_attempts,
+        )
+        analysis_run.parsed_output = parse_result.parsed
+        if not parse_result.parse_success:
+            analysis_run.success = False
+            analysis_run.error_type = "PARSE_ERROR"
+        elif not parse_result.schema_valid:
+            analysis_run.success = False
+            analysis_run.error_type = "SCHEMA_ERROR"
+
+        analysis_id = f"analysis_{round_id}_patchgen_{sample_id}"
+        judgement = parse_result.parsed.get("judgement", {}) if isinstance(parse_result.parsed, dict) else {}
+        record = AnalysisRecord(
+            id=analysis_id,
+            round_id=round_id,
+            extraction_run_id=analysis_run.id,
+            evaluation_record_id="",
+            sample_id=sample_id,
+            analysis_prompt_version_id=analysis_prompt.id,
+            judgement=judgement,
+            judgement_matches_evaluator=False,
+            parse_success=parse_result.parse_success,
+            schema_valid=parse_result.schema_valid,
+            parse_error=";".join(parse_result.errors) if not parse_result.parse_success else None,
+            schema_errors=parse_result.errors if parse_result.parse_success and not parse_result.schema_valid else [],
+            repaired=parse_result.repaired,
+            repair_actions=parse_result.repair_actions,
+            invalid_patch_candidate_count=len(parse_result.invalid_patch_candidates),
+            invalid_patch_count=len(parse_result.invalid_patch_candidates),
+            prompt_section_attribution=[],
+        )
+
+        for idx, candidate in enumerate(parse_result.valid_patch_candidates):
+            # Override: these are analysis prompt patches
+            candidate["target_prompt"] = "analysis"
+            patch = self._patch_from_candidate(
+                candidate=candidate,
+                round_id=round_id,
+                index=idx,
+                base_version_id=analysis_prompt.id,
+                sample_id=sample_id,
+                analysis_id=analysis_id,
+            )
+            # Mark as analysis patch type
+            patch.target_prompt_type = "analysis"
+            patches.append(patch)
+            record.patch_candidate_ids.append(patch.id)
+
+        record.generated_patch_count = len(record.patch_candidate_ids)
+        records.append(record)
+
+        return AnalysisRunResult(records, patches, runs)

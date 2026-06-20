@@ -243,6 +243,13 @@ class RoundRunner:
                         metrics_tracker.iteration_metrics[-1].analysis_base_accuracy = None
                         metrics_tracker.iteration_metrics[-1].analysis_accepted = False
 
+                # Early termination: if extraction succeeded and achieved 100% accuracy, stop
+                if extraction_result.patched_accuracy == 1.0:
+                    log_stage(logger, "extraction_optimization_converged", round=round_index,
+                              iteration=accepted_iteration_count,
+                              accuracy=extraction_result.patched_accuracy)
+                    break
+
             else:
                 # Rolled back: record failed attempt, consume retry budget
                 extraction_retry_count += 1
@@ -349,6 +356,18 @@ class RoundRunner:
             metrics.analysis_judgement_match_rate = sum(
                 1 for r in extraction_result.analysis_records if r.judgement_matches_evaluator
             ) / len(extraction_result.analysis_records)
+
+        # Populate patch-related metrics from extraction_result
+        if extraction_result.draft_patches is not None:
+            metrics.draft_count = len(extraction_result.draft_patches)
+        if extraction_result.candidate_patches is not None:
+            metrics.candidate_count = len(extraction_result.candidate_patches)
+        accepted_patches = [p for p in (extraction_result.candidate_patches or []) if p.status == "accepted"]
+        metrics.accepted_count = len(accepted_patches)
+        metrics.rejected_count = len([p for p in (extraction_result.candidate_patches or []) if p.status == "rejected"])
+        metrics.toxic_count = len([p for p in accepted_patches if getattr(p, "toxicity_result", None) == "toxic"])
+        metrics.ineffective_count = len([p for p in accepted_patches if getattr(p, "effectiveness_result", None) == "ineffective"])
+
         round_record.round_metrics_id = metrics.id
 
         # Save all artifacts
@@ -944,11 +963,11 @@ class RoundRunner:
             draft_patches.extend(gen_result.draft_patches)
             analysis_runs.extend(gen_result.analysis_runs)
 
-        # Validate patches
+        # Validate patches against extraction prompt IR
         validator = PatchValidator()
         candidate_patches = []
         for patch in draft_patches:
-            v = validator.validate(patch, state.active_analysis_prompt.prompt_ir)
+            v = validator.validate(patch, state.active_extraction_prompt.prompt_ir)
             if v.valid:
                 patch.status = "candidate"
                 candidate_patches.append(patch)

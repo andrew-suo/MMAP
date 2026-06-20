@@ -160,12 +160,20 @@ class BlindEvaluationRunner:
                 analysis_run.success = False
                 analysis_run.error_type = "SCHEMA_ERROR"
 
-            # Extract blind judgement
+            # Extract blind judgement and determine matches_truth
             judgement = parse_result.parsed.get("judgement", {}) if isinstance(parse_result.parsed, dict) else {}
+            is_correct_from_judgement = judgement.get("is_correct") if isinstance(judgement, dict) else None
+            
             if isinstance(judgement, dict):
                 blind_judgement = str(judgement.get("primary_label", ""))
+                # If primary_label missing but is_correct present, use evaluation's prediction as blind judgement
+                # This handles production prompts that only output is_correct without primary_label
+                if not blind_judgement and is_correct_from_judgement is not None:
+                    eval_prediction = evaluation.normalized_prediction if evaluation.normalized_prediction else ""
+                    blind_judgement = str(eval_prediction)
             else:
                 blind_judgement = str(judgement)
+                is_correct_from_judgement = None
 
             # Step 3b: Compare with ground truth
             ground_truth_label = self._extract_ground_truth_label(
@@ -192,6 +200,15 @@ class BlindEvaluationRunner:
                 used_voted_truth = False
 
             matches_truth = blind_judgement == resolved_truth
+            # Override matches_truth when primary_label is missing but is_correct is present
+            # In this case, the analysis only tells us whether the sample was correct or not,
+            # so matches_truth should reflect whether the analysis correctly identified the sample
+            primary_label_missing = isinstance(judgement, dict) and not judgement.get("primary_label") and is_correct_from_judgement is not None
+            if primary_label_missing and ground_truth_label is not None:
+                # Analysis correctly identifies when is_correct matches whether prediction equals ground truth
+                prediction = evaluation.normalized_prediction if evaluation.normalized_prediction else ""
+                prediction_correct = (prediction == ground_truth_label)
+                matches_truth = (is_correct_from_judgement == prediction_correct)
 
             record = BlindEvaluationRecord(
                 id=f"blind_{round_id}_{evaluation.sample_id}",

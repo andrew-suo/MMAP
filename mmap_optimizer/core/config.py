@@ -70,6 +70,7 @@ class OptimizerConfig:
     # Blind evaluation & analysis prompt optimization (v4.0)
     blind_evaluation_enabled: bool = True
     blind_eval_three_analysis_vote_enabled: bool = True
+    max_restart_attempts: int = 3
     analysis_prompt_optimization_enabled: bool = True
     analysis_patch_semantic_merge_enabled: bool = True
     patch_toxic_test_sample_ratio: float = 0.5
@@ -120,6 +121,8 @@ class OptimizerConfig:
             issues.append("canary.min_consecutive_correct must be >= 1")
         if self.canary_max_count < 1:
             issues.append("canary.max_count must be >= 1")
+        if self.max_restart_attempts < 1:
+            issues.append("max_restart_attempts must be >= 1")
         if not 0.0 < self.patch_toxic_test_sample_ratio <= 1.0:
             issues.append("patch_toxic_test_sample_ratio must be in (0.0, 1.0]")
         return issues
@@ -353,6 +356,7 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
         historical_regression_check_enabled=_bool_value(historical_regression.get("enabled", data.get("historical_regression_check_enabled", True))),
         blind_evaluation_enabled=_bool_value(blind_eval.get("enabled", data.get("blind_evaluation_enabled", True))),
         blind_eval_three_analysis_vote_enabled=_bool_value(blind_eval.get("three_analysis_vote_enabled", data.get("blind_eval_three_analysis_vote_enabled", True))),
+        max_restart_attempts=_int_safe(data.get("max_restart_attempts", 3), 3),
         analysis_prompt_optimization_enabled=_bool_value(analysis_prompt_opt.get("enabled", data.get("analysis_prompt_optimization_enabled", True))),
         analysis_patch_semantic_merge_enabled=_bool_value(analysis_prompt_opt.get("semantic_merge_enabled", data.get("analysis_patch_semantic_merge_enabled", True))),
         patch_toxic_test_sample_ratio=_float_safe(

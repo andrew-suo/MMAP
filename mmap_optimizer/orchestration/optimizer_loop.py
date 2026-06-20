@@ -72,6 +72,7 @@ class OptimizerLoop:
         summary = OptimizationRunSummary(id="optimization_run_summary", status="RUNNING", planned_round_count=planned_rounds)
         rounds: list[OptimizationRound] = []
         metrics_records: list[RoundMetrics] = []
+        global_iteration_counter = 0
         self.store.write_json("run_summary.json", summary)
         log_stage(logger, "optimizer_start", planned_rounds=planned_rounds, start_round=effective_start, resume=self.resume)
 
@@ -82,7 +83,7 @@ class OptimizerLoop:
                 log_stage(logger, "round_start", round=round_index, planned_rounds=planned_rounds,
                           input_extraction_prompt_id=state.active_extraction_prompt.id,
                           input_analysis_prompt_id=state.active_analysis_prompt.id)
-                round_record, metrics = self.runner.run_round(state, round_index=round_index)
+                round_record, metrics, global_iteration_counter = self.runner.run_round(state, round_index=round_index, global_iteration_counter=global_iteration_counter)
                 round_duration_ms = int((time.perf_counter() - round_start_time) * 1000)
                 rounds.append(round_record)
                 metrics_records.append(metrics)

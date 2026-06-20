@@ -21,7 +21,8 @@ from mmap_optimizer.patch.applier import PatchApplier
 from mmap_optimizer.patch.merge_report import PatchMergeReport
 from mmap_optimizer.patch.repair import PatchRepairEngine
 from mmap_optimizer.patch.semantic import SemanticPatchProcessor
-from mmap_optimizer.patch.tree_reduce import TreeReducePatchMerger
+from mmap_optimizer.patch.tree_reduce import TreeReducePatchMerger, TreeReduceMergeResult
+from mmap_optimizer.patch.hierarchical_merger import HierarchicalPatchMerger, HierarchicalMergeConfig, HierarchicalMergeResult
 from mmap_optimizer.patch.schema import Patch
 from mmap_optimizer.patch.validator import PatchValidator
 from mmap_optimizer.model.client import ModelClient
@@ -853,13 +854,27 @@ class RoundRunner:
         merged_patches: list = []
         if candidate_patches:
             self._advance_stage(round_id, None, RoundStage.PATCH_TREE_REDUCE.value)
-            merge_result = TreeReducePatchMerger().merge(
-                round_id=round_id,
-                patches=candidate_patches,
-                prompt_ir=state.active_extraction_prompt.prompt_ir,
-            )
-            merged_patches = merge_result.final_patches
-            merge_report = merge_result.merge_report
+            if self.config.patch_merge_strategy == "hierarchical":
+                hier_merger = HierarchicalPatchMerger(
+                    model_client=self.optimizer_client,
+                    model_config=self._optimizer_model_config(),
+                    config=HierarchicalMergeConfig(),
+                )
+                merge_result = hier_merger.merge(
+                    round_id=round_id,
+                    patches=candidate_patches,
+                    prompt_ir=state.active_extraction_prompt.prompt_ir,
+                )
+                merged_patches = merge_result.final_patches
+                merge_report = merge_result.merge_report
+            else:
+                merge_result = TreeReducePatchMerger().merge(
+                    round_id=round_id,
+                    patches=candidate_patches,
+                    prompt_ir=state.active_extraction_prompt.prompt_ir,
+                )
+                merged_patches = merge_result.final_patches
+                merge_report = merge_result.merge_report
             log_stage(logger, "patch_merge_done", round=round_index, merged_patch_count=len(merged_patches))
 
             if merged_patches and (self.config.patch_semantic_merge_enabled or self.config.patch_root_audit_enabled):
@@ -1058,11 +1073,23 @@ class RoundRunner:
 
         # Final merge and apply
         self._advance_stage(round_id, None, RoundStage.FINAL_MERGE.value)
-        final_merge_result = TreeReducePatchMerger().merge(
-            round_id=round_id,
-            patches=final_patches,
-            prompt_ir=state.active_extraction_prompt.prompt_ir,
-        )
+        if self.config.patch_merge_strategy == "hierarchical":
+            hier_merger = HierarchicalPatchMerger(
+                model_client=self.optimizer_client,
+                model_config=self._optimizer_model_config(),
+                config=HierarchicalMergeConfig(),
+            )
+            final_merge_result = hier_merger.merge(
+                round_id=round_id,
+                patches=final_patches,
+                prompt_ir=state.active_extraction_prompt.prompt_ir,
+            )
+        else:
+            final_merge_result = TreeReducePatchMerger().merge(
+                round_id=round_id,
+                patches=final_patches,
+                prompt_ir=state.active_extraction_prompt.prompt_ir,
+            )
         final_merged = final_merge_result.final_patches
 
         if final_merged and (self.config.patch_semantic_merge_enabled or self.config.patch_root_audit_enabled):
@@ -1315,11 +1342,23 @@ class RoundRunner:
             )
 
         # Merge patches
-        merge_result = TreeReducePatchMerger().merge(
-            round_id=round_id,
-            patches=candidate_patches,
-            prompt_ir=state.active_analysis_prompt.prompt_ir,
-        )
+        if self.config.patch_merge_strategy == "hierarchical":
+            hier_merger = HierarchicalPatchMerger(
+                model_client=self.optimizer_client,
+                model_config=self._optimizer_model_config(),
+                config=HierarchicalMergeConfig(),
+            )
+            merge_result = hier_merger.merge(
+                round_id=round_id,
+                patches=candidate_patches,
+                prompt_ir=state.active_analysis_prompt.prompt_ir,
+            )
+        else:
+            merge_result = TreeReducePatchMerger().merge(
+                round_id=round_id,
+                patches=candidate_patches,
+                prompt_ir=state.active_analysis_prompt.prompt_ir,
+            )
         merged_patches = merge_result.final_patches
 
         if self.config.analysis_patch_semantic_merge_enabled and merged_patches:

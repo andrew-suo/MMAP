@@ -75,6 +75,8 @@ class OptimizerConfig:
     analysis_patch_semantic_merge_enabled: bool = True
     patch_toxic_test_sample_ratio: float = 0.5
     extraction_model: ModelConfig = field(default_factory=ModelConfig)
+    # Patch merge strategy
+    patch_merge_strategy: str = "tree_reduce"  # "tree_reduce" 或 "hierarchical"
     optimizer_model: ModelConfig = field(default_factory=ModelConfig)
 
     def validate(self) -> list[str]:
@@ -294,6 +296,7 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
     fewshot = data.get("fewshot", {}) or {}
     analysis = data.get("analysis", {}) or {}
     patch_merge = data.get("patch_merge", {}) or {}
+    patch_merge_strategy = str(patch_merge.get("strategy", "tree_reduce"))
     patch_repair = data.get("patch_repair", {}) or {}
     health = data.get("health", {}) or {}
     snapshots = data.get("snapshots", {}) or {}
@@ -365,5 +368,6 @@ def optimizer_config_from_mapping(data: dict[str, Any] | None) -> OptimizerConfi
         ),
         scenario_id=data.get("scenario_id"),
         extraction_model=model_config_from_mapping(extraction_model_data),
+        patch_merge_strategy=patch_merge_strategy,
         optimizer_model=model_config_from_mapping(optimizer_model_data),
     )

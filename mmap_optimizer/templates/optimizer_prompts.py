@@ -595,6 +595,84 @@ framework inherited from the legacy PATCH_ROOT_MERGE_PROMPT.
 仅输出 JSON 数组。成功输出 audited patches；边界情况输出原 patch；错误情况输出 `[]` 并在外部 parser 触发 fallback。
 """
 
+PATCH_HIERARCHICAL_MERGE_TEMPLATE = """# Role
+你是高级 Prompt 策略合并专家，负责在分层归约框架下将多条 patch 合并为精简、无冲突、可验证的 patch 列表。
+
+# Prompt Structure
+{prompt_structure}
+
+# Patches
+{patches_json}
+
+# Guidelines
+
+## 1. 结构划分与隔离
+按 `target_section` 分类，**不同 section 的 patches 不得混淆**。每个 section 的修改独立处理。
+
+## 2. 逻辑去重与泛化
+- 同一 section 同 op 的 patch 需合并/拼接
+- 相似 patch 需泛化为通用原则
+- 保留核心意图，去除冗余
+
+## 3. 技术约束
+- 每条 edit 行级互不重叠（核心硬性约束，防止并行应用冲突）
+- 优先使用 `append_to_section`
+- 总条数目标 ≤ 原始数量的 1/3
+- **严禁臆造**：不得新增输入中不存在的修改项
+
+## 4. 操作偏好
+按以下优先级选择操作：
+1. `append_to_section`（追加到 section 末尾）
+2. `insert_after` / `insert_before`（在指定文本前后插入）
+3. `replace_in_section`（替换 section 中某段文本）
+4. `replace_section`（重写整个 section）
+5. `delete_section`（删除 section）
+
+## 5. 孤儿补丁保护
+无冲突的独特补丁必须保留，**不得以"精简"为由删除**。
+
+## 6. 冲突解决
+- 当两个 patch 冲突时，保留证据更清晰、范围更窄、副作用更少的版本
+- 行级/locator 非重叠：不得生成对同一文本段有重叠编辑的合并 patch
+
+# Output Contract
+仅输出 JSON 数组。每个元素必须是 patch 对象；失败时返回原 patch 数组作为 fallback。
+"""
+
+PATCH_HIERARCHICAL_ROOT_MERGE_TEMPLATE = """# Role
+你是高级 Prompt 策略审计专家，负责对分层归约后的残余 patch 执行跨 section 一致性检查。
+
+# Prompt Structure
+{prompt_structure}
+
+# Patches
+{patches_json}
+
+# 跨 Section 一致性检查
+
+## 1. 双向跨区域校验
+- **Rules vs Output_Format**：检查规则定义与输出格式是否一致
+- **Workflow vs Rules**：检查工作流与规则是否有冲突
+- **Constraints vs Output Format**：检查约束条件与输出格式是否兼容
+
+## 2. 冗余检测
+跨 Section 内容冗余检测：
+- 相同约束在多个 section 重复定义
+- 矛盾的要求在不同 section 出现
+
+## 3. 孤儿补丁保护
+无冲突的独特补丁必须保留，**不得以"精简"为由删除**。
+
+## 4. 微调优先
+发现冲突时**微调而非删除**。
+
+## 5. 严禁臆造
+不得新增输入中不存在的修改项。
+
+# Output Contract
+仅输出 JSON 数组。每个元素必须是 patch 对象；失败时返回原 patch 数组作为 fallback。
+"""
+
 SECTION_REWRITE_TEMPLATE = """# Role
 你重写单个 prompt section，但必须无损保留已有规则。
 
@@ -920,6 +998,8 @@ DEFAULT_OPTIMIZER_TEMPLATES = [
     PromptTemplateSpec("patch_generation", "1.0", "Generate specific and safe prompt patch candidates from round context.", ["prompt_structure", "current_prompt", "round_context", "evaluation_summary"], _contract("json_object", required=["patches", "cited_sections"], fields={"patches": "Patch[]", "cited_sections": "string[]"}, fallback='{"patches": [], "cited_sections": []}'), PATCH_GENERATION_TEMPLATE, "high", ["patch", "generation"]),
     PromptTemplateSpec("patch_semantic_merge", "1.1", "Generalize and merge related patch candidates before strict validation.", ["prompt_structure", "patches_json"], _contract("json_array", fallback="original patch array"), PATCH_SEMANTIC_MERGE_TEMPLATE, "high", ["patch", "merge"], DEFAULT_EXAMPLES["patch_semantic_merge"]),
     PromptTemplateSpec("patch_root_audit", "1.1", "Audit final patch candidates for cross-section conflicts.", ["prompt_structure", "patches_json"], _contract("json_array", fallback="original patch array or []"), PATCH_ROOT_AUDIT_TEMPLATE, "high", ["patch", "merge"], DEFAULT_EXAMPLES["patch_root_audit"]),
+    PromptTemplateSpec("patch_hierarchical_merge", "1.0", "Hierarchical multi-layer merge of patch candidates.", ["prompt_structure", "patches_json"], _contract("json_array", fallback="original patch array"), PATCH_HIERARCHICAL_MERGE_TEMPLATE, "high", ["patch", "merge"]),
+    PromptTemplateSpec("patch_hierarchical_root_merge", "1.0", "Root merge for cross-section consistency check in hierarchical merge.", ["prompt_structure", "patches_json"], _contract("json_array", fallback="original patch array or []"), PATCH_HIERARCHICAL_ROOT_MERGE_TEMPLATE, "high", ["patch", "merge"]),
     PromptTemplateSpec("section_rewrite", "1.1", "Rewrite a single section while preserving existing rule intent.", ["section_header", "section_content", "optimization_instruction"], _contract("text", fallback="original section"), SECTION_REWRITE_TEMPLATE, "high", ["patch", "rewrite"]),
     PromptTemplateSpec("llm_prune", "1.1", "Prune one section without adding or losing rules.", ["section_header", "section_content"], _contract("text", fallback="original section"), LLM_PRUNE_TEMPLATE, "high", ["compression"]),
     PromptTemplateSpec("llm_prune_validation", "1.1", "Validate semantic equivalence after LLM pruning.", ["original_section", "pruned_section"], _contract("json_object", required=["valid", "reason"], fields={"valid": "boolean", "reason": "string"}, fallback='{"valid": false, "reason": "invalid"}'), LLM_PRUNE_VALIDATION_TEMPLATE, "medium", ["compression", "validation"], DEFAULT_EXAMPLES["llm_prune_validation"]),

@@ -15,3 +15,7 @@ class PatchMergeReport:
     conflict_patch_ids: list[str] = field(default_factory=list)
     merged_patch_ids: list[str] = field(default_factory=list)
     final_patch_ids: list[str] = field(default_factory=list)
+    layer_reports: list = field(default_factory=list)      # 每层的报告（MergeLayerReport 列表）
+    guardrail_detained_ids: list[str] = field(default_factory=list)  # 被 guardrail 拘留的 patch IDs
+    root_merge_applied: bool = False                       # 是否应用了根合并
+    fallback_applied: bool = False                         # 是否触发了全局回退

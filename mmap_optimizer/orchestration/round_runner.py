@@ -159,7 +159,7 @@ class RoundRunner:
         round_record.dynamic_validation_batch_id = dval_batch.id
         self.store.write_json(f"{round_id}/dynamic_validation_batch.json", dval_batch)
         self._advance_stage(round_id, round_record, RoundStage.OPTIMIZATION_BATCH_SELECT.value)
-        log_stage(logger, "batch_selection_done", round=round_index, optimization_batch_size=len(optimization_batch), dval_batch_size=len(dval_batch.sample_ids))
+        log_stage(logger, "batch_selection_done", "批次选择完成", round=round_index, optimization_batch_size=len(optimization_batch), dval_batch_size=len(dval_batch.sample_ids))
 
         # Save initial prompts snapshots (for rollback in Step 8)
         initial_extraction_prompt = deepcopy(state.active_extraction_prompt)
@@ -206,7 +206,7 @@ class RoundRunner:
 
             # Fewshot rounds: baseline extraction done, skip patch optimization loop
             if is_fewshot_round:
-                log_stage(logger, "fewshot_round_baseline_done", round=round_index,
+                log_stage(logger, "fewshot_round_baseline_done", "fewshot 轮基线抽取完成", round=round_index,
                           base_accuracy=extraction_result.base_accuracy,
                           sample_count=len(extraction_result.evaluations))
                 break
@@ -242,7 +242,7 @@ class RoundRunner:
                     round_record.rejected_patch_ids = list(extraction_result.rejected_patch_ids)
                     _last_successful_extraction = extraction_result
 
-                log_stage(logger, "extraction_iteration_accepted", round=round_index,
+                log_stage(logger, "extraction_iteration_accepted", "抽取迭代已接受", round=round_index,
                           iteration=metrics_tracker.iteration_metrics[-1].iteration_index,
                           patch_count=extraction_result.patch_count,
                           base_accuracy=extraction_result.base_accuracy,
@@ -283,10 +283,10 @@ class RoundRunner:
                             reason=analysis_result.rejection_reason or "empty_analysis_patch_set",
                             timestamp=now_iso,
                         ))
-                        log_stage(logger, "analysis_iteration_rolled_back", round=round_index,
+                        log_stage(logger, "analysis_iteration_rolled_back", "分析迭代已回滚", round=round_index,
                                   reason=analysis_result.rejection_reason)
                     else:
-                        log_stage(logger, "analysis_iteration_accepted", round=round_index,
+                        log_stage(logger, "analysis_iteration_accepted", "分析迭代已接受", round=round_index,
                                   patch_count=analysis_result.patch_count,
                                   base_accuracy=analysis_result.base_accuracy,
                                   patched_accuracy=analysis_result.patched_accuracy)
@@ -298,7 +298,7 @@ class RoundRunner:
 
                 # Early termination: if extraction succeeded and achieved 100% accuracy, stop
                 if extraction_result.patched_accuracy is not None and extraction_result.patched_accuracy >= 1.0:
-                    log_stage(logger, "extraction_optimization_converged", round=round_index,
+                    log_stage(logger, "extraction_optimization_converged", "抽取优化已收敛", round=round_index,
                               iteration=accepted_iteration_count,
                               accuracy=extraction_result.patched_accuracy)
                     break
@@ -336,6 +336,7 @@ class RoundRunner:
                     log_stage(
                         logger,
                         "extraction_iteration_converged_early",
+                        "抽取迭代提前收敛",
                         round=round_index,
                         reason=extraction_result.rejection_reason,
                     )
@@ -352,7 +353,7 @@ class RoundRunner:
                     timestamp=now_iso,
                 ))
 
-                log_stage(logger, "extraction_iteration_rolled_back", round=round_index,
+                log_stage(logger, "extraction_iteration_rolled_back", "抽取迭代已回滚", round=round_index,
                           retry_count=extraction_retry_count,
                           reason=extraction_result.rejection_reason)
 
@@ -362,7 +363,7 @@ class RoundRunner:
 
                 # Check retry budget
                 if extraction_retry_count >= self.config.max_restart_attempts:
-                    log_stage(logger, "extraction_max_retries_reached", round=round_index,
+                    log_stage(logger, "extraction_max_retries_reached", "抽取重试次数已达上限", round=round_index,
                               retry_count=extraction_retry_count)
                     break  # Exit loop, end round
 
@@ -371,7 +372,7 @@ class RoundRunner:
 
             # Check: have we reached max_text_rounds?
             if accepted_iteration_count >= self.config.max_text_rounds:
-                log_stage(logger, "max_text_rounds_reached", round=round_index,
+                log_stage(logger, "max_text_rounds_reached", "文本轮数已达上限", round=round_index,
                           accepted_iterations=accepted_iteration_count)
                 break
 
@@ -382,7 +383,7 @@ class RoundRunner:
         if state.active_extraction_prompt.id != initial_extraction_prompt.id:
             dval_samples = [s for s in state.samples if s.id in set(dval_batch.sample_ids)]
             if dval_samples:
-                log_stage(logger, "dval_run_start", round=round_index, sample_count=len(dval_samples))
+                log_stage(logger, "dval_run_start", "动态验证开始", round=round_index, sample_count=len(dval_samples))
                 dval_result = self._prompt_runner().run(
                     round_id=round_id,
                     run_type=RunType.DYNAMIC_VALIDATION_EXTRACTION.value,
@@ -394,7 +395,7 @@ class RoundRunner:
                 )
                 dval_runs, dval_evals = dval_result.runs, dval_result.evaluations
                 round_record.dynamic_validation_run_ids = [r.id for r in dval_runs]
-                log_stage(logger, "dval_run_done", round=round_index, evaluation_count=len(dval_evals))
+                log_stage(logger, "dval_run_done", "动态验证完成", round=round_index, evaluation_count=len(dval_evals))
                 dval_ran = True
 
         # Collect evals from extraction optimization. Fall back to the most
@@ -544,7 +545,7 @@ class RoundRunner:
             try:
                 self.store.write_json(f"{round_id}/patches/merge_report.json", mr)
             except Exception:
-                logger.warning("Failed to write merge_report", exc_info=True)
+                log_stage(logger, "merge_report_save_failed", "保存 merge_report 失败")
 
         # Set compression metrics from reports
         if compression_reports:
@@ -668,7 +669,7 @@ class RoundRunner:
             plotter.plot_combined_summary(metrics_tracker, round_index=round_index)
             plotter.save_metrics_json(metrics_tracker, round_index=round_index)
         except Exception:
-            logger.warning("Failed to generate metrics plots", exc_info=True)
+            log_stage(logger, "metrics_plots_failed", "生成指标图表失败")
 
         self._cleanup_intermediate(round_id)
         return round_record, metrics, metrics_tracker.global_iteration_counter
@@ -718,7 +719,7 @@ class RoundRunner:
             reflection_records: list = field(default_factory=list)
 
         # ── Step 1: Baseline Extraction ─────────────────────────────────────────────
-        log_stage(logger, "extraction_run_start", round=round_index, sample_count=len(optimization_batch))
+        log_stage(logger, "extraction_run_start", "基线抽取开始", round=round_index, sample_count=len(optimization_batch))
         extraction_result = self._prompt_runner().run(
             round_id=round_id,
             run_type=RunType.EXTRACTION.value,
@@ -729,7 +730,7 @@ class RoundRunner:
             contract=state.extraction_output_schema_contract,
         )
         extraction_runs, evals = extraction_result.runs, extraction_result.evaluations
-        log_stage(logger, "extraction_run_done", round=round_index, evaluation_count=len(evals))
+        log_stage(logger, "extraction_run_done", "基线抽取完成", round=round_index, evaluation_count=len(evals))
         self._advance_stage(round_id, None, RoundStage.BASELINE_EVAL.value)
 
         extraction_by_sample = {run.sample_id: run for run in extraction_runs if run.sample_id}
@@ -780,7 +781,7 @@ class RoundRunner:
             # Run analysis ONCE over every wrong sample. The same outputs are
             # used for both the "matches truth" filter AND patch generation.
             self._advance_stage(round_id, None, RoundStage.PATCH_GENERATION.value)
-            log_stage(logger, "patch_generation_start", round=round_index, failed_sample_count=len(wrong_evals))
+            log_stage(logger, "patch_generation_start", "补丁生成开始", round=round_index, failed_sample_count=len(wrong_evals))
             analysis_result = AnalysisRunner(
                 self.optimizer_client,
                 model_id=self.config.optimizer_model.model,
@@ -844,13 +845,13 @@ class RoundRunner:
                     if brec.matches_truth
                 }
                 draft_patches = [p for p in draft_patches if p.source_sample_ids and p.source_sample_ids[0] in filtered_ids]
-                log_stage(logger, "blind_evaluation_done", round=round_index,
+                log_stage(logger, "blind_evaluation_done", "盲评完成", round=round_index,
                           accuracy=1.0,
                           samples_for_patch=len(filtered_ids),
                           excluded_samples=len(wrong_evals) - len(filtered_ids))
 
         samples_for_patch = wrong_evals  # kept for downstream bookkeeping
-        log_stage(logger, "patch_generation_candidates", round=round_index,
+        log_stage(logger, "patch_generation_candidates", "补丁候选生成完成", round=round_index,
                   total_wrong=len(wrong_evals),
                   eligible_for_patch=len(wrong_evals))
 
@@ -914,7 +915,7 @@ class RoundRunner:
                 )
                 merged_patches = merge_result.final_patches
                 merge_report = merge_result.merge_report
-            log_stage(logger, "patch_merge_done", round=round_index, merged_patch_count=len(merged_patches))
+            log_stage(logger, "patch_merge_done", "补丁合并完成", round=round_index, merged_patch_count=len(merged_patches))
 
             if merged_patches and (self.config.patch_semantic_merge_enabled or self.config.patch_root_audit_enabled):
                 semantic_processor = SemanticPatchProcessor(self.optimizer_client, self._optimizer_model_config())
@@ -955,7 +956,7 @@ class RoundRunner:
                 "merged_patch_count": len(merged_patches),
                 "patched_eval_count": len(patched_evals),
             })
-            log_stage(logger, "patch_merged_test_done", round=round_index,
+            log_stage(logger, "patch_merged_test_done", "合并补丁测试完成", round=round_index,
                       merged_patch_count=len(merged_patches),
                       patched_eval_count=len(patched_evals))
 
@@ -1043,7 +1044,7 @@ class RoundRunner:
                 "final_patch_count": len(final_patches),
                 "toxic_sample_count": len(toxic_sample_ids),
             })
-            log_stage(logger, "patch_comparison_done", round=round_index,
+            log_stage(logger, "patch_comparison_done", "补丁比较与筛选完成", round=round_index,
                       initial=len(merged_patches),
                       final=len(final_patches),
                       toxic_samples=len(toxic_sample_ids))

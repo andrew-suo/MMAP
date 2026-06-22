@@ -5,7 +5,7 @@ import time
 from dataclasses import replace
 
 from mmap_optimizer.core.enums import PromptVersionType
-from mmap_optimizer.logging import get_logger
+from mmap_optimizer.logging import get_logger, log_stage
 from mmap_optimizer.prompt.version import PromptVersion
 from .schema import Patch
 
@@ -88,5 +88,5 @@ class PatchApplier:
         )
         new_prompt.render()
         apply_duration_ms = int((time.perf_counter() - apply_start_time) * 1000)
-        logger.debug(f"[stage=patch_apply] patch_id={patch.id} section_id={patch.section_id} mode={mode} duration_ms={apply_duration_ms}")
+        log_stage(logger, "patch_apply", "补丁应用完成", patch_id=patch.id, section_id=patch.section_id, mode=mode, duration_ms=apply_duration_ms)
         return new_prompt

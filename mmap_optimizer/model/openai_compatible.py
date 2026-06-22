@@ -12,7 +12,7 @@ import urllib.request
 from typing import Any
 
 from mmap_optimizer.dataset.sample import SampleAsset
-from mmap_optimizer.logging import get_logger, log_progress
+from mmap_optimizer.logging import get_logger, log_stage
 from .client import ModelResponse
 
 logger = get_logger(__name__)
@@ -31,7 +31,7 @@ class OpenAICompatibleClient:
 
     def complete(self, messages: list[dict[str, Any]], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:
         payload = self._build_payload(messages=messages, model_config=model_config, response_format=response_format)
-        log_progress(logger, "model_request_start",
+        log_stage(logger, "model_request_start", "模型请求开始",
             model=payload.get("model"), message_count=len(messages),
             temperature=payload.get("temperature"), max_tokens=payload.get("max_tokens"),
             timeout=(model_config or {}).get("timeout", 120),
@@ -46,18 +46,19 @@ class OpenAICompatibleClient:
             content = body["choices"][0]["message"]["content"]
             if content is None:
                 content = ""
-            log_progress(logger, "model_response_done",
+            log_stage(logger, "model_response_done", "模型响应完成",
                 model=payload.get("model"), duration_ms=duration_ms, response_chars=len(content) if content else 0)
             return ModelResponse(raw_output=content, metadata={"usage": body.get("usage"), "response_id": body.get("id")})
         except Exception as exc:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
+            log_stage(logger, "model_request_failed", "模型请求失败", model=payload.get("model"), duration_ms=duration_ms, error=f"{type(exc).__name__}: {exc}")
             logger.exception("[stage=model_request_failed] model=%s duration_ms=%d error=%s: %s", payload.get("model"), duration_ms, type(exc).__name__, exc)
             raise
 
     def complete_multimodal(self, messages: list[dict[str, Any]], assets: list[Any], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:
         prepared_messages = self._messages_with_assets(messages, assets)
         payload = self._build_payload(messages=prepared_messages, model_config=model_config, response_format=response_format)
-        log_progress(logger, "model_request_start",
+        log_stage(logger, "model_request_start", "模型请求开始",
             model=payload.get("model"), message_count=len(prepared_messages),
             asset_count=len(assets) if assets else 0,
             temperature=payload.get("temperature"), max_tokens=payload.get("max_tokens"),
@@ -73,7 +74,7 @@ class OpenAICompatibleClient:
             content = body["choices"][0]["message"]["content"]
             if content is None:
                 content = ""
-            log_progress(logger, "model_response_done",
+            log_stage(logger, "model_response_done", "模型响应完成",
                 model=payload.get("model"), duration_ms=duration_ms, response_chars=len(content) if content else 0)
             return ModelResponse(
                 raw_output=content,
@@ -81,6 +82,7 @@ class OpenAICompatibleClient:
             )
         except Exception as exc:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
+            log_stage(logger, "model_request_failed", "模型请求失败", model=payload.get("model"), duration_ms=duration_ms, error=f"{type(exc).__name__}: {exc}")
             logger.exception("[stage=model_request_failed] model=%s duration_ms=%d error=%s: %s", payload.get("model"), duration_ms, type(exc).__name__, exc)
             raise
 

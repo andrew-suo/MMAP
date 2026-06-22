@@ -10,11 +10,14 @@ from mmap_optimizer.evaluation.evaluator import EvaluationRecord, Evaluator
 from mmap_optimizer.fewshot.pool import FewShotCandidatePool
 from mmap_optimizer.fewshot.report import FewShotOptimizationReport
 from mmap_optimizer.fewshot.schema import FewShotCandidate, FewShotExample, FewShotSetVersion
+from mmap_optimizer.logging import get_logger, log_stage
 from mmap_optimizer.model.client import ModelClient
 from mmap_optimizer.prompt.contract import OutputSchemaContract
 from mmap_optimizer.prompt.ir import PromptSection
 from mmap_optimizer.prompt.version import PromptVersion
 from mmap_optimizer.testing.prompt_test_runner import PromptTestRunner
+
+logger = get_logger(__name__)
 
 
 class FewShotOptimizationEngine:
@@ -63,6 +66,9 @@ class FewShotOptimizationEngine:
         slots = self._parse_slots(prompt)
         slot_count = len(slots)
         baseline_accuracy = self._accuracy(base_evaluations)
+        log_stage(logger, "fewshot_optimize_start", "fewshot 优化开始",
+                  round_id=round_id, slot_count=slot_count, baseline_accuracy=baseline_accuracy,
+                  max_slots=max_slots, candidate_pool_size=len(candidate_pool.candidates) if candidate_pool else 0)
         report = FewShotOptimizationReport(
             id=f"fewshot_{round_id}_extraction",
             round_id=round_id,
@@ -77,6 +83,7 @@ class FewShotOptimizationEngine:
         )
         if max_slots <= 0:
             report.reason = "DISABLED"
+            log_stage(logger, "fewshot_disabled", "fewshot 已禁用", round_id=round_id)
             return prompt, report, [], []
 
         mined = self._mine_candidates(base_evaluations, sample_states)
@@ -86,8 +93,11 @@ class FewShotOptimizationEngine:
         candidates = self._dedupe_candidates([*candidate_pool.eligible_candidates(), *mined])
         report.candidate_count = len(candidates)
         report.candidate_pool_size = len(candidate_pool.candidates)
+        log_stage(logger, "fewshot_candidates_mined", "fewshot 候选挖掘完成",
+                  round_id=round_id, mined_count=len(mined), total_candidates=len(candidates))
         if not candidates:
             report.failure_reason = "NO_FAILED_SAMPLE_CANDIDATES"
+            log_stage(logger, "fewshot_no_candidates", "无 fewshot 候选", round_id=round_id)
             return prompt, report, [], []
 
         report.triggered = True
@@ -125,6 +135,8 @@ class FewShotOptimizationEngine:
                 report.failure_reason = "NO_REPLACEMENT_SLOT_AND_CAPACITY_FULL"
                 return prompt, report, all_runs, all_evaluations
             candidate_prompt, fewshot_set = self._candidate_prompt(prompt, example, new_version=prompt.version + 1, max_slots=max_slots, replace_slot=replace_slot)
+            log_stage(logger, "fewshot_candidate_test_start", "fewshot 候选测试开始",
+                      round_id=round_id, candidate_id=candidate.id, sample_id=candidate.sample_id)
             run_result = self._run_prompt(round_id, candidate_prompt, behavior_samples, assets, ground_truths, contract, candidate.id, RunType.FEW_SHOT_TEST.value)
             all_runs.extend(run_result.runs)
             all_evaluations.extend(run_result.evaluations)
@@ -135,6 +147,9 @@ class FewShotOptimizationEngine:
                 candidate.rejection_reason = "FEWSHOT_REGRESSION_OR_INSUFFICIENT_GAIN"
                 self._record_rejection(report, candidate, delta, broken, schema_violations, candidate.rejection_reason)
                 candidate_pool.mark_tested(candidate_id=candidate.id, round_id=round_id, accuracy_delta=delta, accepted=False, rejection_reason=candidate.rejection_reason, broken_sample_ids=broken)
+                log_stage(logger, "fewshot_candidate_rejected", "fewshot 候选被拒绝",
+                          round_id=round_id, candidate_id=candidate.id, reason=candidate.rejection_reason,
+                          accuracy_delta=delta, broken_count=len(broken))
                 continue
 
             candidate_report = replace(report)
@@ -166,9 +181,13 @@ class FewShotOptimizationEngine:
                     accuracy_delta=best_report.accuracy_delta,
                     accepted=True,
                 )
+            log_stage(logger, "fewshot_accepted", "fewshot 优化已接受",
+                      round_id=round_id, candidate_id=best_report.selected_candidate_id,
+                      accuracy_delta=best_report.accuracy_delta, operation_type=best_report.operation_type)
             return best_prompt, best_report, all_runs, all_evaluations
 
         report.failure_reason = "NO_SAFE_FEWSHOT_CANDIDATE"
+        log_stage(logger, "fewshot_no_safe_candidate", "无安全 fewshot 候选", round_id=round_id)
         return prompt, report, all_runs, all_evaluations
 
     def _run_prompt(self, round_id: str, prompt: PromptVersion, samples: list[Sample], assets: dict[str, SampleAsset], ground_truths: dict[str, GroundTruth], contract: OutputSchemaContract, suffix: str, run_type: str):

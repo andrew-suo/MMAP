@@ -7,7 +7,7 @@ from typing import Any
 from mmap_optimizer.analysis.parser import parse_analysis_output_with_repair
 from mmap_optimizer.analysis.record import AnalysisRecord
 from mmap_optimizer.evaluation.evaluator import EvaluationRecord
-from mmap_optimizer.logging import get_logger
+from mmap_optimizer.logging import get_logger, log_stage
 from mmap_optimizer.model.client import ModelClient
 
 logger = get_logger(__name__)
@@ -64,10 +64,7 @@ class AnalysisRunner:
         for evaluation in error_evaluations:
             source_run = extraction_runs.get(evaluation.sample_id)
             if source_run is None:
-                logger.warning(
-                    "No extraction run found for sample_id=%s, skipping analysis",
-                    evaluation.sample_id,
-                )
+                log_stage(logger, "analysis_skip", "跳过分析（无抽取记录）", sample_id=evaluation.sample_id)
                 continue
             metadata = sample_metadata.get(evaluation.sample_id, {})
             mock_output = metadata.get("mock_analysis_output")

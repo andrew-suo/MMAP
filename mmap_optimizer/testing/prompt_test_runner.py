@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import mimetypes
 import time
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from mmap_optimizer.dataset.sample import GroundTruth, Sample, SampleAsset
 from mmap_optimizer.evaluation.evaluator import EvaluationRecord, Evaluator
@@ -12,6 +16,8 @@ from mmap_optimizer.model.client import ModelClient
 from mmap_optimizer.orchestration.executor import map_ordered
 from mmap_optimizer.orchestration.records import RunRecord
 from mmap_optimizer.prompt.contract import OutputSchemaContract
+from mmap_optimizer.prompt.ir import PromptIR
+from mmap_optimizer.prompt.renderer import PromptRenderer
 from mmap_optimizer.prompt.version import PromptVersion
 
 logger = get_logger(__name__)
@@ -26,63 +32,141 @@ class PromptTestRunResult:
 FEWSHOT_SECTION_ID = "few_shot_examples"
 
 
-def _extract_fewshot_asset_ids(prompt: PromptVersion, samples: list[Sample]) -> list[str]:
-    """Extract few-shot example asset_ids from prompt conservatively.
+def _asset_to_image_part(asset: SampleAsset) -> dict[str, Any]:
+    """Convert a SampleAsset to an OpenAI-compatible image_url content part."""
+    if asset.local_path:
+        path = Path(asset.local_path)
+        mime = asset.mime_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        url = f"data:{mime};base64,{encoded}"
+    elif asset.uri:
+        url = asset.uri
+    else:
+        raise ValueError(f"Image asset {asset.id!r} must provide local_path or uri")
+    image_url: dict[str, Any] = {"url": url}
+    if asset.metadata and asset.metadata.get("openai_image_detail"):
+        image_url["detail"] = asset.metadata["openai_image_detail"]
+    return {"type": "image_url", "image_url": image_url}
 
-    This function looks for few-shot asset_ids in:
-    1. prompt.prompt_ir.global_constraints["fewshot_asset_ids"]
-    2. prompt.prompt_ir.global_constraints["asset_ids"]
-    3. section.constraints["fewshot_asset_ids"] for few-shot sections
-    4. section.constraints["asset_ids"] for few-shot sections
-    5. Parsed from few-shot section content (FEW_SHOT_SAMPLE:{sample_id} format)
 
-    Returns a deduplicated list of asset_ids while preserving order.
+def _parse_fewshot_slots(content: str) -> list[dict[str, Any]]:
+    """Parse few-shot slots from section content.
+
+    Each slot has: slot_index, source_sample_id, reasoning_text, final_output.
     """
-    asset_ids: list[str] = []
-    seen: set[str] = set()
+    slots: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    section: str | None = None
+    section_lines: list[str] = []
+    for line in content.splitlines():
+        if line.startswith("FEW_SHOT_SLOT:"):
+            if current is not None:
+                if section is not None:
+                    current[section] = "\n".join(section_lines).strip()
+                slots.append(current)
+            try:
+                slot_index = int(line.split(":", 1)[1])
+            except (ValueError, IndexError):
+                current = None
+                section = None
+                section_lines = []
+                continue
+            current = {"slot_index": slot_index, "source_sample_id": None, "reasoning_text": "", "final_output": ""}
+            section = None
+            section_lines = []
+        elif line.startswith("FEW_SHOT_SAMPLE:") and current is not None:
+            current["source_sample_id"] = line.split(":", 1)[1]
+        elif line == "FEW_SHOT_REASONING:" and current is not None:
+            if section is not None:
+                current[section] = "\n".join(section_lines).strip()
+            section = "reasoning_text"
+            section_lines = []
+        elif line == "FEW_SHOT_OUTPUT:" and current is not None:
+            if section is not None:
+                current[section] = "\n".join(section_lines).strip()
+            section = "final_output"
+            section_lines = []
+        elif section is not None:
+            section_lines.append(line)
+    if current is not None:
+        if section is not None:
+            current[section] = "\n".join(section_lines).strip()
+        slots.append(current)
+    return slots
+
+
+def _render_system_without_fewshot(prompt: PromptVersion) -> str:
+    """Render the prompt text excluding the few-shot section.
+
+    This produces the system message content when few-shot examples are
+    injected as multi-turn user/assistant messages instead.
+    """
+    ir = prompt.prompt_ir
+    sections = [
+        s.clone_with_content(s.content, rendering_enabled=False) if s.id == FEWSHOT_SECTION_ID else s
+        for s in ir.sections
+    ]
+    modified_ir = PromptIR(
+        id=ir.id,
+        prompt_type=ir.prompt_type,
+        version=ir.version,
+        output_schema_contract_id=ir.output_schema_contract_id,
+        sections=sections,
+        rendering_order=ir.rendering_order,
+        include_section_markers=ir.include_section_markers,
+        global_constraints=ir.global_constraints,
+        parent_prompt_ir_id=ir.parent_prompt_ir_id,
+        applied_patch_ids=ir.applied_patch_ids,
+        compression_patch_ids=ir.compression_patch_ids,
+    )
+    rendered = PromptRenderer().render(modified_ir)
+    return rendered.text
+
+
+def _build_fewshot_messages(
+    slots: list[dict[str, Any]],
+    samples: list[Sample],
+    assets: dict[str, SampleAsset],
+) -> list[dict[str, Any]]:
+    """Build multi-turn user/assistant messages from few-shot slots.
+
+    Each slot becomes a user message (text + image content parts) followed by
+    an assistant message (the expected output JSON).
+    """
     sample_by_id = {s.id: s for s in samples}
+    messages: list[dict[str, Any]] = []
+    for slot in slots:
+        sample_id = slot.get("source_sample_id")
+        sample = sample_by_id.get(sample_id) if sample_id else None
 
-    ir = getattr(prompt, "prompt_ir", None)
-    if ir is not None:
-        global_constraints = getattr(ir, "global_constraints", {}) or {}
-        for key in ("fewshot_asset_ids", "asset_ids"):
-            ids = global_constraints.get(key, [])
-            if isinstance(ids, list):
-                for asset_id in ids:
-                    if asset_id not in seen:
-                        seen.add(asset_id)
-                        asset_ids.append(asset_id)
+        content_parts: list[dict[str, Any]] = []
+        reasoning = slot.get("reasoning_text", "")
+        sample_label = f"FEW_SHOT_SAMPLE:{sample_id}" if sample_id else "FEW_SHOT_SAMPLE:unknown"
+        if reasoning:
+            content_parts.append({"type": "text", "text": f"{sample_label}\n{reasoning}"})
+        else:
+            content_parts.append({"type": "text", "text": f"{sample_label}\n请从下面图片中抽取字段。"})
 
-    if ir is not None:
-        for section in getattr(ir, "sections", []) or []:
-            if section.id == FEWSHOT_SECTION_ID:
-                section_constraints = getattr(section, "constraints", {}) or {}
-                for key in ("fewshot_asset_ids", "asset_ids"):
-                    ids = section_constraints.get(key, [])
-                    if isinstance(ids, list):
-                        for asset_id in ids:
-                            if asset_id not in seen:
-                                seen.add(asset_id)
-                                asset_ids.append(asset_id)
+        if sample is not None:
+            for asset_id in sample.asset_ids:
+                asset = assets.get(asset_id)
+                if asset is not None:
+                    content_parts.append(_asset_to_image_part(asset))
 
-    fewshot_section = None
-    if ir is not None:
-        fewshot_section = ir.section_by_id(FEWSHOT_SECTION_ID)
+        messages.append({"role": "user", "content": content_parts})
 
-    if fewshot_section is not None:
-        content = fewshot_section.content or ""
-        for line in content.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("FEW_SHOT_SAMPLE:"):
-                sample_id = stripped.split(":", 1)[1].strip()
-                if sample_id in sample_by_id:
-                    sample = sample_by_id[sample_id]
-                    for asset_id in sample.asset_ids:
-                        if asset_id not in seen:
-                            seen.add(asset_id)
-                            asset_ids.append(asset_id)
+        output = slot.get("final_output", "")
+        if output:
+            try:
+                parsed = json.loads(output)
+                output_text = json.dumps(parsed, ensure_ascii=False, sort_keys=True)
+            except (json.JSONDecodeError, TypeError):
+                output_text = output
+        else:
+            output_text = "{}"
+        messages.append({"role": "assistant", "content": output_text})
 
-    return asset_ids
+    return messages
 
 
 class PromptTestRunner:
@@ -119,13 +203,25 @@ class PromptTestRunner:
         runs: list[RunRecord] = []
         evals: list[EvaluationRecord] = []
         suffix = f"_{run_id_suffix}" if run_id_suffix else ""
-        fewshot_asset_ids = _extract_fewshot_asset_ids(prompt, samples)
-        fewshot_assets = [assets[asset_id] for asset_id in fewshot_asset_ids if asset_id in assets]
-        log_stage(logger, "fewshot_assets_extracted", fewshot_count=len(fewshot_assets), fewshot_asset_ids=fewshot_asset_ids)
+
+        # 解析 few-shot slots，构造多轮 messages
+        fewshot_section = prompt.prompt_ir.section_by_id(FEWSHOT_SECTION_ID) if hasattr(prompt, "prompt_ir") else None
+        fewshot_slots: list[dict[str, Any]] = []
+        if fewshot_section is not None and fewshot_section.content and fewshot_section.content.strip():
+            fewshot_slots = _parse_fewshot_slots(fewshot_section.content)
+
+        if fewshot_slots:
+            system_text = _render_system_without_fewshot(prompt)
+            fewshot_messages = _build_fewshot_messages(fewshot_slots, samples, assets)
+            log_stage(logger, "fewshot_multiturn_enabled", slot_count=len(fewshot_slots), message_pairs=len(fewshot_messages))
+        else:
+            system_text = rendered.text
+            fewshot_messages = []
+            log_stage(logger, "fewshot_assets_extracted", fewshot_count=0, fewshot_asset_ids=[])
 
         def run_one(sample: Sample) -> tuple[RunRecord, EvaluationRecord]:
             sample_start_time = time.perf_counter()
-            log_stage(logger, "sample_start", sample_id=sample.id, asset_count=len(sample.asset_ids), fewshot_asset_count=len(fewshot_asset_ids))
+            log_stage(logger, "sample_start", sample_id=sample.id, asset_count=len(sample.asset_ids), fewshot_slot_count=len(fewshot_slots))
             user_payload = {
                 "sample_id": sample.id,
                 "text_context": sample.text_context,
@@ -133,12 +229,14 @@ class PromptTestRunner:
                 "mock_output": sample.metadata.get("mock_output"),
                 "mock_prompt_outputs": sample.metadata.get("mock_prompt_outputs", []),
             }
-            messages = [
-                {"role": "system", "content": rendered.text},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-            ]
             sample_assets = [assets[asset_id] for asset_id in sample.asset_ids if asset_id in assets]
-            all_assets = fewshot_assets + sample_assets
+
+            # 构造 messages：system + fewshot多轮 + 当前样本user
+            base_messages: list[dict[str, Any]] = [
+                {"role": "system", "content": system_text},
+            ]
+            base_messages.extend(fewshot_messages)
+
             gt = ground_truths.get(sample.ground_truth_id)
             vote_mode = self.enable_voting and (gt is None or gt.primary_answer is None)
             raw_outputs: list[str] = []
@@ -148,12 +246,13 @@ class PromptTestRunner:
                     payload = dict(user_payload)
                     if vote_mode:
                         payload["vote_round"] = vote_index + 1
-                    messages[-1]["content"] = json.dumps(payload, ensure_ascii=False)
-                    log_stage(logger, "model_call_start", sample_id=sample.id, vote_index=vote_index)
+                    messages = list(base_messages)
+                    messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False)})
+                    log_stage(logger, "model_call_start", sample_id=sample.id, vote_index=vote_index, message_count=len(messages))
                     call_start = time.perf_counter()
                     response = self.model_client.complete_multimodal(
                         messages,
-                        all_assets,
+                        sample_assets,
                         model_config=self.model_config,
                     )
                     call_duration_ms = int((time.perf_counter() - call_start) * 1000)

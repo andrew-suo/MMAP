@@ -1021,7 +1021,7 @@ def test_round_runner_replaces_fewshot_slot_when_capacity_full(tmp_path: Path):
     analysis_contract = contract(PromptType.ANALYSIS)
     extraction_prompt = _with_fewshot_section(
         initialize_prompt_version("stable extraction", PromptType.EXTRACTION, extraction_contract),
-        "FEW_SHOT_SLOT:1\nFEW_SHOT_SAMPLE:old_sample\n分析过程示例:\n旧示例\n最终输出示例:\n{}",
+        "FEW_SHOT_SLOT:1\nFEW_SHOT_SAMPLE:old_sample\nFEW_SHOT_REASONING:\n旧示例\nFEW_SHOT_OUTPUT:\n{}",
     )
     analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
     samples = [

@@ -331,19 +331,41 @@ class FewShotOptimizationEngine:
     def _parse_slots_from_content(self, content: str) -> list[dict[str, Any]]:
         slots: list[dict[str, Any]] = []
         current: dict[str, Any] | None = None
+        section: str | None = None
+        section_lines: list[str] = []
         for line in content.splitlines():
             if line.startswith("FEW_SHOT_SLOT:"):
                 if current is not None:
+                    if section is not None:
+                        current[section] = "\n".join(section_lines).strip()
                     slots.append(current)
                 try:
                     slot_index = int(line.split(":", 1)[1])
                 except (ValueError, IndexError):
                     current = None
+                    section = None
+                    section_lines = []
                     continue
-                current = {"slot_index": slot_index, "source_sample_id": None}
+                current = {"slot_index": slot_index, "source_sample_id": None, "reasoning_text": "", "final_output": ""}
+                section = None
+                section_lines = []
             elif line.startswith("FEW_SHOT_SAMPLE:") and current is not None:
                 current["source_sample_id"] = line.split(":", 1)[1]
+            elif line == "FEW_SHOT_REASONING:" and current is not None:
+                if section is not None:
+                    current[section] = "\n".join(section_lines).strip()
+                section = "reasoning_text"
+                section_lines = []
+            elif line == "FEW_SHOT_OUTPUT:" and current is not None:
+                if section is not None:
+                    current[section] = "\n".join(section_lines).strip()
+                section = "final_output"
+                section_lines = []
+            elif section is not None:
+                section_lines.append(line)
         if current is not None:
+            if section is not None:
+                current[section] = "\n".join(section_lines).strip()
             slots.append(current)
         return slots
 
@@ -364,9 +386,9 @@ class FewShotOptimizationEngine:
             [
                 f"FEW_SHOT_SLOT:{slot_index}",
                 f"FEW_SHOT_SAMPLE:{example.source_sample_id}",
-                "分析过程示例:",
+                "FEW_SHOT_REASONING:",
                 example.reasoning_text,
-                "最终输出示例:",
+                "FEW_SHOT_OUTPUT:",
                 json.dumps(example.final_output, ensure_ascii=False, sort_keys=True),
             ]
         )

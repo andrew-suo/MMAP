@@ -81,6 +81,7 @@ class OptimizerLoop:
                 round_index = effective_start + offset
                 round_start_time = time.perf_counter()
                 log_stage(logger, "round_start", f"第 {round_index} 轮开始", round=round_index, planned_rounds=planned_rounds,
+                          progress=f"{round_index}/{planned_rounds}",
                           input_extraction_prompt_id=state.active_extraction_prompt.id,
                           input_analysis_prompt_id=state.active_analysis_prompt.id)
                 round_record, metrics, global_iteration_counter = self.runner.run_round(state, round_index=round_index, global_iteration_counter=global_iteration_counter)
@@ -95,6 +96,7 @@ class OptimizerLoop:
                 self._write_trend_and_summary(summary, metrics_records)
                 self._save_checkpoint(round_index, state, metrics, fewshot_pool_path=str(self.store.root / "fewshot_candidate_pool.json"))
                 log_stage(logger, "round_done", f"第 {round_index} 轮完成", round=round_index, duration_ms=round_duration_ms,
+                          progress=f"{round_index}/{planned_rounds}",
                           accepted_patch_count=len(round_record.accepted_patch_ids) if round_record.accepted_patch_ids else 0,
                           rejected_patch_count=len(round_record.rejected_patch_ids) if round_record.rejected_patch_ids else 0,
                           batch_accuracy=metrics.batch_accuracy)
@@ -102,8 +104,11 @@ class OptimizerLoop:
             summary.status = "COMPLETED"
             summary.stopped_reason = "PLANNED_ROUNDS_COMPLETED"
             self._write_trend_and_summary(summary, metrics_records)
+            accuracy_delta = (summary.final_batch_accuracy - summary.first_batch_accuracy) if summary.first_batch_accuracy is not None and summary.final_batch_accuracy is not None else None
             log_stage(logger, "optimizer_done", "优化器完成", status="COMPLETED", completed_rounds=len(rounds),
+                      progress=f"{len(rounds)}/{planned_rounds}",
                       final_batch_accuracy=summary.final_batch_accuracy,
+                      accuracy_delta=accuracy_delta,
                       total_accepted_patches=summary.total_accepted_patches,
                       total_rejected_patches=summary.total_rejected_patches)
             return rounds, metrics_records, summary

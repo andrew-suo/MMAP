@@ -46,8 +46,14 @@ class OpenAICompatibleClient:
             content = body["choices"][0]["message"]["content"]
             if content is None:
                 content = ""
+            usage = body.get("usage") or {}
+            usage_tokens = f"{usage.get('prompt_tokens', 0)}/{usage.get('completion_tokens', 0)}"
+            preview = (content or "")[:120].replace("\n", "\\n")
             log_stage(logger, "model_response_done", "模型响应完成",
-                model=payload.get("model"), duration_ms=duration_ms, response_chars=len(content) if content else 0)
+                model=payload.get("model"), duration_ms=duration_ms,
+                response_chars=len(content) if content else 0,
+                response_preview=preview,
+                usage_tokens=usage_tokens)
             return ModelResponse(raw_output=content, metadata={"usage": body.get("usage"), "response_id": body.get("id")})
         except Exception as exc:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
@@ -74,8 +80,14 @@ class OpenAICompatibleClient:
             content = body["choices"][0]["message"]["content"]
             if content is None:
                 content = ""
+            usage = body.get("usage") or {}
+            usage_tokens = f"{usage.get('prompt_tokens', 0)}/{usage.get('completion_tokens', 0)}"
+            preview = (content or "")[:120].replace("\n", "\\n")
             log_stage(logger, "model_response_done", "模型响应完成",
-                model=payload.get("model"), duration_ms=duration_ms, response_chars=len(content) if content else 0)
+                model=payload.get("model"), duration_ms=duration_ms,
+                response_chars=len(content) if content else 0,
+                response_preview=preview,
+                usage_tokens=usage_tokens)
             return ModelResponse(
                 raw_output=content,
                 metadata={"usage": body.get("usage"), "response_id": body.get("id"), "asset_count": len(assets)},

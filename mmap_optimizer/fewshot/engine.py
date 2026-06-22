@@ -97,7 +97,7 @@ class FewShotOptimizationEngine:
                   round_id=round_id, mined_count=len(mined), total_candidates=len(candidates))
         if not candidates:
             report.failure_reason = "NO_FAILED_SAMPLE_CANDIDATES"
-            log_stage(logger, "fewshot_no_candidates", "无 fewshot 候选", round_id=round_id)
+            log_stage(logger, "fewshot_no_candidates", "无 fewshot 候选", round_id=round_id, mined_count=len(mined))
             return prompt, report, [], []
 
         report.triggered = True
@@ -108,7 +108,7 @@ class FewShotOptimizationEngine:
         best_safe: tuple[float, PromptVersion, FewShotOptimizationReport] | None = None
         sample_by_id = {sample.id: sample for sample in samples}
         existing_sample_ids = {slot.get("source_sample_id") for slot in slots}
-        for candidate in candidates:
+        for candidate_index, candidate in enumerate(candidates, 1):
             if candidate.sample_id in existing_sample_ids:
                 continue
             source_sample = sample_by_id.get(candidate.sample_id)
@@ -136,7 +136,8 @@ class FewShotOptimizationEngine:
                 return prompt, report, all_runs, all_evaluations
             candidate_prompt, fewshot_set = self._candidate_prompt(prompt, example, new_version=prompt.version + 1, max_slots=max_slots, replace_slot=replace_slot)
             log_stage(logger, "fewshot_candidate_test_start", "fewshot 候选测试开始",
-                      round_id=round_id, candidate_id=candidate.id, sample_id=candidate.sample_id)
+                      round_id=round_id, candidate_id=candidate.id, sample_id=candidate.sample_id,
+                      progress=f"{candidate_index}/{len(candidates)}")
             run_result = self._run_prompt(round_id, candidate_prompt, behavior_samples, assets, ground_truths, contract, candidate.id, RunType.FEW_SHOT_TEST.value)
             all_runs.extend(run_result.runs)
             all_evaluations.extend(run_result.evaluations)

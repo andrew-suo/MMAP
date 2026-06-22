@@ -286,11 +286,13 @@ class RoundRunner:
                         ))
                         log_stage(logger, "analysis_iteration_rolled_back", "分析迭代已回滚", round=round_index,
                                   reason=analysis_result.rejection_reason,
+                                  progress=f"{accepted_iteration_count}/{self.config.max_text_rounds}",
                                   base_accuracy=analysis_result.base_accuracy,
                                   patched_accuracy=analysis_result.patched_accuracy,
                                   patch_count=analysis_result.patch_count)
                     else:
                         log_stage(logger, "analysis_iteration_accepted", "分析迭代已接受", round=round_index,
+                                  progress=f"{accepted_iteration_count}/{self.config.max_text_rounds}",
                                   patch_count=analysis_result.patch_count,
                                   base_accuracy=analysis_result.base_accuracy,
                                   patched_accuracy=analysis_result.patched_accuracy)
@@ -1296,7 +1298,13 @@ class RoundRunner:
             patch_count: int
             rejection_reason: str | None
 
+        log_stage(logger, "analysis_optimization_start", "分析 prompt 优化开始",
+                  round=round_index,
+                  blind_eval_count=len(blind_evaluation_records))
+
         if not blind_evaluation_records:
+            log_stage(logger, "analysis_skipped", "分析优化跳过",
+                      round=round_index, reason="no_blind_evaluation_records")
             return AnalysisOptimizationResult(
                 accepted=False,
                 base_accuracy=None, base_correct_count=None, base_total_count=None,
@@ -1310,6 +1318,8 @@ class RoundRunner:
         ]
 
         if not error_sample_ids:
+            log_stage(logger, "analysis_skipped", "分析优化跳过",
+                      round=round_index, reason="no_analysis_errors", base_accuracy=1.0)
             return AnalysisOptimizationResult(
                 accepted=False,
                 base_accuracy=1.0, base_correct_count=len(blind_evaluation_records), base_total_count=len(blind_evaluation_records),
@@ -1323,12 +1333,19 @@ class RoundRunner:
         sample_by_id = {s.id: s for s in state.samples}
         error_samples = [sample_by_id[sid] for sid in error_sample_ids if sid in sample_by_id]
 
+        log_stage(logger, "analysis_base_run_start", "分析基线测试开始",
+                  round=round_index, sample_count=len(error_samples))
+
         analysis_runs: list = []
         analysis_results: list = []
-        for sample in error_samples:
+        total_samples = len(error_samples)
+        for i, sample in enumerate(error_samples, 1):
             blind_rec = blind_evaluation_records.get(sample.id)
             if blind_rec is None:
                 continue
+            log_stage(logger, "analysis_sample_start", "分析样本测试开始",
+                      round=round_index, sample_id=sample.id,
+                      progress=f"{i}/{total_samples}", phase="base")
             result = AnalysisRunner(
                 model_client=self.optimizer_client,
                 model_id=self.config.optimizer_model.model,
@@ -1342,10 +1359,19 @@ class RoundRunner:
                 metadata=sample.metadata,
             )
             analysis_results.append(result)
+            log_stage(logger, "analysis_sample_done", "分析样本测试完成",
+                      round=round_index, sample_id=sample.id,
+                      progress=f"{i}/{total_samples}", phase="base",
+                      matches_truth=result.get("matches_truth"),
+                      parse_success=result.get("parse_success"))
 
         base_correct = sum(1 for r in analysis_results if r.get("matches_truth"))
         base_total = len(analysis_results)
         base_acc = base_correct / base_total if base_total else 0.0
+
+        log_stage(logger, "analysis_base_run_done", "分析基线测试完成",
+                  round=round_index, sample_count=base_total,
+                  base_accuracy=base_acc, correct_count=base_correct)
 
         self._save_intermediate(round_id, "analysis_optimization_base_done", {
             "base_accuracy": base_acc,
@@ -1354,11 +1380,16 @@ class RoundRunner:
         })
 
         # Generate patches for analysis prompt
+        log_stage(logger, "analysis_patch_generation_start", "分析补丁生成开始",
+                  round=round_index, sample_count=total_samples)
         draft_patches: list = []
-        for sample in error_samples:
+        for i, sample in enumerate(error_samples, 1):
             blind_rec = blind_evaluation_records.get(sample.id)
             if blind_rec is None:
                 continue
+            log_stage(logger, "analysis_patch_gen_start", "分析补丁生成开始",
+                      round=round_index, sample_id=sample.id,
+                      progress=f"{i}/{total_samples}")
             reflection = next((r for r in reflection_records if r.sample_id == sample.id), None)
             gen_result = AnalysisRunner(
                 model_client=self.optimizer_client,
@@ -1378,6 +1409,13 @@ class RoundRunner:
             )
             draft_patches.extend(gen_result.draft_patches)
             analysis_runs.extend(gen_result.analysis_runs)
+            log_stage(logger, "analysis_patch_gen_done", "分析补丁生成完成",
+                      round=round_index, sample_id=sample.id,
+                      progress=f"{i}/{total_samples}",
+                      draft_patch_count=len(gen_result.draft_patches))
+
+        log_stage(logger, "analysis_patch_generation_done", "分析补丁生成完成",
+                  round=round_index, draft_patch_count=len(draft_patches))
 
         # Validate patches against analysis prompt IR
         validator = PatchValidator()
@@ -1388,7 +1426,14 @@ class RoundRunner:
                 patch.status = "candidate"
                 candidate_patches.append(patch)
 
+        log_stage(logger, "analysis_patch_validation_done", "分析补丁校验完成",
+                  round=round_index, candidate_count=len(candidate_patches),
+                  rejected_count=len(draft_patches) - len(candidate_patches))
+
         if not candidate_patches:
+            log_stage(logger, "analysis_skipped", "分析优化跳过",
+                      round=round_index, reason="no_valid_analysis_patches",
+                      base_accuracy=base_acc)
             return AnalysisOptimizationResult(
                 accepted=False,
                 base_accuracy=base_acc,
@@ -1423,7 +1468,13 @@ class RoundRunner:
             semantic_processor = SemanticPatchProcessor(self.optimizer_client, self._optimizer_model_config())
             merged_patches = semantic_processor.merge(merged_patches, state.active_analysis_prompt.prompt_ir)
 
+        log_stage(logger, "analysis_patch_merge_done", "分析补丁合并完成",
+                  round=round_index, merged_patch_count=len(merged_patches))
+
         if not merged_patches:
+            log_stage(logger, "analysis_skipped", "分析优化跳过",
+                      round=round_index, reason="analysis_merge_empty",
+                      base_accuracy=base_acc)
             return AnalysisOptimizationResult(
                 accepted=False,
                 base_accuracy=base_acc,
@@ -1441,11 +1492,17 @@ class RoundRunner:
             next_version += 1
 
         # Re-test analysis on error samples
+        log_stage(logger, "analysis_patched_test_start", "分析补丁后重测开始",
+                  round=round_index, sample_count=total_samples,
+                  patch_count=len(merged_patches))
         patched_results = []
-        for sample in error_samples:
+        for i, sample in enumerate(error_samples, 1):
             blind_rec = blind_evaluation_records.get(sample.id)
             if blind_rec is None:
                 continue
+            log_stage(logger, "analysis_sample_start", "分析样本测试开始",
+                      round=round_index, sample_id=sample.id,
+                      progress=f"{i}/{total_samples}", phase="patched")
             result = AnalysisRunner(
                 model_client=self.optimizer_client,
                 model_id=self.config.optimizer_model.model,
@@ -1459,14 +1516,27 @@ class RoundRunner:
                 metadata=sample.metadata,
             )
             patched_results.append(result)
+            log_stage(logger, "analysis_sample_done", "分析样本测试完成",
+                      round=round_index, sample_id=sample.id,
+                      progress=f"{i}/{total_samples}", phase="patched",
+                      matches_truth=result.get("matches_truth"),
+                      parse_success=result.get("parse_success"))
 
         patched_correct = sum(1 for r in patched_results if r.get("matches_truth"))
         patched_total = len(patched_results)
         patched_acc = patched_correct / patched_total if patched_total else None
 
+        log_stage(logger, "analysis_patched_test_done", "分析补丁后重测完成",
+                  round=round_index, patched_accuracy=patched_acc,
+                  correct_count=patched_correct, total_count=patched_total)
+
         # Accept if accuracy improved or stayed same
         if patched_acc is not None and patched_acc >= base_acc:
             state.active_analysis_prompt = temp_prompt
+            log_stage(logger, "analysis_optimization_done", "分析 prompt 优化完成",
+                      round=round_index, accepted=True,
+                      base_accuracy=base_acc, patched_accuracy=patched_acc,
+                      patch_count=len(merged_patches), rejection_reason=None)
             return AnalysisOptimizationResult(
                 accepted=True,
                 base_accuracy=base_acc,
@@ -1479,6 +1549,10 @@ class RoundRunner:
                 rejection_reason=None,
             )
         else:
+            log_stage(logger, "analysis_optimization_done", "分析 prompt 优化完成",
+                      round=round_index, accepted=False,
+                      base_accuracy=base_acc, patched_accuracy=patched_acc,
+                      patch_count=0, rejection_reason="analysis_accuracy_degraded")
             return AnalysisOptimizationResult(
                 accepted=False,
                 base_accuracy=base_acc,
@@ -1545,6 +1619,11 @@ class RoundRunner:
                 )
             )
 
+        log_stage(logger, "analysis_evolution_start", "分析影子进化开始",
+                  round_id=round_id,
+                  rejected_patch_count=len(rejected_patches),
+                  toxic_patch_count=len(toxic_patches))
+
         engine = AnalysisEvolutionEngine()
         report = engine.evolve(
             round_id=round_id,
@@ -1561,8 +1640,17 @@ class RoundRunner:
         self.store.write_json(f"{round_id}/reports/analysis_evolution_report.json", report)
 
         round_record.analysis_evolution_report_id = report.id
-        if getattr(report, "promoted", False) and report.candidate_prompt is not None:
+        promoted = getattr(report, "promoted", False) and report.candidate_prompt is not None
+        if promoted:
             state.active_analysis_prompt = report.candidate_prompt
+            log_stage(logger, "analysis_evolution_promoted", "分析影子进化已提升",
+                      round_id=round_id, report_id=report.id)
+        else:
+            log_stage(logger, "analysis_evolution_skipped", "分析影子进化未提升",
+                      round_id=round_id, report_id=report.id, reason="no_candidate")
+
+        log_stage(logger, "analysis_evolution_done", "分析影子进化完成",
+                  round_id=round_id, report_id=report.id, promoted=promoted)
 
         return report
 

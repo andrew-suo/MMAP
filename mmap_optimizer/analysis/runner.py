@@ -226,6 +226,11 @@ class AnalysisRunner:
             max_attempts=self.json_repair_max_attempts,
         )
 
+        log_stage(logger, "analysis_sample_model_done", "分析样本模型响应完成",
+                  sample_id=sample_id, round_id=round_id,
+                  parse_success=parse_result.parse_success,
+                  schema_valid=parse_result.schema_valid)
+
         judgement = parse_result.parsed.get("judgement", {}) if isinstance(parse_result.parsed, dict) else {}
         is_correct_from_judgement = judgement.get("is_correct") if isinstance(judgement, dict) else None
         if isinstance(judgement, dict):

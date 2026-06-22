@@ -93,7 +93,7 @@ class OptimizerLoop:
                 summary.final_extraction_prompt_version_id = state.active_extraction_prompt.id
                 summary.final_analysis_prompt_version_id = state.active_analysis_prompt.id
                 self._write_trend_and_summary(summary, metrics_records)
-                self._save_checkpoint(round_index, state, metrics, fewshot_pool_path=None)
+                self._save_checkpoint(round_index, state, metrics, fewshot_pool_path=str(self.store.root / "fewshot_candidate_pool.json"))
                 log_stage(logger, "round_done", round=round_index, duration_ms=round_duration_ms,
                           accepted_patch_count=len(round_record.accepted_patch_ids) if round_record.accepted_patch_ids else 0,
                           rejected_patch_count=len(round_record.rejected_patch_ids) if round_record.rejected_patch_ids else 0,

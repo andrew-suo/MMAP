@@ -1,0 +1,65 @@
+# MMAP 重构版配置示例 v1.0
+# 根据设计文档创建的配置结构
+
+run:
+  seed: 42
+  output_dir: runs/exp_001
+
+dataset:
+  path: data/samples.jsonl
+  format: jsonl
+  image_root: data/images
+  ground_truth_path: data/ground_truth.jsonl
+
+prompt_structuring:
+  enabled: true
+  use_model_when_structure_poor: true
+
+sampling:
+  ema_alpha: 0.3
+
+prompt_optimization:
+  enabled: true
+  rounds: 3
+  initial_batch_size: 16
+  min_batch_size: 8
+  max_batch_size: 99
+
+  batch_size_controller:
+    enabled: true
+    growth_factor: 2.0
+    decrease_factor: 0.8
+    improvement_epsilon: 0.0
+    shrink_on_rollback: true
+    shrink_on_no_progress: true
+
+  sampler:
+    type: difficulty_frequency
+    difficulty_weight: 0.7
+    frequency_weight: 0.3
+
+  extraction_prompt:
+    line_limit: 300
+    char_limit: 20000
+    compression_enabled: true
+
+  analysis_prompt:
+    line_limit: 250
+    char_limit: 16000
+    compression_enabled: true
+
+  patch:
+    merge_strategy: tree_merge
+    toxicity_test:
+      enabled: true
+      early_stop: true
+      sort_by_source_difficulty: true
+
+fewshot_optimization:
+  enabled: true
+  rounds: 2
+  batch_size: 99
+  slot_count: 5
+
+  sampler:
+    type: frequency

@@ -1,0 +1,32 @@
+# Checklist
+
+- [ ] `RunPlan` 与 `RunPlanItem` dataclass 已在 `orchestration/records.py` 中定义
+- [ ] `RunPlanBuilder.build(config)` 能根据 `prompt_optimization` / `fewshot_optimization` 配置生成正确的有序 RunPlan
+- [ ] `RunPlanBuilder` 单元测试覆盖：两阶段均启用、仅 prompt、仅 fewshot、均禁用四种场景
+- [ ] `PromptOptimizationConfig` 与 `FewShotOptimizationConfig` dataclass 已定义，字段包含 `enabled` / `rounds` / `batch_size` / `acceptance_strategy` / `output_dir`
+- [ ] `OptimizerConfig` 包含 `prompt_optimization` 与 `fewshot_optimization` 字段
+- [ ] `optimizer_config_from_mapping` 能解析新的 `prompt_optimization` / `fewshot_optimization` 段
+- [ ] 当新配置段缺失时，系统回退到旧字段（`max_text_rounds` / `fewshot_enabled` / `fewshot_max_rounds` / `batch_size`）且行为与重构前一致
+- [ ] `OptimizerConfig.validate` 对新段字段进行范围校验
+- [ ] `configs/optimizer.yaml` 与 `scenarios/default/optimizer.yaml` 包含新配置段示例
+- [ ] `PromptOptimizationRunner` 已实现，包含完整的 patch 闭环（Baseline → Error Analysis → Patch Generation → Patch Validation → Greedy Acceptance → Final Verification → Promotion）
+- [ ] `PromptOptimizationRunner` 产物写入 `{run_dir}/prompt_rounds/{round_id}/`
+- [ ] `PromptOptimizationRunner` 不修改 `few_shot_examples` section（有断言验证）
+- [ ] `FewShotOptimizationRunner` 已实现，包含候选选择 / 试验 / 接受闭环
+- [ ] `FewShotOptimizationRunner` 产物写入 `{run_dir}/fewshot_rounds/{round_id}/`，不包含 `patches/` 目录
+- [ ] `FewShotOptimizationRunner` 不修改 prompt 文本（有断言验证）
+- [ ] `OptimizerLoop.__init__` 接收 `prompt_runner` 与 `fewshot_runner`，不再接收单一 `RoundRunner`
+- [ ] `OptimizerLoop.run` 调用 `RunPlanBuilder.build` 生成 RunPlan 并持久化到 `{run_dir}/run_plan.json`
+- [ ] `OptimizerLoop.run` 按 RunPlan 顺序分派给对应 phase runner
+- [ ] `_default_round_count` 中的 `max_text_rounds + fewshot_max_rounds` 隐式拼接已移除
+- [ ] checkpoint 结构包含 `phase` 与 `round_id` 字段，支持按 RunPlan item 恢复
+- [ ] `cli/main.py` 的 `run` 与 `run_smoke` 已适配新入口
+- [ ] `RoundRunner` 中的 `is_fewshot_round` 分支与 `baseline_only` 参数已移除
+- [ ] 阶段间状态传递正确：Few-shot 阶段接收的 prompt 是 Prompt 阶段最终版本
+- [ ] 两个阶段共享 evaluator / sample set / model client / storage
+- [ ] `tests/test_integrated_readiness_flow.py` 已适配并通过
+- [ ] `tests/test_checkpoint_resume.py` 已适配并通过
+- [ ] `tests/test_run_plan_builder.py` 已新增并通过
+- [ ] `tests/test_prompt_optimization_runner.py` 已新增并通过，验证阶段隔离
+- [ ] `tests/test_fewshot_optimization_runner.py` 已新增并通过，验证阶段隔离
+- [ ] 全量测试套件无回归

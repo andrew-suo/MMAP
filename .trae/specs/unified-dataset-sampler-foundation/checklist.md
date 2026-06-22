@@ -1,0 +1,52 @@
+# Checklist
+
+- [ ] `Sample` dataclass 字段为 `id` / `input` / `ground_truth` / `assets` / `metadata` / `tags` / `active`
+- [ ] `SampleAsset.type` 为 `Literal["image", "pdf", "text", "json"]`
+- [ ] `SampleState` 包含 `selected_count` / `last_status` / `difficulty_score` 字段
+- [ ] `SampleState.difficulty_ema` 作为 `difficulty_score` 的属性别名（getter/setter 转发）
+- [ ] `SampleState.selected_count_recent_window` 作为 `selected_count` 的属性别名
+- [ ] `GroundTruth` 独立 dataclass 已移除
+- [ ] `SampleSet` dataclass 已定义，包含 `samples` / `states` / `metadata`
+- [ ] `SampleSet.active_samples()` 返回所有 `active=True` 的样本
+- [ ] `SampleSet.get(sample_id)` 返回对应 `Sample`
+- [ ] `SampleSet.update_state(sample_id, **kwargs)` 能更新或创建 state
+- [ ] `SampleSet.composition(sample_ids)` 返回 label / difficulty / tags 分布
+- [ ] `DatasetSource` dataclass 已定义，字段含 `path` / `format` / `image_root` / `schema` / `metadata`
+- [ ] `DatasetLoader` Protocol 已定义，`load(source) -> SampleSet`
+- [ ] `JsonlDatasetLoader` 能加载标准 JSONL 格式
+- [ ] `JsonDatasetLoader` 能加载 JSON 数组或 `{samples: [...]}` 结构
+- [ ] `FolderDatasetLoader` 能扫描文件夹
+- [ ] 不支持的 `format` 抛出 `ValueError`
+- [ ] `Sampler` Protocol 已定义，含 `name` 属性与 `sample(sample_set, request, context) -> SampleBatch` 方法
+- [ ] `SampleRequest` dataclass 已定义，字段含 `batch_size` / `purpose` / `include_tags` / `exclude_tags` / `include_sample_ids` / `exclude_sample_ids` / `require_active`
+- [ ] `SamplingContext` dataclass 已定义，字段含 `phase` / `round_index` / `seed` / `eval_history` / `previous_batches`
+- [ ] `SampleBatch` dataclass 已定义，字段含 `id` / `purpose` / `sample_ids` / `sampler_name` / `round_index` / `composition` / `warnings` / `metadata`
+- [ ] `FullSampler` 已实现，返回所有 active 样本
+- [ ] `RandomSampler` 已实现，按 `context.seed` 随机抽样
+- [ ] `HardCaseSampler` 已实现，优先困难样本
+- [ ] `RegressionGuardSampler` 已实现，优先脆弱样本
+- [ ] `StratifiedSampler` 已实现，按 label / difficulty / tags 分层
+- [ ] `CompositeSampler` 已实现，按 ratio 组合子 sampler
+- [ ] `SampleSet.apply_eval_result(sample_id, status, round_index)` 已实现
+- [ ] wrong→correct 设置 `historical_fixed = True`
+- [ ] correct→wrong 设置 `toxic_trigger = True` 与 `fragility_score += 1.0`
+- [ ] 状态更新覆盖 correct→correct、wrong→correct、correct→wrong、wrong→wrong 四种翻转
+- [ ] `PromptOptimizationConfig` / `FewShotOptimizationConfig` 包含 `sampler` 子字段
+- [ ] `build_sampler(config) -> Sampler` factory 已实现，支持 `composite` 递归构造
+- [ ] 数据迁移脚本 `scripts/migrate_data_format.py` 已编写
+- [ ] [data/samples.jsonl](file:///workspace/data/samples.jsonl) 已迁移为新格式（含 `input` / `ground_truth` / `assets` / `metadata` / `tags`）
+- [ ] [data/ground_truth.jsonl](file:///workspace/data/ground_truth.jsonl) 内容已合并进 `samples.jsonl`
+- [ ] [scenarios/default/data/example.json](file:///workspace/scenarios/default/data/example.json) 已适配新格式
+- [ ] `dataset/loader.py` 提供向后兼容读取（旧 `text_context` 自动转 `input.text`）
+- [ ] [cli/main.py](file:///workspace/mmap_optimizer/cli/main.py) 的 `_build_state` 改用 `DatasetLoader.load`
+- [ ] `OptimizerState` 持有 `sample_set: SampleSet`，旧字段（`samples` / `assets` / `ground_truths` / `sample_states`）作为属性别名
+- [ ] [orchestration/round_runner.py](file:///workspace/mmap_optimizer/orchestration/round_runner.py) 改用 `Sampler.sample()`
+- [ ] `select_optimization_batch` / `select_dynamic_validation_batch` 自由函数已移除
+- [ ] `tests/test_dynamic_validation_sampler.py` 已适配并通过
+- [ ] `tests/test_risk_signals_sampling.py` 已适配并通过
+- [ ] `tests/test_sample_set.py` 已新增并通过
+- [ ] `tests/test_dataset_loader.py` 已新增并通过
+- [ ] `tests/test_samplers.py` 已新增并通过，覆盖 6 个 sampler
+- [ ] `tests/test_sample_state_update.py` 已新增并通过，覆盖 4 种翻转
+- [ ] 全量测试套件无回归
+- [ ] 抽样器不依赖 prompt / patch / few-shot 的具体实现（模块边界清晰）

@@ -180,6 +180,12 @@ class RoundRunner:
         all_iteration_analysis_runs: list = []
         round_start_time = time_mod.time()
 
+        # Fewshot rounds: skip extraction optimization loop, run baseline only
+        is_fewshot_round = (
+            self.config.fewshot_enabled
+            and round_index > self.config.max_text_rounds
+        )
+
         # Main loop: extraction + analysis optimization (iterations)
         while True:
             iteration_start_time = time_mod.time()
@@ -191,11 +197,19 @@ class RoundRunner:
                 state=state,
                 optimization_batch=optimization_batch,
                 initial_extraction_prompt=initial_extraction_prompt,
+                baseline_only=is_fewshot_round,
             )
 
             # Accumulate runs across all iterations for final artifact saving.
             all_iteration_extraction_runs.extend(extraction_result.extraction_runs or [])
             all_iteration_analysis_runs.extend(extraction_result.analysis_runs or [])
+
+            # Fewshot rounds: baseline extraction done, skip patch optimization loop
+            if is_fewshot_round:
+                log_stage(logger, "fewshot_round_baseline_done", round=round_index,
+                          base_accuracy=extraction_result.base_accuracy,
+                          sample_count=len(extraction_result.evaluations))
+                break
 
             iteration_duration = time_mod.time() - iteration_start_time
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -667,8 +681,15 @@ class RoundRunner:
         state: OptimizerState,
         optimization_batch: list,
         initial_extraction_prompt,
+        baseline_only: bool = False,
     ) -> "ExtractionOptimizationResult":
-        """Run the 7-step extraction prompt optimization pipeline."""
+        """Run the 7-step extraction prompt optimization pipeline.
+
+        When ``baseline_only=True`` (fewshot rounds), only Step 1 (baseline
+        extraction) is executed and the result is returned with ``accepted=False``
+        and no patches. This avoids wasteful LLM calls for patch generation /
+        testing in rounds dedicated to few-shot optimization.
+        """
         from dataclasses import dataclass
 
         @dataclass
@@ -715,6 +736,24 @@ class RoundRunner:
         wrong_evals = [e for e in evals if e.overall_status != "correct"]
         correct_evals = [e for e in evals if e.overall_status == "correct"]
         base_accuracy = len(correct_evals) / len(evals) if evals else 0.0
+
+        # Fewshot rounds: return baseline-only result, skip patch optimization
+        if baseline_only:
+            return ExtractionOptimizationResult(
+                accepted=False,
+                base_accuracy=base_accuracy,
+                base_correct_count=len(correct_evals),
+                base_total_count=len(evals),
+                patched_accuracy=None,
+                patched_correct_count=None,
+                patched_total_count=None,
+                patch_count=0,
+                accepted_patch_ids=[],
+                rejected_patch_ids=[],
+                rejection_reason="baseline_only_fewshot_round",
+                evaluations=evals,
+                extraction_runs=extraction_runs,
+            )
 
         # ── Step 2: Accuracy Statistics (implicit in base_accuracy) ─────────────────
         # ── Step 3/4: Analysis + Patch Generation (one LLM call per sample) ──────────

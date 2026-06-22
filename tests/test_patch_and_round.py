@@ -1073,7 +1073,7 @@ def test_round_runner_replaces_fewshot_slot_when_capacity_full(tmp_path: Path):
     report = JsonStore(tmp_path).read_json("round_000001/reports/fewshot_round_000001_extraction.json")
     assert report["operation_type"] == "REPLACE_SLOT"
     assert report["replaced_sample_id"] == "old_sample"
-    assert report["bundle_accuracy_delta"] == 0.5
+    assert report["accuracy_delta"] == 0.5
     pool = JsonStore(tmp_path).read_json("fewshot_candidate_pool.json")
     assert pool["candidates"]["fewshot_candidate_s2"]["status"] == "accepted"
     assert round_record.fewshot_report_ids == ["fewshot_round_000001_extraction"]
@@ -1121,4 +1121,4 @@ def test_round_runner_generates_fewshot_reasoning_with_optimizer_client(tmp_path
     assert "由优化模型生成的分析过程示例。" in state.active_extraction_prompt.render().text
     report = JsonStore(tmp_path).read_json("round_000001/reports/fewshot_round_000001_extraction.json")
     assert report["operation_type"] == "ADD_SLOT"
-    assert report["bundle_accuracy_delta"] == 1.0
+    assert report["accuracy_delta"] == 1.0

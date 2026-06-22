@@ -137,18 +137,6 @@ class FewShotOptimizationEngine:
                 candidate_pool.mark_tested(candidate_id=candidate.id, round_id=round_id, accuracy_delta=delta, accepted=False, rejection_reason=candidate.rejection_reason, broken_sample_ids=broken)
                 continue
 
-            bundle_result = self._run_prompt(round_id, candidate_prompt, behavior_samples, assets, ground_truths, contract, f"bundle_{candidate.id}", "few_shot_bundle_test")
-            all_runs.extend(bundle_result.runs)
-            all_evaluations.extend(bundle_result.evaluations)
-            bundle_broken, bundle_schema = self._regressions(baseline_by_sample, bundle_result.evaluations)
-            bundle_accuracy = self._accuracy(bundle_result.evaluations)
-            bundle_delta = bundle_accuracy - baseline_accuracy
-            if bundle_broken or bundle_schema or bundle_delta < min_accuracy_delta:
-                candidate.rejection_reason = "FEWSHOT_BUNDLE_REGRESSION_OR_INSUFFICIENT_GAIN"
-                self._record_rejection(report, candidate, bundle_delta, bundle_broken, bundle_schema, candidate.rejection_reason)
-                candidate_pool.mark_tested(candidate_id=candidate.id, round_id=round_id, accuracy_delta=bundle_delta, accepted=False, rejection_reason=candidate.rejection_reason, broken_sample_ids=bundle_broken)
-                continue
-
             candidate_report = replace(report)
             candidate_report.accepted = True
             candidate_report.reason = "ACCEPTED"
@@ -164,24 +152,18 @@ class FewShotOptimizationEngine:
             candidate_report.slot_count_after = self._slot_count(candidate_prompt)
             candidate_report.candidate_accuracy = candidate_accuracy
             candidate_report.accuracy_delta = delta
-            candidate_report.bundle_accuracy = bundle_accuracy
-            candidate_report.bundle_accuracy_delta = bundle_delta
             candidate_report.broken_sample_ids = broken
             candidate_report.schema_violation_sample_ids = schema_violations
-            candidate_report.bundle_broken_sample_ids = bundle_broken
-            candidate_report.bundle_schema_violation_sample_ids = bundle_schema
-            if best_safe is None or bundle_delta > best_safe[0]:
-                best_safe = (bundle_delta, candidate_prompt, candidate_report)
+            if best_safe is None or delta > best_safe[0]:
+                best_safe = (delta, candidate_prompt, candidate_report)
 
         if best_safe is not None:
             _, best_prompt, best_report = best_safe
             if best_report.selected_candidate_id:
-                # 此处有意使用 bundle_accuracy_delta 而非单候选 accuracy_delta：
-                # 接受决策基于 bundle 测试结果，记录 bundle delta 以保持候选池状态与决策一致。
                 candidate_pool.mark_tested(
                     candidate_id=best_report.selected_candidate_id,
                     round_id=round_id,
-                    accuracy_delta=best_report.bundle_accuracy_delta,
+                    accuracy_delta=best_report.accuracy_delta,
                     accepted=True,
                 )
             return best_prompt, best_report, all_runs, all_evaluations

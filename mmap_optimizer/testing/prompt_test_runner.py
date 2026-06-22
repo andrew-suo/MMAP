@@ -219,9 +219,15 @@ class PromptTestRunner:
             fewshot_messages = []
             log_stage(logger, "fewshot_assets_extracted", "无 fewshot 资源", fewshot_count=0, fewshot_asset_ids=[])
 
-        def run_one(sample: Sample) -> tuple[RunRecord, EvaluationRecord]:
+        total_samples = len(samples)
+
+        def run_one(indexed_sample: tuple[int, Sample]) -> tuple[RunRecord, EvaluationRecord]:
+            sample_index, sample = indexed_sample
             sample_start_time = time.perf_counter()
-            log_stage(logger, "sample_start", "样本处理开始", sample_id=sample.id, asset_count=len(sample.asset_ids), fewshot_slot_count=len(fewshot_slots))
+            log_stage(logger, "sample_start", "样本处理开始",
+                      sample_id=sample.id, asset_count=len(sample.asset_ids),
+                      fewshot_slot_count=len(fewshot_slots),
+                      progress=f"{sample_index}/{total_samples}")
             user_payload = {
                 "sample_id": sample.id,
                 "text_context": sample.text_context,
@@ -248,7 +254,10 @@ class PromptTestRunner:
                         payload["vote_round"] = vote_index + 1
                     messages = list(base_messages)
                     messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False)})
-                    log_stage(logger, "model_call_start", "模型调用开始", sample_id=sample.id, vote_index=vote_index, message_count=len(messages))
+                    log_stage(logger, "model_call_start", "模型调用开始",
+                              sample_id=sample.id, vote_index=vote_index,
+                              progress=f"{vote_index+1}/{rounds}",
+                              message_count=len(messages))
                     call_start = time.perf_counter()
                     response = self.model_client.complete_multimodal(
                         messages,
@@ -256,7 +265,13 @@ class PromptTestRunner:
                         model_config=self.model_config,
                     )
                     call_duration_ms = int((time.perf_counter() - call_start) * 1000)
-                    log_stage(logger, "model_call_done", "模型调用完成", sample_id=sample.id, vote_index=vote_index, duration_ms=call_duration_ms, response_chars=len(response.raw_output) if response.raw_output else 0)
+                    response_preview = (response.raw_output or "")[:120].replace("\n", "\\n") if response.raw_output else ""
+                    log_stage(logger, "model_call_done", "模型调用完成",
+                              sample_id=sample.id, vote_index=vote_index,
+                              progress=f"{vote_index+1}/{rounds}",
+                              duration_ms=call_duration_ms,
+                              response_chars=len(response.raw_output) if response.raw_output else 0,
+                              response_preview=response_preview)
                     raw_outputs.append(response.raw_output)
                 run = RunRecord(
                     id=f"run_{round_id}_{run_type}{suffix}_{sample.id}",
@@ -274,7 +289,12 @@ class PromptTestRunner:
                     log_stage(logger, "parse_done", "解析完成", sample_id=sample.id, status="ok")
                 except Exception as exc:
                     run.parsed_output = None
-                    log_stage(logger, "parse_failed", "解析失败", sample_id=sample.id, error=f"{type(exc).__name__}: {exc}")
+                    response_preview = (raw_outputs[0] or "")[:200].replace("\n", "\\n") if raw_outputs else ""
+                    log_stage(logger, "parse_failed", "解析失败",
+                              sample_id=sample.id,
+                              error=f"{type(exc).__name__}: {exc}",
+                              response_chars=len(raw_outputs[0]) if raw_outputs else 0,
+                              response_preview=response_preview)
                     log_stage(logger, "parse_done", "解析完成", sample_id=sample.id, status="failed")
                 log_stage(logger, "evaluate_start", "评估开始", sample_id=sample.id)
                 if vote_mode:
@@ -294,13 +314,25 @@ class PromptTestRunner:
                         ground_truth=gt,
                         contract=contract,
                     )
-                log_stage(logger, "evaluate_done", "评估完成", sample_id=sample.id, decision=evaluation.overall_status)
+                eval_extra = evaluation.extra or {}
+                eval_kwargs = {"sample_id": sample.id, "decision": evaluation.overall_status}
+                if eval_extra.get("no_ground_truth"):
+                    eval_kwargs["vote_majority"] = eval_extra.get("vote_majority")
+                    eval_kwargs["vote_confidence"] = eval_extra.get("vote_confidence")
+                    eval_kwargs["parse_error_count"] = len(eval_extra.get("parse_errors", []))
+                log_stage(logger, "evaluate_done", "评估完成", **eval_kwargs)
                 sample_duration_ms = int((time.perf_counter() - sample_start_time) * 1000)
-                log_stage(logger, "sample_done", "样本处理完成", sample_id=sample.id, duration_ms=sample_duration_ms, decision=evaluation.overall_status)
+                log_stage(logger, "sample_done", "样本处理完成",
+                          sample_id=sample.id, duration_ms=sample_duration_ms,
+                          decision=evaluation.overall_status,
+                          progress=f"{sample_index}/{total_samples}")
                 return run, evaluation
             except Exception as exc:
                 sample_duration_ms = int((time.perf_counter() - sample_start_time) * 1000)
-                log_stage(logger, "sample_failed", "样本处理失败", sample_id=sample.id, duration_ms=sample_duration_ms, error=type(exc).__name__)
+                log_stage(logger, "sample_failed", "样本处理失败",
+                          sample_id=sample.id, duration_ms=sample_duration_ms,
+                          error=type(exc).__name__,
+                          progress=f"{sample_index}/{total_samples}")
                 logger.exception(f"[stage=sample_failed] sample_id={sample.id} duration_ms={sample_duration_ms} error={type(exc).__name__}: {exc}")
                 # Return a failed RunRecord + EvaluationRecord instead of raising
                 run = RunRecord(
@@ -323,7 +355,11 @@ class PromptTestRunner:
                 evaluation.overall_status = "ERROR"
                 return run, evaluation
 
-        for run, evaluation in map_ordered(samples, run_one, max_workers=self.max_workers):
+        batch_start_time = time.perf_counter()
+        for run, evaluation in map_ordered(list(enumerate(samples, 1)), run_one, max_workers=self.max_workers):
             runs.append(run)
             evals.append(evaluation)
+        batch_duration_ms = int((time.perf_counter() - batch_start_time) * 1000)
+        log_stage(logger, "batch_done", "批次处理完成",
+                  total_samples=len(samples), duration_ms=batch_duration_ms)
         return PromptTestRunResult(runs=runs, evaluations=evals)

@@ -1,5 +1,6 @@
 from pathlib import Path
 from dataclasses import replace
+import json
 
 from mmap_optimizer.core.config import ModelConfig, OptimizerConfig
 from mmap_optimizer.core.enums import PromptType
@@ -1122,3 +1123,306 @@ def test_round_runner_generates_fewshot_reasoning_with_optimizer_client(tmp_path
     report = JsonStore(tmp_path).read_json("round_000001/reports/fewshot_round_000001_extraction.json")
     assert report["operation_type"] == "ADD_SLOT"
     assert report["accuracy_delta"] == 1.0
+
+
+def test_greedy_safe_subset_records_broken_sample_ids_on_toxic_patch(tmp_path: Path):
+    """Scenario 2: toxic patch is rejected and broken_sample_ids is back-filled."""
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("raw extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    toxic_rule = "错误模式下强制输出 NG。"
+    analysis_output = (
+        '{'
+        '"judgement":{"is_correct":false},'
+        '"confirmed_facts":[],"hypothesized_error_causes":[],"prompt_section_attribution":[],'
+        f'"patch_candidates":[{{"target_prompt":"extraction","target_section":"ambiguity_policy","operation":"ADD_RULE","intent":"toxic_ng","content":"{toxic_rule}","risk":"可能过严"}}]'
+        '}'
+    )
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_analysis_output": analysis_output,
+                "mock_prompt_outputs": [
+                    {"contains": toxic_rule, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'}
+                ],
+            },
+        ),
+        Sample(
+            id="s2",
+            ground_truth_id="gt2",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {"contains": toxic_rule, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'}
+                ],
+            },
+        ),
+    ]
+    gts = {
+        "gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG"),
+        "gt2": GroundTruth(id="gt2", sample_id="s2", value={"result": "OK"}, primary_answer="OK"),
+    }
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
+    )
+
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
+
+    # The toxic patch must be rejected with broken_sample_ids back-filled.
+    assert not round_record.accepted_patch_ids
+    assert metrics.toxic_count >= 1
+    # Read the merged_patches artifact and verify broken_sample_ids back-fill.
+    merged_patches = [json.loads(line) for line in (tmp_path / "round_000001" / "patches" / "merged_patches.jsonl").read_text().splitlines() if line]
+    toxic_patches = [p for p in merged_patches if p.get("toxicity_result") == "toxic"]
+    assert toxic_patches
+    # s2 is correct at baseline and becomes NG after the toxic patch → broken.
+    assert "s2" in toxic_patches[0]["broken_sample_ids"]
+    assert len(toxic_patches[0]["broken_sample_ids"]) >= 1
+
+
+def test_greedy_safe_subset_non_toxic_patch_has_empty_broken_sample_ids(tmp_path: Path):
+    """Scenario 1: safe patch is accepted with broken_sample_ids == []."""
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("raw extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    safe_rule = "安全规则：检查缺失标签。"
+    analysis_output = (
+        '{'
+        '"judgement":{"is_correct":false},'
+        '"confirmed_facts":[],"hypothesized_error_causes":[],"prompt_section_attribution":[],'
+        f'"patch_candidates":[{{"target_prompt":"extraction","target_section":"ambiguity_policy","operation":"ADD_RULE","intent":"safe_rule","content":"{safe_rule}","risk":"low"}}]'
+        '}'
+    )
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_analysis_output": analysis_output,
+                "mock_prompt_outputs": [
+                    {"contains": safe_rule, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+            },
+        ),
+        Sample(
+            id="s2",
+            ground_truth_id="gt2",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {"contains": safe_rule, "output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+            },
+        ),
+    ]
+    gts = {
+        "gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG"),
+        "gt2": GroundTruth(id="gt2", sample_id="s2", value={"result": "OK"}, primary_answer="OK"),
+    }
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
+    )
+
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
+
+    # The safe patch must be accepted.
+    assert round_record.accepted_patch_ids == ["patch_round_000001_s1_00"]
+    assert metrics.accepted_count == 1
+    # Read merged_patches and verify non-toxic patch has empty broken_sample_ids.
+    merged_patches = [json.loads(line) for line in (tmp_path / "round_000001" / "patches" / "merged_patches.jsonl").read_text().splitlines() if line]
+    non_toxic = [p for p in merged_patches if p.get("toxicity_result") == "non_toxic"]
+    assert non_toxic
+    assert non_toxic[0]["broken_sample_ids"] == []
+    # s1 was wrong at baseline and becomes correct after the safe patch → fixed.
+    assert "s1" in non_toxic[0]["fixed_sample_ids"]
+
+
+def test_greedy_safe_subset_distinguishes_merged_and_rejected_toxic_samples(tmp_path: Path):
+    """Scenario 5: merged_patches.jsonl distinguishes toxic vs non-toxic per-patch records."""
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("raw extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    safe_rule = "安全规则：检查缺失标签。"
+    interaction_rule = "交互风险规则：检查安装方向。"
+    analysis_output = (
+        '{'
+        '"judgement":{"is_correct":false},'
+        '"confirmed_facts":[],"hypothesized_error_causes":[],"prompt_section_attribution":[],'
+        f'"patch_candidates":['
+        f'{{"target_prompt":"extraction","target_section":"ambiguity_policy","operation":"ADD_RULE","intent":"safe_rule","content":"{safe_rule}","risk":"low"}},'
+        f'{{"target_prompt":"extraction","target_section":"visual_evidence_rules","operation":"ADD_RULE","intent":"interaction_rule","content":"{interaction_rule}","risk":"medium"}}'
+        ']}'
+    )
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_analysis_output": analysis_output,
+                "mock_prompt_outputs": [
+                    {"contains": safe_rule, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                    {"contains": interaction_rule, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+            },
+        ),
+        Sample(
+            id="s2",
+            ground_truth_id="gt2",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {"contains_all": [safe_rule, interaction_rule], "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                    {"contains": safe_rule, "output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                    {"contains": interaction_rule, "output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'},
+                ],
+            },
+        ),
+    ]
+    gts = {
+        "gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG"),
+        "gt2": GroundTruth(id="gt2", sample_id="s2", value={"result": "OK"}, primary_answer="OK"),
+    }
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
+    )
+
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
+
+    # safe_rule accepted, interaction_rule rejected as toxic.
+    assert round_record.accepted_patch_ids == ["patch_round_000001_s1_00"]
+    assert metrics.toxic_count >= 1
+    # Verify merged_patches.jsonl carries per-patch broken_sample_ids.
+    merged_patches = [json.loads(line) for line in (tmp_path / "round_000001" / "patches" / "merged_patches.jsonl").read_text().splitlines() if line]
+    toxic = [p for p in merged_patches if p.get("toxicity_result") == "toxic"]
+    non_toxic = [p for p in merged_patches if p.get("toxicity_result") == "non_toxic"]
+    assert toxic and non_toxic
+    # The toxic patch broke s2 (correct at baseline → NG after).
+    assert "s2" in toxic[0]["broken_sample_ids"]
+    # The non-toxic patch fixed s1 without breaking anything.
+    assert non_toxic[0]["broken_sample_ids"] == []
+    assert "s1" in non_toxic[0]["fixed_sample_ids"]
+    # Verify both toxic and non-toxic patches are recorded with clear status.
+    assert toxic[0]["status"] == "rejected"
+    assert toxic[0]["rejection_reason"] == "TOXIC"
+    assert non_toxic[0]["status"] == "accepted"
+
+
+def test_analysis_evolution_receives_toxic_patch_with_broken_sample_ids(tmp_path: Path):
+    """Scenario 4: analysis evolution receives toxic patches from merged_patches with broken_sample_ids."""
+    extraction_contract = contract(PromptType.EXTRACTION)
+    analysis_contract = contract(PromptType.ANALYSIS)
+    extraction_prompt = initialize_prompt_version("raw extraction", PromptType.EXTRACTION, extraction_contract)
+    analysis_prompt = initialize_prompt_version("raw analysis", PromptType.ANALYSIS, analysis_contract)
+    toxic_rule = "风险规则：过度判定 NG。"
+    analysis_output = (
+        '{'
+        '"judgement":{"is_correct":false},'
+        '"confirmed_facts":[],"hypothesized_error_causes":[],"prompt_section_attribution":[],'
+        f'"patch_candidates":[{{"target_prompt":"extraction","target_section":"ambiguity_policy","operation":"ADD_RULE","intent":"toxic_rule","content":"{toxic_rule}","risk":"medium"}}]'
+        '}'
+    )
+    samples = [
+        Sample(
+            id="s1",
+            ground_truth_id="gt1",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_analysis_output": analysis_output,
+                "mock_prompt_outputs": [
+                    {"contains": toxic_rule, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'}
+                ],
+            },
+        ),
+        Sample(
+            id="s2",
+            ground_truth_id="gt2",
+            metadata={
+                "mock_output": '{"result":"OK","confidence":1.0,"evidence":[],"used_prompt_sections":[]}',
+                "mock_prompt_outputs": [
+                    {"contains": toxic_rule, "output": '{"result":"NG","confidence":1.0,"evidence":[],"used_prompt_sections":[]}'}
+                ],
+            },
+        ),
+    ]
+    gts = {
+        "gt1": GroundTruth(id="gt1", sample_id="s1", value={"result": "NG"}, primary_answer="NG"),
+        "gt2": GroundTruth(id="gt2", sample_id="s2", value={"result": "OK"}, primary_answer="OK"),
+    }
+    state = OptimizerState(
+        samples=samples,
+        assets={},
+        ground_truths=gts,
+        sample_states={s.id: SampleState(sample_id=s.id) for s in samples},
+        active_extraction_prompt=extraction_prompt,
+        active_analysis_prompt=analysis_prompt,
+        extraction_output_schema_contract=extraction_contract,
+        analysis_output_schema_contract=analysis_contract,
+    )
+    runner = RoundRunner(
+        model_client=MockModelClient(),
+        evaluator=Evaluator(),
+        store=JsonStore(tmp_path),
+        config=OptimizerConfig(batch_size=2, dynamic_validation_batch_size=0),
+    )
+
+    round_record, metrics, _ = runner.run_round(state, round_index=1)
+
+    # The toxic patch must be rejected and analysis evolution must have been
+    # triggered (it promotes a risk-policy patch when it sees a toxic signal).
+    assert not round_record.accepted_patch_ids
+    assert metrics.toxic_count >= 1
+    assert state.active_analysis_prompt.version == 2
+    rendered_analysis = state.active_analysis_prompt.render().text
+    assert "生成 patch 前必须说明它可能破坏的原正确样本类型" in rendered_analysis
+    # The toxic patch's broken_sample_ids must include s2 (correct at baseline, broken after).
+    merged_patches = [json.loads(line) for line in (tmp_path / "round_000001" / "patches" / "merged_patches.jsonl").read_text().splitlines() if line]
+    toxic_patches = [p for p in merged_patches if p.get("toxicity_result") == "toxic"]
+    assert toxic_patches
+    assert "s2" in toxic_patches[0]["broken_sample_ids"]

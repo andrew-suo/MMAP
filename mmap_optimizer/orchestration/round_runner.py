@@ -605,6 +605,12 @@ class RoundRunner:
         self.store.append_jsonl(f"{round_id}/analyses/analysis_records.jsonl", extraction_result.analysis_records)
         self.store.append_jsonl(f"{round_id}/patches/draft_patches.jsonl", extraction_result.draft_patches)
         self.store.append_jsonl(f"{round_id}/patches/candidate_patches.jsonl", extraction_result.candidate_patches)
+        # Persist merged patches so the toxic/effective attribution (including
+        # broken_sample_ids / fixed_sample_ids set during Step 7.3 greedy trial)
+        # is inspectable after the round completes. Intermediate files are
+        # cleaned up, but this patches/ artifact is retained.
+        if extraction_result.merged_patches:
+            self.store.append_jsonl(f"{round_id}/patches/merged_patches.jsonl", extraction_result.merged_patches)
 
         # Write patch test results (based on step 6/7 classification of patches)
         from mmap_optimizer.testing.patch_tester import summarize_patch_test
@@ -1015,6 +1021,8 @@ class RoundRunner:
             # order against the already-accepted set.
             cumulative_patches: list = []
             cumulative_prompt = state.active_extraction_prompt
+            rejected_toxic_sample_ids: set[str] = set()
+            per_patch_toxicity: list[dict] = []
             for patch in non_ineffective:
                 trial_prompt = PatchApplier().apply(
                     cumulative_prompt, patch,
@@ -1032,41 +1040,75 @@ class RoundRunner:
 
                 # Check for regressions: any sample that was correct at baseline but now
                 # incorrect means this patch (in combination with previously accepted
-                # patches) is TOXIC — reject it.
+                # patches) is TOXIC — reject it. Collect ALL broken sample ids for
+                # attribution, not just the first one.
                 trial_by_sample = {e.sample_id: e for e in trial_result.evaluations}
-                has_broken_any = False
+                broken_sample_ids: list[str] = []
+                fixed_sample_ids: list[str] = []
                 for base_eval in evals:
-                    if base_eval.overall_status != "correct":
-                        continue
                     trial_eval = trial_by_sample.get(base_eval.sample_id)
-                    if trial_eval is not None and trial_eval.overall_status != "correct":
-                        has_broken_any = True
-                        break
+                    if trial_eval is None:
+                        continue
+                    if base_eval.overall_status == "correct" and trial_eval.overall_status != "correct":
+                        broken_sample_ids.append(base_eval.sample_id)
+                    if base_eval.overall_status != "correct" and trial_eval.overall_status == "correct":
+                        fixed_sample_ids.append(base_eval.sample_id)
 
-                if has_broken_any:
+                if broken_sample_ids:
                     patch.status = "rejected"
                     patch.rejection_reason = "TOXIC"
                     patch.toxicity_result = "toxic"
+                    patch.broken_sample_ids = broken_sample_ids
+                    patch.fixed_sample_ids = fixed_sample_ids
+                    rejected_toxic_sample_ids.update(broken_sample_ids)
                 else:
                     patch.toxicity_result = "non_toxic"
+                    patch.broken_sample_ids = []
+                    patch.fixed_sample_ids = fixed_sample_ids
                     cumulative_patches.append(patch)
                     cumulative_prompt = trial_prompt
                     safe_subset_evals = trial_result.evaluations
 
-            # Also report which samples were broken by the original bundle (not used by
-            # acceptance logic; kept for logging / reporting).
-            toxic_sample_ids = [sid for sid, cls in sample_classes.items() if cls == "broken"]
+                per_patch_toxicity.append({
+                    "patch_id": patch.id,
+                    "status": patch.status,
+                    "toxicity_result": patch.toxicity_result,
+                    "rejection_reason": patch.rejection_reason,
+                    "broken_sample_ids": list(patch.broken_sample_ids),
+                    "broken_count": len(patch.broken_sample_ids),
+                    "fixed_sample_ids": list(patch.fixed_sample_ids),
+                    "fixed_count": len(patch.fixed_sample_ids),
+                })
+
+            # merged_toxic_sample_ids: samples broken when ALL merged patches applied
+            # together (Step 6). Kept for logging/reporting only — NOT used by the
+            # greedy acceptance decision.
+            merged_toxic_sample_ids = [sid for sid, cls in sample_classes.items() if cls == "broken"]
+            # rejected_toxic_sample_ids: samples actually broken by patches rejected as
+            # TOXIC during the greedy safe-subset trial (Step 7.3).
+            rejected_toxic_sample_ids_list = sorted(rejected_toxic_sample_ids)
 
             final_patches = [p for p in merged_patches if p.status != "rejected"]
             self._save_intermediate(round_id, "patch_comparison_done", {
                 "initial_merged_count": len(merged_patches),
                 "final_patch_count": len(final_patches),
-                "toxic_sample_count": len(toxic_sample_ids),
+                "merged_toxic_sample_count": len(merged_toxic_sample_ids),
+                "rejected_toxic_sample_count": len(rejected_toxic_sample_ids_list),
+            })
+            self._save_intermediate(round_id, "patch_toxicity_greedy_done", {
+                "strategy": "greedy_safe_subset",
+                "initial_patch_count": len(non_ineffective),
+                "accepted_patch_count": len(cumulative_patches),
+                "rejected_toxic_patch_count": len([p for p in per_patch_toxicity if p["toxicity_result"] == "toxic"]),
+                "merged_toxic_sample_ids": merged_toxic_sample_ids,
+                "rejected_toxic_sample_ids": rejected_toxic_sample_ids_list,
+                "patch_results": per_patch_toxicity,
             })
             log_stage(logger, "patch_comparison_done", "补丁比较与筛选完成", round=round_index,
                       initial=len(merged_patches),
                       final=len(final_patches),
-                      toxic_samples=len(toxic_sample_ids))
+                      merged_toxic_samples=len(merged_toxic_sample_ids),
+                      rejected_toxic_samples=len(rejected_toxic_sample_ids_list))
 
         # Helper: gather all rejected patch ids across every stage.
         def _all_rejected_ids() -> list[str]:
@@ -1599,12 +1641,22 @@ class RoundRunner:
             if getattr(p, "status", None) == "rejected"
         ])
 
-        # (2) toxic patch test results (derived from candidate patches that
-        # were flagged by the re-test phase as toxic)
-        toxic_patches = [
-            p for p in (extraction_result.candidate_patches or [])
-            if getattr(p, "toxicity_result", None) == "toxic"
-        ]
+        # (2) toxic patch test results. Toxic patches are marked during Step 7.3
+        # greedy safe-subset trial on merged_patches (not candidate_patches),
+        # because merging produces new patch ids that differ from candidates.
+        # Scan merged_patches (and candidate_patches as a fallback) to ensure we
+        # capture every patch actually flagged as toxic this round.
+        _toxic_scan_pools: list = list(extraction_result.merged_patches or [])
+        _toxic_scan_pools.extend(extraction_result.candidate_patches or [])
+        _toxic_seen_ids: set[str] = set()
+        toxic_patches: list = []
+        for p in _toxic_scan_pools:
+            pid = getattr(p, "id", None)
+            if pid in _toxic_seen_ids:
+                continue
+            if getattr(p, "toxicity_result", None) == "toxic":
+                _toxic_seen_ids.add(pid)
+                toxic_patches.append(p)
         patch_test_results: list[PatchTestResult] = []
         for patch in toxic_patches:
             patch_test_results.append(
@@ -1615,7 +1667,7 @@ class RoundRunner:
                     test_suite_id=f"suite_{round_id}",
                     accepted=False,
                     toxicity_result="toxic",
-                    broken_sample_ids=getattr(patch, "broken_sample_ids", None) or [],
+                    broken_sample_ids=list(getattr(patch, "broken_sample_ids", None) or []),
                 )
             )
 

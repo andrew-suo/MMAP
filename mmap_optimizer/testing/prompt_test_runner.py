@@ -213,15 +213,15 @@ class PromptTestRunner:
         if fewshot_slots:
             system_text = _render_system_without_fewshot(prompt)
             fewshot_messages = _build_fewshot_messages(fewshot_slots, samples, assets)
-            log_stage(logger, "fewshot_multiturn_enabled", slot_count=len(fewshot_slots), message_pairs=len(fewshot_messages))
+            log_stage(logger, "fewshot_multiturn_enabled", "启用 fewshot 多轮对话", slot_count=len(fewshot_slots), message_pairs=len(fewshot_messages))
         else:
             system_text = rendered.text
             fewshot_messages = []
-            log_stage(logger, "fewshot_assets_extracted", fewshot_count=0, fewshot_asset_ids=[])
+            log_stage(logger, "fewshot_assets_extracted", "无 fewshot 资源", fewshot_count=0, fewshot_asset_ids=[])
 
         def run_one(sample: Sample) -> tuple[RunRecord, EvaluationRecord]:
             sample_start_time = time.perf_counter()
-            log_stage(logger, "sample_start", sample_id=sample.id, asset_count=len(sample.asset_ids), fewshot_slot_count=len(fewshot_slots))
+            log_stage(logger, "sample_start", "样本处理开始", sample_id=sample.id, asset_count=len(sample.asset_ids), fewshot_slot_count=len(fewshot_slots))
             user_payload = {
                 "sample_id": sample.id,
                 "text_context": sample.text_context,
@@ -248,7 +248,7 @@ class PromptTestRunner:
                         payload["vote_round"] = vote_index + 1
                     messages = list(base_messages)
                     messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False)})
-                    log_stage(logger, "model_call_start", sample_id=sample.id, vote_index=vote_index, message_count=len(messages))
+                    log_stage(logger, "model_call_start", "模型调用开始", sample_id=sample.id, vote_index=vote_index, message_count=len(messages))
                     call_start = time.perf_counter()
                     response = self.model_client.complete_multimodal(
                         messages,
@@ -256,7 +256,7 @@ class PromptTestRunner:
                         model_config=self.model_config,
                     )
                     call_duration_ms = int((time.perf_counter() - call_start) * 1000)
-                    log_stage(logger, "model_call_done", sample_id=sample.id, vote_index=vote_index, duration_ms=call_duration_ms, response_chars=len(response.raw_output) if response.raw_output else 0)
+                    log_stage(logger, "model_call_done", "模型调用完成", sample_id=sample.id, vote_index=vote_index, duration_ms=call_duration_ms, response_chars=len(response.raw_output) if response.raw_output else 0)
                     raw_outputs.append(response.raw_output)
                 run = RunRecord(
                     id=f"run_{round_id}_{run_type}{suffix}_{sample.id}",
@@ -268,15 +268,15 @@ class PromptTestRunner:
                     model_id=self.model_id,
                     raw_output=raw_outputs[0],
                 )
-                log_stage(logger, "parse_start", sample_id=sample.id)
+                log_stage(logger, "parse_start", "解析开始", sample_id=sample.id)
                 try:
                     run.parsed_output = json.loads(raw_outputs[0])
-                    log_stage(logger, "parse_done", sample_id=sample.id, status="ok")
+                    log_stage(logger, "parse_done", "解析完成", sample_id=sample.id, status="ok")
                 except Exception as exc:
                     run.parsed_output = None
-                    logger.warning(f"[stage=parse_failed] sample_id={sample.id} error={type(exc).__name__}: {exc}")
-                    log_stage(logger, "parse_done", sample_id=sample.id, status="failed")
-                log_stage(logger, "evaluate_start", sample_id=sample.id)
+                    log_stage(logger, "parse_failed", "解析失败", sample_id=sample.id, error=f"{type(exc).__name__}: {exc}")
+                    log_stage(logger, "parse_done", "解析完成", sample_id=sample.id, status="failed")
+                log_stage(logger, "evaluate_start", "评估开始", sample_id=sample.id)
                 if vote_mode:
                     evaluation = self.evaluator.evaluate_without_ground_truth(
                         round_id=round_id,
@@ -294,14 +294,14 @@ class PromptTestRunner:
                         ground_truth=gt,
                         contract=contract,
                     )
-                log_stage(logger, "evaluate_done", sample_id=sample.id, decision=evaluation.overall_status)
+                log_stage(logger, "evaluate_done", "评估完成", sample_id=sample.id, decision=evaluation.overall_status)
                 sample_duration_ms = int((time.perf_counter() - sample_start_time) * 1000)
-                log_stage(logger, "sample_done", sample_id=sample.id, duration_ms=sample_duration_ms, decision=evaluation.overall_status)
+                log_stage(logger, "sample_done", "样本处理完成", sample_id=sample.id, duration_ms=sample_duration_ms, decision=evaluation.overall_status)
                 return run, evaluation
             except Exception as exc:
                 sample_duration_ms = int((time.perf_counter() - sample_start_time) * 1000)
+                log_stage(logger, "sample_failed", "样本处理失败", sample_id=sample.id, duration_ms=sample_duration_ms, error=type(exc).__name__)
                 logger.exception(f"[stage=sample_failed] sample_id={sample.id} duration_ms={sample_duration_ms} error={type(exc).__name__}: {exc}")
-                log_stage(logger, "sample_failed", sample_id=sample.id, duration_ms=sample_duration_ms, error=type(exc).__name__)
                 # Return a failed RunRecord + EvaluationRecord instead of raising
                 run = RunRecord(
                     id=f"run_{round_id}_{run_type}{suffix}_{sample.id}",

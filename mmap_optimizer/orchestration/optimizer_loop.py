@@ -74,13 +74,13 @@ class OptimizerLoop:
         metrics_records: list[RoundMetrics] = []
         global_iteration_counter = 0
         self.store.write_json("run_summary.json", summary)
-        log_stage(logger, "optimizer_start", planned_rounds=planned_rounds, start_round=effective_start, resume=self.resume)
+        log_stage(logger, "optimizer_start", "优化器启动", planned_rounds=planned_rounds, start_round=effective_start, resume=self.resume)
 
         try:
             for offset in range(planned_rounds):
                 round_index = effective_start + offset
                 round_start_time = time.perf_counter()
-                log_stage(logger, "round_start", round=round_index, planned_rounds=planned_rounds,
+                log_stage(logger, "round_start", f"第 {round_index} 轮开始", round=round_index, planned_rounds=planned_rounds,
                           input_extraction_prompt_id=state.active_extraction_prompt.id,
                           input_analysis_prompt_id=state.active_analysis_prompt.id)
                 round_record, metrics, global_iteration_counter = self.runner.run_round(state, round_index=round_index, global_iteration_counter=global_iteration_counter)
@@ -94,7 +94,7 @@ class OptimizerLoop:
                 summary.final_analysis_prompt_version_id = state.active_analysis_prompt.id
                 self._write_trend_and_summary(summary, metrics_records)
                 self._save_checkpoint(round_index, state, metrics, fewshot_pool_path=str(self.store.root / "fewshot_candidate_pool.json"))
-                log_stage(logger, "round_done", round=round_index, duration_ms=round_duration_ms,
+                log_stage(logger, "round_done", f"第 {round_index} 轮完成", round=round_index, duration_ms=round_duration_ms,
                           accepted_patch_count=len(round_record.accepted_patch_ids) if round_record.accepted_patch_ids else 0,
                           rejected_patch_count=len(round_record.rejected_patch_ids) if round_record.rejected_patch_ids else 0,
                           batch_accuracy=metrics.batch_accuracy)
@@ -102,7 +102,7 @@ class OptimizerLoop:
             summary.status = "COMPLETED"
             summary.stopped_reason = "PLANNED_ROUNDS_COMPLETED"
             self._write_trend_and_summary(summary, metrics_records)
-            log_stage(logger, "optimizer_done", status="COMPLETED", completed_rounds=len(rounds),
+            log_stage(logger, "optimizer_done", "优化器完成", status="COMPLETED", completed_rounds=len(rounds),
                       final_batch_accuracy=summary.final_batch_accuracy,
                       total_accepted_patches=summary.total_accepted_patches,
                       total_rejected_patches=summary.total_rejected_patches)
@@ -111,6 +111,7 @@ class OptimizerLoop:
             summary.status = "FAILED"
             summary.stopped_reason = f"ERROR: {type(exc).__name__}: {exc}"
             self._write_trend_and_summary(summary, metrics_records)
+            log_stage(logger, "optimizer_failed", "优化器失败", error=f"{type(exc).__name__}: {exc}")
             logger.exception(f"[stage=optimizer_failed] error={type(exc).__name__}: {exc}")
             raise
 

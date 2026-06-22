@@ -34,7 +34,10 @@ def _setup_handler(logger: logging.Logger) -> None:
     """Set up console handler with standard format."""
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(logging.DEBUG)
-    formatter = logging.Formatter(fmt="[%(levelname)s] %(message)s", datefmt="%Y-%m-%dT%H:%M:%S")
+    formatter = logging.Formatter(
+        fmt="[%(asctime)s] [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.setLevel(getattr(logging, DEFAULT_LOG_LEVEL, logging.INFO))
@@ -85,19 +88,25 @@ def _safe_log_dict(data: dict[str, Any], *, max_value_len: int = 200) -> str:
     return " ".join(parts)
 
 
-def log_stage(logger: logging.Logger, stage: str, **kwargs: Any) -> None:
-    """Log a structured stage marker.
+def log_stage(logger: logging.Logger, stage: str, message: str = "", **kwargs: Any) -> None:
+    """Log a structured stage marker with optional Chinese message.
 
-    Format: [stage=<name> key=value...]
+    Format: [stage=<name>] <message> key=value key=value
 
     Args:
         logger: Logger instance
         stage: Stage name (e.g., 'round_start', 'model_request')
+        message: Human-readable message (Chinese supported)
         **kwargs: Additional key-value pairs to log
     """
+    parts: list[str] = []
+    if message:
+        parts.append(message)
     if kwargs:
-        safe_dict = _safe_log_dict(kwargs)
-        logger.info(f"[stage={stage}] {safe_dict}")
+        parts.append(_safe_log_dict(kwargs))
+    body = " ".join(parts)
+    if body:
+        logger.info(f"[stage={stage}] {body}")
     else:
         logger.info(f"[stage={stage}]")
 
@@ -105,13 +114,15 @@ def log_stage(logger: logging.Logger, stage: str, **kwargs: Any) -> None:
 def log_progress(logger: logging.Logger, message: str, **kwargs: Any) -> None:
     """Log a progress message with structured extras.
 
+    Uses _safe_log_dict for consistent redaction.
+
     Args:
         logger: Logger instance
         message: Progress message
         **kwargs: Additional structured data
     """
     if kwargs:
-        extra = " ".join(f"{k}={v}" for k, v in kwargs.items())
+        extra = _safe_log_dict(kwargs)
         logger.info(f"{message} {extra}")
     else:
         logger.info(message)

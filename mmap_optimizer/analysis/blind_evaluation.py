@@ -12,7 +12,7 @@ from typing import Any
 from mmap_optimizer.analysis.parser import parse_analysis_output_with_repair
 from mmap_optimizer.analysis.record import AnalysisRecord
 from mmap_optimizer.evaluation.evaluator import EvaluationRecord
-from mmap_optimizer.logging import get_logger
+from mmap_optimizer.logging import get_logger, log_stage
 from mmap_optimizer.model.client import ModelClient
 from mmap_optimizer.orchestration.records import (
     BlindEvaluationRecord,
@@ -113,10 +113,7 @@ class BlindEvaluationRunner:
         for evaluation in evaluations:
             source_run = extraction_runs.get(evaluation.sample_id)
             if source_run is None:
-                logger.warning(
-                    "No extraction run found for sample_id=%s, skipping blind eval",
-                    evaluation.sample_id,
-                )
+                log_stage(logger, "blind_eval_skip", "跳过盲评（无抽取记录）", sample_id=evaluation.sample_id)
                 continue
 
             metadata = sample_metadata.get(evaluation.sample_id, {})

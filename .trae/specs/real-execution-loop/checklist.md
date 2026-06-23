@@ -26,29 +26,99 @@
 - [x] SampleState 的 error_ema 基于真实评估更新
 - [x] 没有 mock status="correct" 的硬编码结果（真实 executor 不硬编码；mock fallback 保留用于无 model_client 场景）
 
-## PR 2：真实 Patch Apply 与 Prompt Render
+## PR 2：真实 Patch 生成、应用与 Prompt 版本推进
 
-- [ ] PatchApplyExecutor 实现 replace/insert_after/insert_before/delete 操作
-- [ ] PatchApplyExecutor 拒绝 immutable section patch
-- [ ] PatchApplyExecutor 应用后生成新 prompt version
-- [ ] PatchApplyExecutor 保存 before/after
-- [ ] PatchApplyExecutor 生成 apply report
-- [ ] PatchGenerationExecutor 基于 AnalysisResult 生成 ExtractionPatch
-- [ ] PatchGenerationExecutor 基于 ReflectionResult 生成 AnalysisPatch
-- [ ] PatchGenerationExecutor 接入 PatchValidator 验证
-- [ ] PatchGenerationExecutor 生成失败时记录 rejection_reason
-- [ ] ExtractionPromptOptimizationStage Step 4 使用 PatchGenerationExecutor
-- [ ] ExtractionPromptOptimizationStage Step 6 使用 PatchApplyExecutor + ExtractionExecutor
-- [ ] ExtractionPromptOptimizationStage Step 9 使用真实最终测试
-- [ ] AnalysisPromptOptimizationStage Step 3 使用 PatchGenerationExecutor
-- [ ] AnalysisPromptOptimizationStage Step 5 使用 PatchApplyExecutor + AnalysisExecutor
-- [ ] AnalysisPromptOptimizationStage Step 8 使用真实最终测试
-- [ ] PromptOptimizationPhase 真正应用 patch 到 StructuredPrompt（不再仅自增 version）
-- [ ] accepted patch 能修改指定 section
-- [ ] output schema section 不可修改
-- [ ] final prompt 能 render 成模型输入
-- [ ] prompt version 真实变化
-- [ ] apply report 可追踪
+### PatchValidator
+- [x] PatchValidator 实现 target_section_id 存在性校验
+- [x] PatchValidator 实现 mutable section 校验
+- [x] PatchValidator 实现 operation_type 合法性校验
+- [x] PatchValidator 实现 content 非空校验
+- [x] PatchValidator 实现 source_sample_ids 非空且存在校验
+- [x] PatchValidator 实现 output schema 保护校验
+- [x] PatchValidator 实现 mock/placeholder 内容检测
+- [x] 校验通过返回 status="candidate"
+- [x] 校验失败返回 status="rejected" + rejection_reason="VALIDATION_FAILED:<reason>"
+- [x] validate_batch 返回 (validated_patches, rejected_patches)
+
+### PatchGenerationExecutor
+- [x] PatchGenerationExecutor 基于 AnalysisResult 生成 ExtractionPatch
+- [x] PatchGenerationExecutor 基于 ReflectionResult 生成 AnalysisPatch
+- [x] 只从 analysis_correct=true 的样本生成 extraction patch
+- [x] 只从 reflection_success=true 且有 patch_suggestion 的样本生成 analysis patch
+- [x] 每个 patch 绑定 source_sample_ids
+- [x] target_section_id 不存在时拒绝生成
+- [x] content 为空或为占位符时拒绝生成
+- [x] 集成 PatchValidator 校验
+- [x] 产出 draft_patches、validated_patches、rejected_patches
+
+### PatchApplyExecutor
+- [x] PatchApplyExecutor 实现 replace 操作
+- [x] PatchApplyExecutor 实现 append 操作
+- [x] PatchApplyExecutor 实现 delete 操作（默认禁用，需配置开启）
+- [x] PatchApplyExecutor 拒绝 immutable section patch（rejection_reason="IMMUTABLE_SECTION"）
+- [x] patch 应用后 prompt version 递增
+- [x] new_prompt.parent_id = base_prompt.id
+- [x] new_prompt.metadata["applied_patch_ids"] 记录已应用 patch
+- [x] changed 判定基于 before_hash / after_hash 比较
+- [x] PatchApplyReport 包含完整字段（id、base_prompt_id、new_prompt_id、applied_patch_ids、rejected_patch_ids、modified_section_ids、before_hash、after_hash、changed、warnings）
+
+### Extraction Stage 接入
+- [x] Step 4 使用 PatchGenerationExecutor + PatchValidator 替换 mock patch 生成
+- [x] Step 5 使用 passthrough merge（临时），保留 merge report
+- [x] Step 6 使用 PatchApplyExecutor.apply() 替换 mock 应用
+- [x] Step 6 apply_report.changed=true 时使用 ExtractionExecutor + EvaluationExecutor 重新抽取和评估
+- [x] Step 6 apply_report.changed=false 时标记 no_progress
+- [x] Step 7 基于 base_eval 和 patched_eval 做 patch set 级 transition 分类
+- [x] Step 7 fixed > 0 且 broken = 0 时接受 patch set
+- [x] Step 7 broken > 0 时回滚到 base_prompt
+- [x] Step 9 使用真实 ExtractionExecutor + EvaluationExecutor 执行 final test
+- [x] Step 9 接受时 final_prompt = accepted_prompt
+- [x] Step 9 拒绝时 final_prompt = base_prompt + no_progress=true
+- [x] stage 新增 accepted_prompt 属性
+
+### Analysis Stage 接入
+- [x] Step 3 使用 PatchGenerationExecutor.generate_analysis_patches() + PatchValidator
+- [x] Step 4 使用 passthrough merge（临时）
+- [x] Step 5 使用 PatchApplyExecutor.apply() 替换 mock 应用
+- [x] Step 5 changed=true 时复用本轮 extraction results 重新执行 AnalysisExecutor
+- [x] Step 6 patched_analysis_accuracy >= base_analysis_accuracy 且无 regression 时接受
+- [x] Step 6 accuracy 下降时回滚 analysis prompt
+- [x] Step 8 使用真实 AnalysisExecutor 执行 final test
+- [x] stage 新增 accepted_prompt 属性
+
+### PromptOptimizationPhase 改造
+- [x] 注入 patch_generation_executor 和 patch_apply_executor
+- [x] 将新 executor 传给 ExtractionPromptOptimizationStage 和 AnalysisPromptOptimizationStage
+- [x] 使用 stage.accepted_prompt 更新当前 prompt（不再仅自增 version）
+- [x] 记录 prompt lineage（base_prompt_id、new_prompt_id、version、applied_patch_ids、iteration、stage）
+- [x] 保存 prompt_versions.jsonl 和 patch_apply_reports.jsonl
+
+### Factory / Runner
+- [x] factory.py 构建 PatchGenerationExecutor 实例
+- [x] factory.py 构建 PatchApplyExecutor 实例
+- [x] factory.py 构建 PatchValidator 实例
+- [x] runner.py 将新 executor 注入到 PromptOptimizationPhase
+
+### Artifact
+- [x] extraction/ 下保存 15 个文件（base_results、base_eval、analysis_results、draft_patches、validated_patches、rejected_patches、initial_merge_report、patched_prompt、patch_apply_report、patched_results、patched_eval、final_prompt、final_results、final_eval、metrics）
+- [x] analysis/ 下保存 12 个文件（base_metrics、reflection_results、draft_patches、validated_patches、rejected_patches、initial_merge_report、patched_analysis_prompt、patch_apply_report、patched_analysis_results、final_analysis_prompt、final_analysis_results、metrics）
+- [x] run-level 保存 prompt_versions.jsonl、patch_apply_reports.jsonl、run_summary.json
+
+### 集成测试
+- [x] analysis result → extraction patch → validate → apply → render 链路跑通
+- [x] reflection result → analysis patch → validate → apply → render 链路跑通
+- [x] patched prompt 重新执行 extraction 成功
+- [x] patched analysis prompt 重新执行 analysis 成功
+- [x] broken sample 出现时回滚生效
+- [x] fixed 样本出现且无 broken 时接受生效
+
+### Smoke 测试与验收
+- [x] 3～5 条最小样本流程跑通（patch generated → patch applied → prompt changed → final eval generated）
+- [x] accepted patch 能修改指定 section
+- [x] output schema section 不可修改
+- [x] final prompt 能 render 成模型输入
+- [x] prompt version 真实变化
+- [x] CLI 能跑通至少 1 轮 prompt optimization 并产生真实 prompt 变化
 
 ## PR 3：真实 Merge 与 Greedy 测毒
 

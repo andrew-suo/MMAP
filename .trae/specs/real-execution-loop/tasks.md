@@ -72,118 +72,170 @@
 
 ---
 
-## PR 2：真实 Patch Apply 与 Prompt Render
+## PR 2：真实 Patch 生成、应用与 Prompt 版本推进
 
-- [ ] Task 11: 实现 PatchApplyExecutor
-  - [ ] SubTask 11.1: 创建 `executors/patch_apply_executor.py`
-  - [ ] SubTask 11.2: 实现 `apply()` 方法：replace/insert_after/insert_before/delete 操作
-  - [ ] SubTask 11.3: 实现 immutable section 拒绝逻辑
-  - [ ] SubTask 11.4: 实现版本递增和 before/after 保存
-  - [ ] SubTask 11.5: 实现 apply report 生成
-  - [ ] SubTask 11.6: 编写单元测试（replace、append、delete、immutable 拒绝）
+- [x] Task 11: 实现 PatchValidator
+  - [x] SubTask 11.1: 创建 `executors/patch_validator.py`，实现统一校验逻辑
+  - [x] SubTask 11.2: 实现校验项：target_section_id 存在性、mutable 检查、operation_type 合法性、content 非空、source_sample_ids 非空且存在、output schema 保护、mock/placeholder 内容检测
+  - [x] SubTask 11.3: 实现 `validate()` 单个 patch 校验，通过返回 status="candidate"，失败返回 status="rejected" + rejection_reason="VALIDATION_FAILED:<reason>"
+  - [x] SubTask 11.4: 实现 `validate_batch()` 批量校验，返回 (validated_patches, rejected_patches)
+  - [x] SubTask 11.5: 编写单元测试覆盖所有校验项
 
-- [ ] Task 12: 实现 PatchGenerationExecutor
-  - [ ] SubTask 12.1: 创建 `executors/patch_generation_executor.py`
-  - [ ] SubTask 12.2: 实现 `generate_extraction_patches()` 基于 AnalysisResult 生成 ExtractionPatch
-  - [ ] SubTask 12.3: 实现 `generate_analysis_patches()` 基于 ReflectionResult 生成 AnalysisPatch
-  - [ ] SubTask 12.4: 接入 PatchValidator（`patch/validator.py`）验证生成的 patch
-  - [ ] SubTask 12.5: 实现 patch 生成失败时记录 rejection_reason
-  - [ ] SubTask 12.6: 编写单元测试
+- [x] Task 12: 实现 PatchGenerationExecutor
+  - [x] SubTask 12.1: 创建 `executors/patch_generation_executor.py`
+  - [x] SubTask 12.2: 实现 `generate_extraction_patches()` 基于 AnalysisResult 生成 ExtractionPatch，只从 analysis_correct=true 的样本生成
+  - [x] SubTask 12.3: 实现 `generate_analysis_patches()` 基于 ReflectionResult 生成 AnalysisPatch，只从 reflection_success=true 且有 patch_suggestion 的样本生成
+  - [x] SubTask 12.4: 实现 patch 来源规则：每个 patch 必须绑定 source_sample_ids，来源不明拒绝生成
+  - [x] SubTask 12.5: 实现 patch 目标规则：target_section_id 必须存在于 prompt 中，否则拒绝
+  - [x] SubTask 12.6: 实现 patch 内容规则：content 不允许为空或为 "Mock patch content"、"TODO"、"N/A" 等占位符
+  - [x] SubTask 12.7: 集成 PatchValidator，生成后立即校验，产出 draft_patches、validated_patches、rejected_patches
+  - [x] SubTask 12.8: 编写单元测试
 
-- [ ] Task 13: 接入 PatchApplyExecutor 和 PatchGenerationExecutor 到 stages
-  - [ ] SubTask 13.1: 替换 ExtractionPromptOptimizationStage Step 4 mock patch 生成
-  - [ ] SubTask 13.2: 替换 ExtractionPromptOptimizationStage Step 6 mock 应用为 PatchApplyExecutor + ExtractionExecutor
-  - [ ] SubTask 13.3: 替换 ExtractionPromptOptimizationStage Step 9 mock 最终测试
-  - [ ] SubTask 13.4: 替换 AnalysisPromptOptimizationStage Step 3 mock patch 生成
-  - [ ] SubTask 13.5: 替换 AnalysisPromptOptimizationStage Step 5 mock 应用
-  - [ ] SubTask 13.6: 替换 AnalysisPromptOptimizationStage Step 8 mock 最终测试
-  - [ ] SubTask 13.7: 替换 PromptOptimizationPhase 中 mock patch 应用（行 147-150, 164-166）
+- [x] Task 13: 实现 PatchApplyExecutor 和 PatchApplyReport
+  - [x] SubTask 13.1: 创建 `executors/patch_apply_executor.py`
+  - [x] SubTask 13.2: 定义 `PatchApplyReport` dataclass：id、base_prompt_id、new_prompt_id、applied_patch_ids、rejected_patch_ids、modified_section_ids、before_hash、after_hash、changed、warnings
+  - [x] SubTask 13.3: 实现 `apply()` 方法，接受 base_prompt 和 patches，返回 (new_prompt, apply_report)
+  - [x] SubTask 13.4: 实现 replace 操作：替换目标 section 的 content
+  - [x] SubTask 13.5: 实现 append 操作：在目标 section content 末尾追加
+  - [x] SubTask 13.6: 实现 delete 操作：默认禁用，需配置显式开启；只清空 content 不删除 section
+  - [x] SubTask 13.7: 实现 immutable section 拒绝逻辑，rejection_reason="IMMUTABLE_SECTION"
+  - [x] SubTask 13.8: 实现 prompt version 递增：new_prompt.version = base_prompt.version + 1，parent_id = base_prompt.id，metadata["applied_patch_ids"] 记录已应用 patch
+  - [x] SubTask 13.9: 实现 changed 判定：比较 before_hash 和 after_hash，相同则 changed=false
+  - [x] SubTask 13.10: 编写单元测试（replace、append、delete 禁用、immutable 拒绝、version 递增、changed 判定）
 
-- [ ] Task 14: PR2 集成验证
-  - [ ] SubTask 14.1: 验证 accepted patch 能修改指定 section
-  - [ ] SubTask 14.2: 验证 output schema section 不可修改
-  - [ ] SubTask 14.3: 验证 final prompt 能 render 成模型输入
-  - [ ] SubTask 14.4: 验证 prompt version 真实变化
+- [x] Task 14: 接入 PatchGenerationExecutor 和 PatchApplyExecutor 到 ExtractionPromptOptimizationStage
+  - [x] SubTask 14.1: 修改 `__init__` 接受 patch_generation_executor 和 patch_apply_executor 参数
+  - [x] SubTask 14.2: 替换 Step 4 mock patch 生成为 PatchGenerationExecutor + PatchValidator，产出 draft_patches、validated_patches、rejected_patches
+  - [x] SubTask 14.3: 替换 Step 5 mock merge 为 passthrough merge，保留 merge report（merge_strategy="passthrough"）
+  - [x] SubTask 14.4: 替换 Step 6 mock 应用为 PatchApplyExecutor.apply()，如果 changed=true 则使用 ExtractionExecutor + EvaluationExecutor 重新抽取和评估
+  - [x] SubTask 14.5: Step 6 产出 patched_prompt.json、patch_apply_report.json、patched_results.jsonl、patched_eval.jsonl
+  - [x] SubTask 14.6: 替换 Step 7 mock 测毒为 patch set 级 transition 分类（fixed/broken/unchanged_wrong/unchanged_correct）
+  - [x] SubTask 14.7: Step 7 接受规则：fixed > 0 且 broken = 0 则接受；broken > 0 则回滚；fixed = 0 则 no_progress
+  - [x] SubTask 14.8: 替换 Step 9 mock final test 为真实 ExtractionExecutor + EvaluationExecutor
+  - [x] SubTask 14.9: Step 9 接受时 final_prompt = accepted_prompt，拒绝时 final_prompt = base_prompt + no_progress=true
+  - [x] SubTask 14.10: 新增 accepted_prompt 属性供 PromptOptimizationPhase 读取
+
+- [x] Task 15: 接入 PatchGenerationExecutor 和 PatchApplyExecutor 到 AnalysisPromptOptimizationStage
+  - [x] SubTask 15.1: 修改 `__init__` 接受 patch_generation_executor 和 patch_apply_executor 参数
+  - [x] SubTask 15.2: 替换 Step 3 mock patch 生成为 PatchGenerationExecutor.generate_analysis_patches() + PatchValidator
+  - [x] SubTask 15.3: 替换 Step 4 mock merge 为 passthrough merge
+  - [x] SubTask 15.4: 替换 Step 5 mock 应用为 PatchApplyExecutor.apply()，changed=true 时复用本轮 extraction results 重新执行 AnalysisExecutor
+  - [x] SubTask 15.5: 替换 Step 6 mock 测毒为 patch set 级判断：patched_analysis_accuracy >= base_analysis_accuracy 且无 regression 则接受
+  - [x] SubTask 15.6: 替换 Step 8 mock final test 为真实 AnalysisExecutor
+  - [x] SubTask 15.7: 新增 accepted_prompt 属性供 PromptOptimizationPhase 读取
+
+- [x] Task 16: 修改 PromptOptimizationPhase 注入新 executor 并真正更新 prompt
+  - [x] SubTask 16.1: 修改 `__init__` 接受 patch_generation_executor 和 patch_apply_executor
+  - [x] SubTask 16.2: 将新 executor 传给 ExtractionPromptOptimizationStage 和 AnalysisPromptOptimizationStage
+  - [x] SubTask 16.3: 替换 mock patch 应用（仅自增 version）为使用 stage.accepted_prompt 更新当前 prompt
+  - [x] SubTask 16.4: 实现 prompt lineage 记录：base_prompt_id、new_prompt_id、version、applied_patch_ids、iteration、stage
+  - [x] SubTask 16.5: 保存 prompt_versions.jsonl 和 patch_apply_reports.jsonl
+
+- [x] Task 17: 修改 factory 和 runner 构建并注入新 executor
+  - [x] SubTask 17.1: 在 factory.py 中构建 PatchGenerationExecutor 和 PatchApplyExecutor 实例
+  - [x] SubTask 17.2: 在 factory.py 中构建 PatchValidator 实例
+  - [x] SubTask 17.3: 在 runner.py 中将新 executor 注入到 PromptOptimizationPhase
+
+- [x] Task 18: 补齐 PR2 阶段 Artifact
+  - [x] SubTask 18.1: 保存 extraction/ 下 artifact：base_results、base_eval、analysis_results、draft_patches、validated_patches、rejected_patches、initial_merge_report、patched_prompt、patch_apply_report、patched_results、patched_eval、final_prompt、final_results、final_eval、metrics
+  - [x] SubTask 18.2: 保存 analysis/ 下 artifact：base_metrics、reflection_results、draft_patches、validated_patches、rejected_patches、initial_merge_report、patched_analysis_prompt、patch_apply_report、patched_analysis_results、final_analysis_prompt、final_analysis_results、metrics
+  - [x] SubTask 18.3: 保存 run-level artifact：prompt_versions.jsonl、patch_apply_reports.jsonl、run_summary.json
+
+- [x] Task 19: PR2 集成测试
+  - [x] SubTask 19.1: 编写集成测试：analysis result → extraction patch → validate → apply → render
+  - [x] SubTask 19.2: 编写集成测试：reflection result → analysis patch → validate → apply → render
+  - [x] SubTask 19.3: 编写集成测试：patched prompt 重新执行 extraction
+  - [x] SubTask 19.4: 编写集成测试：patched analysis prompt 重新执行 analysis
+  - [x] SubTask 19.5: 编写集成测试：broken sample 出现时回滚
+  - [x] SubTask 19.6: 编写集成测试：fixed 样本出现且无 broken 时接受
+
+- [x] Task 20: PR2 Smoke 测试与验收
+  - [x] SubTask 20.1: 使用 3～5 条最小样本验证流程跑通：patch generated → patch applied → prompt changed → final eval generated
+  - [x] SubTask 20.2: 验证 accepted patch 能修改指定 section
+  - [x] SubTask 20.3: 验证 output schema section 不可修改
+  - [x] SubTask 20.4: 验证 final prompt 能 render 成模型输入
+  - [x] SubTask 20.5: 验证 prompt version 真实变化
+  - [x] SubTask 20.6: 验证 CLI 能跑通至少 1 轮 prompt optimization 并产生真实 prompt 变化
 
 ---
 
 ## PR 3：真实 Merge 与 Greedy 测毒
 
-- [ ] Task 15: 实现 MergeExecutor
-  - [ ] SubTask 15.1: 创建 `executors/merge_executor.py`
-  - [ ] SubTask 15.2: 接入旧系统 `TreeReducePatchMerger`（`patch/tree_reduce.py`）
-  - [ ] SubTask 15.3: 实现数据结构转换：ExtractionPatch/AnalysisPatch ↔ 旧系统 Patch
-  - [ ] SubTask 15.4: 实现 merge 后重新 validate
-  - [ ] SubTask 15.5: 实现 merge report 生成（input/merged/dropped/conflict patch_ids）
-  - [ ] SubTask 15.6: 实现 fallback 到 rule-based merge
-  - [ ] SubTask 15.7: 编写单元测试
+- [ ] Task 21: 实现 MergeExecutor
+  - [ ] SubTask 21.1: 创建 `executors/merge_executor.py`
+  - [ ] SubTask 21.2: 接入旧系统 `TreeReducePatchMerger`（`patch/tree_reduce.py`）
+  - [ ] SubTask 21.3: 实现数据结构转换：ExtractionPatch/AnalysisPatch ↔ 旧系统 Patch
+  - [ ] SubTask 21.4: 实现 merge 后重新 validate
+  - [ ] SubTask 21.5: 实现 merge report 生成（input/merged/dropped/conflict patch_ids）
+  - [ ] SubTask 21.6: 实现 fallback 到 rule-based merge
+  - [ ] SubTask 21.7: 编写单元测试
 
-- [ ] Task 16: 实现 ToxicityTestExecutor
-  - [ ] SubTask 16.1: 创建 `executors/toxicity_executor.py`
-  - [ ] SubTask 16.2: 实现 patch 按 source sample 难度排序
-  - [ ] SubTask 16.3: 实现 greedy 测毒循环（apply patch → 在 toxic_sample_ids 上测试 → 判定）
-  - [ ] SubTask 16.4: 实现 early stop（toxic sample 失败立即拒绝）
-  - [ ] SubTask 16.5: 实现空 toxic set 跳过逻辑
-  - [ ] SubTask 16.6: 实现 toxicity report 生成（tested/toxic/safe/broken_sample_ids）
-  - [ ] SubTask 16.7: 编写单元测试
+- [ ] Task 22: 实现 ToxicityTestExecutor
+  - [ ] SubTask 22.1: 创建 `executors/toxicity_executor.py`
+  - [ ] SubTask 22.2: 实现 patch 按 source sample 难度排序
+  - [ ] SubTask 22.3: 实现 greedy 测毒循环（apply patch → 在 toxic_sample_ids 上测试 → 判定）
+  - [ ] SubTask 22.4: 实现 early stop（toxic sample 失败立即拒绝）
+  - [ ] SubTask 22.5: 实现空 toxic set 跳过逻辑
+  - [ ] SubTask 22.6: 实现 toxicity report 生成（tested/toxic/safe/broken_sample_ids）
+  - [ ] SubTask 22.7: 编写单元测试
 
-- [ ] Task 17: 接入 MergeExecutor 和 ToxicityTestExecutor 到 stages
-  - [ ] SubTask 17.1: 替换 ExtractionPromptOptimizationStage Step 5 mock merge
-  - [ ] SubTask 17.2: 替换 ExtractionPromptOptimizationStage Step 7 mock 测毒
-  - [ ] SubTask 17.3: 替换 AnalysisPromptOptimizationStage Step 4 mock merge
-  - [ ] SubTask 17.4: 替换 AnalysisPromptOptimizationStage Step 6 mock 测毒
+- [ ] Task 23: 接入 MergeExecutor 和 ToxicityTestExecutor 到 stages
+  - [ ] SubTask 23.1: 替换 ExtractionPromptOptimizationStage Step 5 passthrough merge 为真实 MergeExecutor
+  - [ ] SubTask 23.2: 替换 ExtractionPromptOptimizationStage Step 7 patch set 级判断为真实 ToxicityTestExecutor
+  - [ ] SubTask 23.3: 替换 AnalysisPromptOptimizationStage Step 4 passthrough merge 为真实 MergeExecutor
+  - [ ] SubTask 23.4: 替换 AnalysisPromptOptimizationStage Step 6 patch set 级判断为真实 ToxicityTestExecutor
 
-- [ ] Task 18: PR3 集成验证
-  - [ ] SubTask 18.1: 验证 ineffective patch 被剔除
-  - [ ] SubTask 18.2: 验证 toxic patch 被拒绝
-  - [ ] SubTask 18.3: 验证 safe patch 进入 final merge
-  - [ ] SubTask 18.4: 验证 early stop 生效
-  - [ ] SubTask 18.5: 验证 toxicity_report 包含 tested/toxic/safe/broken_sample_ids
+- [ ] Task 24: PR3 集成验证
+  - [ ] SubTask 24.1: 验证 ineffective patch 被剔除
+  - [ ] SubTask 24.2: 验证 toxic patch 被拒绝
+  - [ ] SubTask 24.3: 验证 safe patch 进入 final merge
+  - [ ] SubTask 24.4: 验证 early stop 生效
+  - [ ] SubTask 24.5: 验证 toxicity_report 包含 tested/toxic/safe/broken_sample_ids
 
 ---
 
 ## PR 4：压缩、Artifact、端到端 Smoke
 
-- [ ] Task 19: 实现 CompressionExecutor
-  - [ ] SubTask 19.1: 创建 `executors/compression_executor.py`
-  - [ ] SubTask 19.2: 接入旧系统 `CompressionEngine`（`compression/engine.py`）
-  - [ ] SubTask 19.3: 实现超限检测（line_limit / char_limit）
-  - [ ] SubTask 19.4: 实现压缩后重新测试和接受标准判断
-  - [ ] SubTask 19.5: 实现压缩失败保留原 prompt
-  - [ ] SubTask 19.6: 实现 compression report 生成
-  - [ ] SubTask 19.7: 编写单元测试
+- [ ] Task 25: 实现 CompressionExecutor
+  - [ ] SubTask 25.1: 创建 `executors/compression_executor.py`
+  - [ ] SubTask 25.2: 接入旧系统 `CompressionEngine`（`compression/engine.py`）
+  - [ ] SubTask 25.3: 实现超限检测（line_limit / char_limit）
+  - [ ] SubTask 25.4: 实现压缩后重新测试和接受标准判断
+  - [ ] SubTask 25.5: 实现压缩失败保留原 prompt
+  - [ ] SubTask 25.6: 实现 compression report 生成
+  - [ ] SubTask 25.7: 编写单元测试
 
-- [ ] Task 20: 接入 CompressionExecutor 到 stages
-  - [ ] SubTask 20.1: 替换 ExtractionPromptOptimizationStage Step 8 mock 压缩
-  - [ ] SubTask 20.2: 替换 AnalysisPromptOptimizationStage Step 7 mock 压缩
+- [ ] Task 26: 接入 CompressionExecutor 到 stages
+  - [ ] SubTask 26.1: 替换 ExtractionPromptOptimizationStage Step 8 mock 压缩
+  - [ ] SubTask 26.2: 替换 AnalysisPromptOptimizationStage Step 7 mock 压缩
 
-- [ ] Task 21: 补齐全链路 Artifact
-  - [ ] SubTask 21.1: 在 PromptOptimizationPhase 保存 extraction/ 下 12 个文件（base_results、base_eval、analysis_results、draft_patches、initial_merge_report、patched_results、patched_eval、toxicity_report、final_merge_report、final_results、final_eval、metrics）
-  - [ ] SubTask 21.2: 在 PromptOptimizationPhase 保存 analysis/ 下 9 个文件（base_metrics、reflection_results、draft_patches、initial_merge_report、patched_analysis_results、toxicity_report、final_merge_report、final_analysis_results、metrics）
-  - [ ] SubTask 21.3: 保存 sample_traces.jsonl（每轮）
-  - [ ] SubTask 21.4: 保存 sample_state_before.json 和 sample_state_after.json
-  - [ ] SubTask 21.5: 保存 batch_size_controller_before.json 和 batch_size_controller_after.json
-  - [ ] SubTask 21.6: 在 FewshotOptimizationPhase 保存 fewshot/ 下 6 个文件（base_results、base_eval、selected_examples、final_results、final_eval、metrics）
-  - [ ] SubTask 21.7: 保存 compression_report.json（如果触发）
+- [ ] Task 27: 补齐全链路 Artifact
+  - [ ] SubTask 27.1: 在 PromptOptimizationPhase 保存 extraction/ 下 12 个文件（base_results、base_eval、analysis_results、draft_patches、initial_merge_report、patched_results、patched_eval、toxicity_report、final_merge_report、final_results、final_eval、metrics）
+  - [ ] SubTask 27.2: 在 PromptOptimizationPhase 保存 analysis/ 下 9 个文件（base_metrics、reflection_results、draft_patches、initial_merge_report、patched_analysis_results、toxicity_report、final_merge_report、final_analysis_results、metrics）
+  - [ ] SubTask 27.3: 保存 sample_traces.jsonl（每轮）
+  - [ ] SubTask 27.4: 保存 sample_state_before.json 和 sample_state_after.json
+  - [ ] SubTask 27.5: 保存 batch_size_controller_before.json 和 batch_size_controller_after.json
+  - [ ] SubTask 27.6: 在 FewshotOptimizationPhase 保存 fewshot/ 下 6 个文件（base_results、base_eval、selected_examples、final_results、final_eval、metrics）
+  - [ ] SubTask 27.7: 保存 compression_report.json（如果触发）
 
-- [ ] Task 22: 修复 Runner 问题
-  - [ ] SubTask 22.1: 修复 yaml 导入顺序 bug（runner.py 行 438-442 的 try-except 应移到文件顶部）
-  - [ ] SubTask 22.2: 保存最终 few-shot examples 到顶层目录
-  - [ ] SubTask 22.3: 增加 rollback / no_progress 标记到 run_summary
+- [ ] Task 28: 修复 Runner 问题
+  - [ ] SubTask 28.1: 修复 yaml 导入顺序 bug（runner.py 行 438-442 的 try-except 应移到文件顶部）
+  - [ ] SubTask 28.2: 保存最终 few-shot examples 到顶层目录
+  - [ ] SubTask 28.3: 增加 rollback / no_progress 标记到 run_summary
 
-- [ ] Task 23: 准备小数据集和端到端 Smoke
-  - [ ] SubTask 23.1: 准备 10～20 条小样本数据集（data/smoke_samples.jsonl）
-  - [ ] SubTask 23.2: 创建 smoke 测试配置（configs/smoke_config.yaml，rounds=1）
-  - [ ] SubTask 23.3: 编写端到端 smoke 测试脚本
-  - [ ] SubTask 23.4: 验证 CLI 能跑通真实小数据集
-  - [ ] SubTask 23.5: 验证不出现 mock output
+- [ ] Task 29: 准备小数据集和端到端 Smoke
+  - [ ] SubTask 29.1: 准备 10～20 条小样本数据集（data/smoke_samples.jsonl）
+  - [ ] SubTask 29.2: 创建 smoke 测试配置（configs/smoke_config.yaml，rounds=1）
+  - [ ] SubTask 29.3: 编写端到端 smoke 测试脚本
+  - [ ] SubTask 29.4: 验证 CLI 能跑通真实小数据集
+  - [ ] SubTask 29.5: 验证不出现 mock output
 
-- [ ] Task 24: PR4 最终验收
-  - [ ] SubTask 24.1: 验证 prompt 超限时触发压缩
-  - [ ] SubTask 24.2: 验证压缩后不降才接受
-  - [ ] SubTask 24.3: 验证一次完整 Run 产物完整
-  - [ ] SubTask 24.4: 验证 CLI 能跑通真实 10～20 条样本
-  - [ ] SubTask 24.5: 验证三阶段全流程无 mock
+- [ ] Task 30: PR4 最终验收
+  - [ ] SubTask 30.1: 验证 prompt 超限时触发压缩
+  - [ ] SubTask 30.2: 验证压缩后不降才接受
+  - [ ] SubTask 30.3: 验证一次完整 Run 产物完整
+  - [ ] SubTask 30.4: 验证 CLI 能跑通真实 10～20 条样本
+  - [ ] SubTask 30.5: 验证三阶段全流程无 mock
 
 ---
 
@@ -198,23 +250,30 @@
 - [Task 8] depends on [Task 5, Task 6, Task 7]
 - [Task 9] depends on [Task 7, Task 8]
 - [Task 10] depends on [Task 9]
-- [Task 11] depends on [Task 10]（PR2 依赖 PR1 完成）
-- [Task 12] depends on [Task 11]
-- [Task 13] depends on [Task 11, Task 12]
-- [Task 14] depends on [Task 13]
-- [Task 15] depends on [Task 14]（PR3 依赖 PR2 完成）
-- [Task 16] depends on [Task 15]
-- [Task 17] depends on [Task 15, Task 16]
-- [Task 18] depends on [Task 17]
-- [Task 19] depends on [Task 18]（PR4 依赖 PR3 完成）
-- [Task 20] depends on [Task 19]
-- [Task 21] depends on [Task 20]
+- [Task 11] depends on [Task 10]（PR2 依赖 PR1 完成，PatchValidator 独立）
+- [Task 12] depends on [Task 11]（PatchGenerationExecutor 需要 PatchValidator）
+- [Task 13] depends on [Task 11]（PatchApplyExecutor 独立于 PatchGenerationExecutor，但需要 PatchValidator 的概念）
+- [Task 14] depends on [Task 12, Task 13]（接入 stage 需要 generation 和 apply executor）
+- [Task 15] depends on [Task 12, Task 13]（analysis stage 接入可与 extraction stage 接入并行）
+- [Task 16] depends on [Task 14, Task 15]（PromptOptimizationPhase 需要 stage 接入完成）
+- [Task 17] depends on [Task 16]（factory/runner 注入依赖 phase 改造完成）
+- [Task 18] depends on [Task 17]（artifact 补齐依赖主流程跑通）
+- [Task 19] depends on [Task 18]（集成测试依赖 artifact 可验证）
+- [Task 20] depends on [Task 19]（smoke 测试依赖集成测试通过）
+- [Task 21] depends on [Task 20]（PR3 依赖 PR2 完成）
 - [Task 22] depends on [Task 21]
-- [Task 23] depends on [Task 22]
+- [Task 23] depends on [Task 21, Task 22]
 - [Task 24] depends on [Task 23]
+- [Task 25] depends on [Task 24]（PR4 依赖 PR3 完成）
+- [Task 26] depends on [Task 25]
+- [Task 27] depends on [Task 26]
+- [Task 28] depends on [Task 27]
+- [Task 29] depends on [Task 28]
+- [Task 30] depends on [Task 29]
 
 ## 可并行任务
 
 - PR1 内：Task 3、Task 4、Task 5 可并行（各自独立的 executor 实现）
-- PR2 内：Task 11、Task 12 可并行（PatchApplyExecutor 和 PatchGenerationExecutor 独立）
-- PR3 内：Task 15、Task 16 可并行（MergeExecutor 和 ToxicityTestExecutor 独立）
+- PR2 内：Task 12、Task 13 可并行（PatchGenerationExecutor 和 PatchApplyExecutor 独立）
+- PR2 内：Task 14、Task 15 可并行（extraction stage 和 analysis stage 接入独立）
+- PR3 内：Task 21、Task 22 可并行（MergeExecutor 和 ToxicityTestExecutor 独立）

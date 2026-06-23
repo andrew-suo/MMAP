@@ -18,9 +18,9 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from ..patch_types import CompressionReport
-from ..sample import SampleBatch, SampleSet
-from ..structured_prompt import PromptSection, StructuredPrompt
+from ..patch.types import CompressionReport
+from ..data.sample import SampleBatch, SampleSet
+from ..prompt.structured_prompt import PromptSection, StructuredPrompt
 
 
 class CompressionExecutor:

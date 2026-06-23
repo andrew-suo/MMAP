@@ -16,16 +16,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .analysis_prompt_optimization_stage import AnalysisMetrics
-from .config import RefactoredConfig
-from .dataset_loader import DatasetLoader
-from .executors import create_executors
-from .extraction_prompt_optimization_stage import ExtractionMetrics
-from .fewshot_optimization_phase import FewshotMetrics, FewshotOptimizationPhase
-from .prompt_optimization_phase import PromptOptimizationPhase
-from .prompt_structuring_phase import PromptStructuringPhase
-from .sample import SampleSet
-from .structured_prompt import StructuredPrompt
+from ..stages.analysis_prompt_optimization import AnalysisMetrics
+from ..core.config import RefactoredConfig
+from ..data.dataset_loader import DatasetLoader
+from ..executors import create_executors
+from ..stages.extraction_prompt_optimization import ExtractionMetrics
+from ..phases.fewshot_optimization import FewshotMetrics, FewshotOptimizationPhase
+from ..phases.prompt_optimization import PromptOptimizationPhase
+from ..phases.prompt_structuring import PromptStructuringPhase
+from ..data.sample import SampleSet
+from ..prompt.structured_prompt import StructuredPrompt
 
 # YAML 导入检查（在顶部导入，避免 _save_initial_artifacts 使用时未定义）
 try:

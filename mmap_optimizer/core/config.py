@@ -20,11 +20,11 @@ try:
 except Exception:
     yaml = None
 
-from .batch_size_controller import BatchSizeControllerConfig
-from .fewshot_optimization_phase import FewshotConfig
-from .prompt_structuring_phase import PromptStructuringConfig
-from .prompt_optimization_phase import PromptOptimizationConfig
-from .sampler import SamplerConfig
+from ..stages.batch_size_controller import BatchSizeControllerConfig
+from ..phases.fewshot_optimization import FewshotConfig
+from ..phases.prompt_structuring import PromptStructuringConfig
+from ..phases.prompt_optimization import PromptOptimizationConfig
+from ..data.sampler import SamplerConfig
 
 
 @dataclass

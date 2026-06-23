@@ -12,9 +12,9 @@ from typing import Any
 
 from ..model.client import ModelClient
 
-from ..extraction_prompt_optimization_stage import AnalysisResult, ExtractionResult
-from ..sample import SampleSet, SampleSpec
-from ..structured_prompt import StructuredPrompt, StructuredPromptRenderer
+from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionResult
+from ..data.sample import SampleSet, SampleSpec
+from ..prompt.structured_prompt import StructuredPrompt, StructuredPromptRenderer
 from .evaluation_executor import normalize_label
 
 
@@ -97,7 +97,7 @@ class AnalysisExecutor:
     ) -> "ReflectionResult":
         """对分析错误的样本进行反思。"""
         # 延迟导入以避免循环依赖
-        from ..analysis_prompt_optimization_stage import ReflectionResult
+        from ..stages.analysis_prompt_optimization import ReflectionResult
 
         messages = self._build_reflection_messages(
             analysis_prompt, extraction_result, analysis_result, sample_spec

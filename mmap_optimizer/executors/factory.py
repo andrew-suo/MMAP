@@ -8,20 +8,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..extraction_prompt_optimization_stage import (
+from ..stages.extraction_prompt_optimization import (
     AnalysisResult,
     EvalRecord,
     ExtractionResult,
 )
-from ..fewshot_optimization_phase import FewshotExample
-from ..patch_types import (
+from ..phases.fewshot_optimization import FewshotExample
+from ..patch.types import (
     AnalysisPatch,
     ExtractionPatch,
     PatchMergeReport,
     ToxicityReport,
 )
-from ..sample import SampleBatch, SampleSet, SampleSpec, SampleState
-from ..structured_prompt import StructuredPrompt
+from ..data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
+from ..prompt.structured_prompt import StructuredPrompt
 from .analysis_executor import AnalysisExecutor
 from .compression_executor import CompressionExecutor
 from .evaluation_executor import EvaluationExecutor
@@ -138,7 +138,7 @@ class _MockAnalysisExecutor:
         sample_spec: SampleSpec,
     ) -> Any:
         # 延迟导入以避免循环依赖
-        from ..analysis_prompt_optimization_stage import ReflectionResult
+        from ..stages.analysis_prompt_optimization import ReflectionResult
 
         return ReflectionResult(
             sample_id=extraction_result.sample_id,
@@ -327,7 +327,7 @@ def _build_model_client(model_config: dict[str, Any] | None) -> Any:
     if not model_config:
         return None
     try:
-        from ..config import ModelConfig, model_config_from_mapping
+        from ..core.config import ModelConfig, model_config_from_mapping
         from ..model.factory import build_model_client
     except Exception:
         return None

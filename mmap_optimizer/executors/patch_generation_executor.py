@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..extraction_prompt_optimization_stage import AnalysisResult, ExtractionResult
-from ..patch_types import AnalysisPatch, ExtractionPatch
-from ..sample import SampleSet
-from ..structured_prompt import PromptSection, StructuredPrompt
+from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionResult
+from ..patch.types import AnalysisPatch, ExtractionPatch
+from ..data.sample import SampleSet
+from ..prompt.structured_prompt import PromptSection, StructuredPrompt
 from .patch_validator import PatchValidator
 
 
@@ -106,7 +106,7 @@ class PatchGenerationExecutor:
             (draft_patches, validated_patches, rejected_patches) 元组。
         """
         # 延迟导入以避免循环依赖
-        from ..analysis_prompt_optimization_stage import ReflectionResult
+        from ..stages.analysis_prompt_optimization import ReflectionResult
 
         draft_patches: list[AnalysisPatch] = []
 

@@ -10,10 +10,10 @@ from __future__ import annotations
 from typing import Any
 
 from ..model.client import ModelClient
-from ..extraction_prompt_optimization_stage import EvalRecord, ExtractionResult
-from ..fewshot_optimization_phase import FewshotExample
-from ..sample import SampleBatch, SampleSet
-from ..structured_prompt import StructuredPrompt
+from ..stages.extraction_prompt_optimization import EvalRecord, ExtractionResult
+from ..phases.fewshot_optimization import FewshotExample
+from ..data.sample import SampleBatch, SampleSet
+from ..prompt.structured_prompt import StructuredPrompt
 from .evaluation_executor import EvaluationExecutor
 from .extraction_executor import ExtractionExecutor
 

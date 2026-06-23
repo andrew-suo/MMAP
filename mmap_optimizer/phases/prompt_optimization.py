@@ -12,12 +12,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .analysis_prompt_optimization_stage import AnalysisMetrics, AnalysisPromptOptimizationStage
-from .batch_size_controller import BatchSizeController, BatchSizeControllerConfig
-from .extraction_prompt_optimization_stage import ExtractionMetrics, ExtractionPromptOptimizationStage
-from .sampler import SamplerConfig, create_sampler
-from .sample import SampleBatch, SampleSet, SampleTrace
-from .structured_prompt import StructuredPrompt
+from ..stages.analysis_prompt_optimization import AnalysisMetrics, AnalysisPromptOptimizationStage
+from ..stages.batch_size_controller import BatchSizeController, BatchSizeControllerConfig
+from ..stages.extraction_prompt_optimization import ExtractionMetrics, ExtractionPromptOptimizationStage
+from ..data.sampler import SamplerConfig, create_sampler
+from ..data.sample import SampleBatch, SampleSet, SampleTrace
+from ..prompt.structured_prompt import StructuredPrompt
 
 
 @dataclass

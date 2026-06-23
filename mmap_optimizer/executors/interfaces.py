@@ -8,24 +8,24 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol
 
-from ..extraction_prompt_optimization_stage import (
+from ..stages.extraction_prompt_optimization import (
     AnalysisResult,
     EvalRecord,
     ExtractionResult,
 )
-from ..fewshot_optimization_phase import FewshotExample
-from ..patch_types import (
+from ..phases.fewshot_optimization import FewshotExample
+from ..patch.types import (
     AnalysisPatch,
     ExtractionPatch,
     PatchMergeReport,
     ToxicityReport,
 )
-from ..sample import SampleBatch, SampleSet, SampleSpec, SampleState
-from ..structured_prompt import StructuredPrompt
+from ..data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
+from ..prompt.structured_prompt import StructuredPrompt
 
 if TYPE_CHECKING:
     # 避免循环导入，仅在类型检查时引用 ReflectionResult
-    from ..analysis_prompt_optimization_stage import ReflectionResult
+    from ..stages.analysis_prompt_optimization import ReflectionResult
 
 
 class ExtractionExecutorProtocol(Protocol):

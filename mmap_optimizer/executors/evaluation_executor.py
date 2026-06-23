@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..extraction_prompt_optimization_stage import EvalRecord, ExtractionResult
-from ..sample import SampleSet, SampleState
+from ..stages.extraction_prompt_optimization import EvalRecord, ExtractionResult
+from ..data.sample import SampleSet, SampleState
 
 
 def normalize_label(value: Any, mapping: dict[str, Any] | None = None) -> Any:

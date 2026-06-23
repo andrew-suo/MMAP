@@ -21,6 +21,9 @@ from .interfaces import (
     PatchGenerationExecutorProtocol,
     ToxicityTestExecutorProtocol,
 )
+from .patch_apply_executor import PatchApplyExecutor, PatchApplyReport
+from .patch_generation_executor import PatchGenerationExecutor
+from .patch_validator import PatchValidator
 
 __all__ = [
     # Protocol 接口
@@ -33,6 +36,11 @@ __all__ = [
     "ToxicityTestExecutorProtocol",
     "CompressionExecutorProtocol",
     "FewshotExecutorProtocol",
+    # 真实实现
+    "PatchGenerationExecutor",
+    "PatchApplyExecutor",
+    "PatchApplyReport",
+    "PatchValidator",
     # 工厂函数
     "create_executors",
 ]

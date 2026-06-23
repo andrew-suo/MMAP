@@ -133,6 +133,8 @@ class ExtractionPromptOptimizationStage:
         extraction_executor=None,  # ExtractionExecutor 实例
         evaluation_executor=None,  # EvaluationExecutor 实例
         analysis_executor=None,    # AnalysisExecutor 实例
+        patch_generation_executor=None,  # PatchGenerationExecutor 实例
+        patch_apply_executor=None,       # PatchApplyExecutor 实例
     ):
         self.extraction_prompt = extraction_prompt
         self.analysis_prompt = analysis_prompt
@@ -144,16 +146,27 @@ class ExtractionPromptOptimizationStage:
         self.extraction_executor = extraction_executor
         self.evaluation_executor = evaluation_executor
         self.analysis_executor = analysis_executor
+        self.patch_generation_executor = patch_generation_executor
+        self.patch_apply_executor = patch_apply_executor
 
         # 结果存储
         self.base_extraction_results: list[ExtractionResult] = []
         self.base_eval_records: list[EvalRecord] = []
         self.analysis_results: list[AnalysisResult] = []
         self.draft_patches: list[ExtractionPatch] = []
+        self.validated_patches: list[ExtractionPatch] = []
+        self.rejected_patches: list[ExtractionPatch] = []
         self.initial_merged_patches: list[ExtractionPatch] = []
         self.patched_extraction_results: list[ExtractionResult] = []
+        self.patched_eval_records: list[EvalRecord] = []
         self.final_merged_patches: list[ExtractionPatch] = []
         self.final_extraction_results: list[ExtractionResult] = []
+        self.final_eval_records: list[EvalRecord] = []
+
+        # Prompt 版本
+        self.trial_prompt: StructuredPrompt | None = None
+        self.patched_prompt: StructuredPrompt | None = None
+        self.accepted_prompt: StructuredPrompt | None = None
 
         # 指标
         self.metrics = ExtractionMetrics()
@@ -162,6 +175,7 @@ class ExtractionPromptOptimizationStage:
         self.initial_merge_report: PatchMergeReport | None = None
         self.final_merge_report: PatchMergeReport | None = None
         self.toxicity_report: ToxicityReport | None = None
+        self.patch_apply_report = None  # PatchApplyReport
 
     def run(self) -> ExtractionMetrics:
         """执行完整的 Extraction Prompt Optimization Stage。"""
@@ -339,6 +353,31 @@ class ExtractionPromptOptimizationStage:
 
     def _step4_generate_patches(self) -> None:
         """Step 4: 基于有效分析生成 extraction patch。"""
+        if self.patch_generation_executor is not None:
+            # 使用真实 executor
+            draft_patches, validated_patches, rejected_patches = (
+                self.patch_generation_executor.generate_extraction_patches(
+                    analysis_results=self.analysis_results,
+                    extraction_results=self.base_extraction_results,
+                    extraction_prompt=self.extraction_prompt,
+                    sample_set=self.sample_set,
+                )
+            )
+            self.draft_patches = draft_patches
+            self.validated_patches = validated_patches
+            self.rejected_patches = rejected_patches
+
+            # 更新 SampleTrace 的 generated_extraction_patch_ids
+            traces = self.sample_set.get_traces_for_iteration(
+                "prompt_optimization", self.iteration
+            )
+            for patch in self.draft_patches:
+                for trace in traces:
+                    if trace.sample_id in patch.source_sample_ids:
+                        trace.generated_extraction_patch_ids.append(patch.id)
+            return
+
+        # Fallback: mock 实现
         # 只对 analysis_correct = true 的样本生成 patch
         for analysis_result in self.analysis_results:
             if not analysis_result.analysis_correct:
@@ -364,6 +403,22 @@ class ExtractionPromptOptimizationStage:
 
     def _step5_initial_merge(self) -> None:
         """Step 5: Tree Merge 生成初始 merged patch。"""
+        if self.patch_generation_executor is not None:
+            # 使用 passthrough merge：直接透传 validated_patches
+            self.initial_merged_patches = self.validated_patches.copy()
+            # 不修改 patch status（保持 "candidate"）
+
+            self.initial_merge_report = PatchMergeReport(
+                id=f"merge_report_initial_{self.iteration}",
+                input_patch_count=len(self.validated_patches),
+                merged_patch_count=len(self.initial_merged_patches),
+                conflict_count=0,
+                merged_patches=[p.to_dict() for p in self.initial_merged_patches],
+                metadata={"merge_strategy": "passthrough"},
+            )
+            return
+
+        # Fallback: mock tree merge
         if not self.draft_patches:
             self.initial_merge_report = PatchMergeReport(
                 id=f"merge_report_initial_{self.iteration}",
@@ -388,11 +443,37 @@ class ExtractionPromptOptimizationStage:
 
     def _step6_apply_and_test(self) -> None:
         """Step 6: 应用初始 merged patch 并回归测试。"""
+        if self.patch_apply_executor is not None and self.initial_merged_patches:
+            # 使用真实 executor 应用 patch
+            trial_prompt, apply_report = self.patch_apply_executor.apply(
+                self.extraction_prompt, self.initial_merged_patches
+            )
+            self.trial_prompt = trial_prompt
+            self.patched_prompt = trial_prompt
+            self.patch_apply_report = apply_report
+
+            if not apply_report.changed:
+                self.metrics.no_progress = True
+                return
+
+            # 使用真实 executor 重新抽取和评估
+            if self.extraction_executor is not None:
+                self.patched_extraction_results = self.extraction_executor.execute(
+                    prompt=trial_prompt,
+                    batch=self.batch,
+                    sample_set=self.sample_set,
+                )
+            if self.evaluation_executor is not None:
+                self.patched_eval_records = self.evaluation_executor.evaluate_batch(
+                    self.patched_extraction_results, self.sample_set,
+                )
+            return
+
+        # Fallback: mock 应用 patch 并测试
         if not self.initial_merged_patches:
             self.metrics.no_progress = True
             return
 
-        # Mock 应用 patch 并测试
         for sample_id in self.batch.sample_ids:
             result = ExtractionResult(
                 sample_id=sample_id,
@@ -404,6 +485,95 @@ class ExtractionPromptOptimizationStage:
 
     def _step7_regression_and_toxicity_test(self) -> None:
         """Step 7: 回归分析、无效剔除与测毒。"""
+        if self.patch_apply_executor is not None:
+            # 使用真实 executor：基于 base_eval_records 和 patched_eval_records
+            # 做 transition 分类，只做 patch set 级判断
+            base_eval_map = {r.sample_id: r for r in self.base_eval_records}
+            patched_eval_map = {r.sample_id: r for r in self.patched_eval_records}
+
+            fixed_sample_ids: list[str] = []
+            broken_sample_ids: list[str] = []
+            unchanged_wrong_ids: list[str] = []
+            unchanged_correct_ids: list[str] = []
+
+            for sample_id in self.batch.sample_ids:
+                base_record = base_eval_map.get(sample_id)
+                patched_record = patched_eval_map.get(sample_id)
+
+                # 缺少 base 或 patched 评估记录时跳过
+                if base_record is None or patched_record is None:
+                    continue
+
+                base_correct = base_record.status == "correct"
+                patched_correct = patched_record.status == "correct"
+
+                if not base_correct and patched_correct:
+                    fixed_sample_ids.append(sample_id)
+                elif base_correct and not patched_correct:
+                    broken_sample_ids.append(sample_id)
+                elif not base_correct and not patched_correct:
+                    unchanged_wrong_ids.append(sample_id)
+                else:
+                    unchanged_correct_ids.append(sample_id)
+
+            fixed_count = len(fixed_sample_ids)
+            broken_count = len(broken_sample_ids)
+
+            # Patch set 级判断
+            if broken_count > 0:
+                # unsafe：回滚
+                self.metrics.rollback = True
+                self.accepted_prompt = None
+                for patch in self.initial_merged_patches:
+                    patch.status = "rejected"
+                    patch.rejection_reason = "TOXIC"
+                self.final_merged_patches = []
+            elif fixed_count > 0:
+                # 接受 patch set
+                self.accepted_prompt = self.trial_prompt
+                for patch in self.initial_merged_patches:
+                    patch.status = "accepted"
+                self.final_merged_patches = self.initial_merged_patches.copy()
+            else:
+                # 无收益
+                self.metrics.no_progress = True
+                self.accepted_prompt = None
+                self.final_merged_patches = []
+
+            # 更新指标
+            if self.accepted_prompt is not None:
+                self.metrics.accepted_patch_count = len(self.initial_merged_patches)
+                self.metrics.rejected_patch_count = len(self.rejected_patches)
+            else:
+                self.metrics.accepted_patch_count = 0
+                self.metrics.rejected_patch_count = (
+                    len(self.rejected_patches) + len(self.initial_merged_patches)
+                )
+
+            # 更新 SampleTrace transition
+            traces = self.sample_set.get_traces_for_iteration(
+                "prompt_optimization", self.iteration
+            )
+            for trace in traces:
+                if trace.sample_id in fixed_sample_ids:
+                    trace.transition = "fixed"
+                elif trace.sample_id in broken_sample_ids:
+                    trace.transition = "broken"
+                elif trace.sample_id in unchanged_wrong_ids:
+                    trace.transition = "unchanged_wrong"
+                else:
+                    trace.transition = "unchanged_correct"
+
+                # 更新状态统计
+                state = self.sample_set.states.get(trace.sample_id)
+                if state:
+                    if trace.transition == "fixed":
+                        state.historical_fixed_count += 1
+                    elif trace.transition == "broken":
+                        state.historical_broken_count += 1
+            return
+
+        # Fallback: mock 回归分析与测毒
         if not self.initial_merged_patches:
             return
 
@@ -519,6 +689,62 @@ class ExtractionPromptOptimizationStage:
 
     def _step9_final_test_and_metrics(self) -> None:
         """Step 9: 最终测试与统计。"""
+        if self.patch_apply_executor is not None:
+            # 使用真实 executor：基于 accepted_prompt 决定最终 prompt
+            if self.accepted_prompt is not None:
+                # 使用 accepted_prompt 重新执行抽取和评估
+                if self.extraction_executor is not None:
+                    self.final_extraction_results = self.extraction_executor.execute(
+                        prompt=self.accepted_prompt,
+                        batch=self.batch,
+                        sample_set=self.sample_set,
+                    )
+                if self.evaluation_executor is not None:
+                    self.final_eval_records = self.evaluation_executor.evaluate_batch(
+                        self.final_extraction_results, self.sample_set,
+                    )
+
+                # 计算 final_accuracy
+                if self.final_eval_records:
+                    correct_count = sum(
+                        1 for r in self.final_eval_records if r.status == "correct"
+                    )
+                    total = len(self.final_eval_records)
+                    self.metrics.final_correct_count = correct_count
+                    self.metrics.final_accuracy = (
+                        correct_count / total if total > 0 else 0.0
+                    )
+                elif self.final_extraction_results:
+                    correct_count = sum(
+                        1 for r in self.final_extraction_results if r.status == "correct"
+                    )
+                    total = len(self.final_extraction_results)
+                    self.metrics.final_correct_count = correct_count
+                    self.metrics.final_accuracy = (
+                        correct_count / total if total > 0 else 0.0
+                    )
+                else:
+                    self.metrics.final_accuracy = self.metrics.base_accuracy
+
+                # 更新 SampleTrace
+                traces = self.sample_set.get_traces_for_iteration(
+                    "prompt_optimization", self.iteration
+                )
+                final_status_map = {
+                    r.sample_id: r.status for r in self.final_extraction_results
+                }
+                for trace in traces:
+                    trace.final_extraction_status = final_status_map.get(
+                        trace.sample_id, "correct"
+                    )
+                    trace.final_extraction_result_id = trace.sample_id
+            else:
+                # 回滚或 no_progress：final_prompt = base_prompt
+                self.metrics.final_accuracy = self.metrics.base_accuracy
+                self.metrics.no_progress = True
+            return
+
+        # Fallback: mock 最终测试
         if not self.final_merged_patches:
             self.metrics.no_progress = True
             self.metrics.final_accuracy = self.metrics.base_accuracy

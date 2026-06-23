@@ -14,15 +14,15 @@ from __future__ import annotations
 
 import pytest
 
-from mmap_optimizer.refactored.executors import MergeExecutor
-from mmap_optimizer.refactored.executors.merge_executor import _OLD_SYSTEM_AVAILABLE
-from mmap_optimizer.refactored.patch import (
+from mmap_optimizer.executors import MergeExecutor
+from mmap_optimizer.executors.merge_executor import _OLD_SYSTEM_AVAILABLE
+from mmap_optimizer.patch_types import (
     AnalysisPatch,
     ExtractionPatch,
     PatchMergeReport,
 )
-from mmap_optimizer.refactored.sample import SampleSet, SampleSpec, SampleState
-from mmap_optimizer.refactored.structured_prompt import (
+from mmap_optimizer.sample import SampleSet, SampleSpec, SampleState
+from mmap_optimizer.structured_prompt import (
     PromptSection,
     StructuredPrompt,
 )
@@ -114,7 +114,7 @@ def make_analysis_patches() -> list[AnalysisPatch]:
 
 def test_passthrough_fallback_on_exception(monkeypatch):
     """tree_merge 抛异常时回退到 passthrough，fallback_used=True。"""
-    import mmap_optimizer.refactored.executors.merge_executor as mod
+    import mmap_optimizer.executors.merge_executor as mod
 
     class BoomMerger:
         def merge(self, **kwargs):
@@ -139,7 +139,7 @@ def test_passthrough_fallback_on_exception(monkeypatch):
 
 def test_passthrough_fallback_on_import_unavailable(monkeypatch):
     """老系统不可用时回退到 passthrough，fallback_used=True。"""
-    import mmap_optimizer.refactored.executors.merge_executor as mod
+    import mmap_optimizer.executors.merge_executor as mod
 
     monkeypatch.setattr(mod, "_OLD_SYSTEM_AVAILABLE", False)
 

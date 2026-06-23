@@ -1,10 +1,7 @@
-from mmap_optimizer.core.enums import PromptType
 from mmap_optimizer.patch.clusterer import cluster_patches
 from mmap_optimizer.patch.conflict import detect_patch_conflicts
 from mmap_optimizer.patch.schema import Patch
 from mmap_optimizer.patch.tree_reduce import TreeReducePatchMerger
-from mmap_optimizer.prompt.contract import OutputSchemaContract
-from mmap_optimizer.prompt.initializer import initialize_prompt_version
 
 
 def make_patch(patch_id: str, text: str, section: str = "ambiguity_policy", sample_id: str = "s1", operation: str = "ADD_RULE") -> Patch:
@@ -27,15 +24,21 @@ def make_patch(patch_id: str, text: str, section: str = "ambiguity_policy", samp
     )
 
 
+class _StubSection:
+    def __init__(self, mutability: str = "mutable") -> None:
+        self.mutability = mutability
+
+
+class _StubPromptIR:
+    def __init__(self, sections: dict | None = None) -> None:
+        self._sections = sections or {}
+
+    def section_by_id(self, section_id: str):
+        return self._sections.get(section_id)
+
+
 def prompt_ir():
-    contract = OutputSchemaContract(
-        id="schema_v1",
-        prompt_type=PromptType.EXTRACTION,
-        version=1,
-        primary_answer_fields=["result"],
-        schema={"type": "object", "required": ["result"], "properties": {"result": {"type": "string"}}},
-    )
-    return initialize_prompt_version("raw", PromptType.EXTRACTION, contract).prompt_ir
+    return _StubPromptIR({"output_schema": _StubSection(mutability="frozen")})
 
 
 def test_cluster_patches_groups_by_target_section_and_operation():

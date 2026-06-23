@@ -15,7 +15,7 @@ pinyin = ["pypinyin>=0.49"]
 yaml = ["pyyaml>=6.0"]
 
 [project.scripts]
-mmap-optimizer = "mmap_optimizer.cli.main:main"
+mmap-optimizer = "mmap_optimizer.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["mmap_optimizer*"]

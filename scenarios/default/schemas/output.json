@@ -1,9 +1,0 @@
-{
-  "type": "object",
-  "properties": {
-    "result": {
-      "type": "string"
-    }
-  },
-  "x-primary-answer-fields": ["result"]
-}

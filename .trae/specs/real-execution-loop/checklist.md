@@ -240,7 +240,7 @@
 
 ### 端到端 Smoke
 - [x] 准备 10～20 条小样本数据集（data/smoke_samples.jsonl）
-- [x] 创建 smoke 测试配置（configs/refactored_smoke.yaml）
+- [x] 创建 smoke 测试配置（configs/smoke.yaml）
 - [x] CLI 能跑通真实小数据集
 - [x] smoke 验收产物存在（run_summary、final_extraction_prompt、final_analysis_prompt、final_fewshot_examples、compression_report、sample_traces、toxicity_report）
 - [x] 完整三阶段 Run 无 mock output（use_mock=false 时）

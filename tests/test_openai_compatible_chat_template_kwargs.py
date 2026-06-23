@@ -1,6 +1,6 @@
 """Tests for chat_template_kwargs in OpenAI-compatible payload."""
 
-from mmap_optimizer.core.config import ModelConfig, model_config_from_mapping, model_config_to_request_dict
+from mmap_optimizer.config import ModelConfig, model_config_from_mapping
 from mmap_optimizer.model.openai_compatible import OpenAICompatibleClient
 
 
@@ -105,24 +105,6 @@ def test_model_config_from_mapping_without_chat_template_kwargs():
         "model": "test-model",
     })
     assert config.chat_template_kwargs is None
-
-
-def test_model_config_to_request_dict_includes_chat_template_kwargs():
-    """model_config_to_request_dict should pass through chat_template_kwargs."""
-    config = ModelConfig(
-        provider="openai_compatible",
-        model="test-model",
-        chat_template_kwargs={"enable_thinking": False},
-    )
-    request = model_config_to_request_dict(config)
-    assert request["chat_template_kwargs"] == {"enable_thinking": False}
-
-
-def test_model_config_to_request_dict_without_chat_template_kwargs():
-    """model_config_to_request_dict should not include chat_template_kwargs when None."""
-    config = ModelConfig(model="test-model")
-    request = model_config_to_request_dict(config)
-    assert "chat_template_kwargs" not in request
 
 
 def test_complete_multimodal_includes_chat_template_kwargs():

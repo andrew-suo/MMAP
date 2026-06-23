@@ -16,7 +16,7 @@
 6. 验收产物存在（run_summary、final_extraction_prompt、final_analysis_prompt、
    final_fewshot_examples、compression_report、sample_traces、toxicity_report）；
 7. no_progress / rollback / compression 状态正确记录；
-8. CLI 命令可解析（configs/refactored_smoke.yaml）。
+8. CLI 命令可解析（configs/smoke.yaml）。
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ from pathlib import Path
 
 import pytest
 
-from mmap_optimizer.refactored.config import load_config
-from mmap_optimizer.refactored.runner import MMAPRunner
+from mmap_optimizer.config import load_config
+from mmap_optimizer.runner import MMAPRunner
 
 
 # ============================================================
@@ -37,10 +37,10 @@ from mmap_optimizer.refactored.runner import MMAPRunner
 # ============================================================
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SMOKE_CONFIG = REPO_ROOT / "configs" / "refactored_smoke.yaml"
+SMOKE_CONFIG = REPO_ROOT / "configs" / "smoke.yaml"
 SMOKE_DATASET = REPO_ROOT / "data" / "smoke_samples.jsonl"
-EXTRACTION_PROMPT = REPO_ROOT / "prompts" / "raw" / "extraction.txt"
-ANALYSIS_PROMPT = REPO_ROOT / "prompts" / "raw" / "analysis.txt"
+EXTRACTION_PROMPT = REPO_ROOT / "prompts" / "extraction.txt"
+ANALYSIS_PROMPT = REPO_ROOT / "prompts" / "analysis.txt"
 
 
 def _run_smoke(tmp_path: Path) -> tuple[MMAPRunner, Path]:
@@ -329,11 +329,11 @@ def test_smoke_run_patch_apply_reports_jsonl_exists(tmp_path):
 # ============================================================
 
 def test_smoke_cli_command_executes(tmp_path):
-    """CLI 命令 `python -m mmap_optimizer.refactored.cli run --config ... --use-mock` 可执行。"""
+    """CLI 命令 `python -m mmap_optimizer.cli run --config ... --use-mock` 可执行。"""
     output_dir = tmp_path / "cli_smoke_run"
 
     cmd = [
-        sys.executable, "-m", "mmap_optimizer.refactored.cli", "run",
+        sys.executable, "-m", "mmap_optimizer.cli", "run",
         "--config", str(SMOKE_CONFIG),
         "--extraction-prompt", str(EXTRACTION_PROMPT),
         "--analysis-prompt", str(ANALYSIS_PROMPT),
@@ -368,7 +368,7 @@ def test_smoke_cli_no_mock_without_model_client_errors(tmp_path):
     output_dir = tmp_path / "cli_no_mock_run"
 
     cmd = [
-        sys.executable, "-m", "mmap_optimizer.refactored.cli", "run",
+        sys.executable, "-m", "mmap_optimizer.cli", "run",
         "--config", str(SMOKE_CONFIG),
         "--extraction-prompt", str(EXTRACTION_PROMPT),
         "--analysis-prompt", str(ANALYSIS_PROMPT),

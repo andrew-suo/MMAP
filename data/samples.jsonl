@@ -1,3 +1,0 @@
-{"id":"sample_001","ground_truth_id":"gt_001","asset_ids":[],"text_context":"demo ok","metadata":{"mock_output":"{\"result\":\"OK\",\"confidence\":0.9,\"evidence\":[],\"used_prompt_sections\":[]}"}}
-{"id":"sample_002","ground_truth_id":"gt_002","asset_ids":[],"text_context":"demo ng","metadata":{"mock_output":"{\"result\":\"OK\",\"confidence\":0.8,\"evidence\":[],\"used_prompt_sections\":[]}"}}
-{"id":"sample_003","ground_truth_id":"gt_003","asset_ids":[],"text_context":"demo uncertain","metadata":{"mock_output":"{\"result\":\"UNCERTAIN\",\"confidence\":0.6,\"evidence\":[],\"used_prompt_sections\":[]}"}}

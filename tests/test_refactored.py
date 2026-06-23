@@ -251,6 +251,125 @@ def test_run_plan():
     return True
 
 
+def test_analysis_executor():
+    """测试 AnalysisExecutor 真实实现。"""
+    print("\n测试 AnalysisExecutor...")
+
+    import json as _json
+
+    from mmap_optimizer.model.client import MockModelClient
+    from mmap_optimizer.refactored.executors.analysis_executor import AnalysisExecutor
+    from mmap_optimizer.refactored.extraction_prompt_optimization_stage import (
+        AnalysisResult,
+        ExtractionResult,
+    )
+    from mmap_optimizer.refactored.sample import SampleSet, SampleSpec
+    from mmap_optimizer.refactored.structured_prompt import (
+        PromptSection,
+        StructuredPrompt,
+    )
+
+    analysis_prompt = StructuredPrompt(
+        id="a1",
+        prompt_type="analysis",
+        sections=[PromptSection(id="s1", title="Analysis", level=1, content="Analyze extraction")],
+        raw_markdown="# Analysis",
+    )
+    extraction_prompt = StructuredPrompt(
+        id="e1",
+        prompt_type="extraction",
+        sections=[PromptSection(id="s1", title="Extract", level=1, content="Extract info")],
+        raw_markdown="# Extract",
+    )
+
+    def _spec(sid, gt):
+        return SampleSpec(id=sid, input={"text": "hello"}, ground_truth=gt)
+
+    # 正常 analysis 输出能正确解析 + analysis_correct 判定正确（extraction 正确，分析也判正确）
+    executor_ok = AnalysisExecutor(MockModelClient(_json.dumps({"is_correct": True, "error_reason": None})))
+    spec_ok = _spec("s1", {"result": "OK"})
+    er_ok = ExtractionResult(
+        sample_id="s1", raw_output='{"result":"OK"}', parsed_output={"result": "OK"}, status="correct"
+    )
+    r_ok = executor_ok.execute(analysis_prompt, extraction_prompt, er_ok, spec_ok)
+    assert r_ok.analysis_correct is True, "extraction 正确且分析判正确时 analysis_correct 应为 True"
+    assert r_ok.patch_suggestion is None, "extraction 正确时不应生成 patch_suggestion"
+    assert r_ok.judgement == {"is_correct": True, "error_reason": None}
+    print(f"✓ 正确样本分析: analysis_correct={r_ok.analysis_correct}")
+
+    # 错误样本生成 patch_suggestion（extraction 错误，分析正确识别）
+    executor_wrong = AnalysisExecutor(
+        MockModelClient(
+            _json.dumps(
+                {
+                    "is_correct": False,
+                    "error_reason": "wrong label",
+                    "patch_suggestion": {"target_section": "sec1", "operation": "replace", "content": "fix"},
+                }
+            )
+        )
+    )
+    spec_wrong = _spec("s2", {"result": "OK"})
+    er_wrong = ExtractionResult(
+        sample_id="s2", raw_output='{"result":"NG"}', parsed_output={"result": "NG"}, status="wrong"
+    )
+    r_wrong = executor_wrong.execute(analysis_prompt, extraction_prompt, er_wrong, spec_wrong)
+    assert r_wrong.analysis_correct is True, "extraction 错误且分析判错误时 analysis_correct 应为 True"
+    assert r_wrong.patch_suggestion is not None, "错误样本应生成 patch_suggestion"
+    assert r_wrong.patch_suggestion["content"] == "fix"
+    print(f"✓ 错误样本 patch_suggestion: {r_wrong.patch_suggestion}")
+
+    # 分析误判：extraction 错误但分析判正确 -> analysis_correct=False
+    executor_misjudge = AnalysisExecutor(MockModelClient(_json.dumps({"is_correct": True})))
+    r_misjudge = executor_misjudge.execute(analysis_prompt, extraction_prompt, er_wrong, spec_wrong)
+    assert r_misjudge.analysis_correct is False, "分析误判时 analysis_correct 应为 False"
+    print(f"✓ 分析误判: analysis_correct={r_misjudge.analysis_correct}")
+
+    # judgement 中无 patch_suggestion 时基于 error_reason 构造
+    executor_fallback = AnalysisExecutor(
+        MockModelClient(_json.dumps({"is_correct": False, "error_reason": "mismatched value"}))
+    )
+    r_fallback = executor_fallback.execute(analysis_prompt, extraction_prompt, er_wrong, spec_wrong)
+    assert r_fallback.patch_suggestion is not None
+    assert r_fallback.patch_suggestion["content"] == "mismatched value"
+    print(f"✓ patch_suggestion fallback: {r_fallback.patch_suggestion}")
+
+    # reflect 方法能产出 ReflectionResult
+    executor_reflect = AnalysisExecutor(
+        MockModelClient(
+            _json.dumps(
+                {
+                    "error_reason": "missed signal",
+                    "patch_suggestion": {"target_section": "sec2", "operation": "append", "content": "add rule"},
+                    "notes": ["note1"],
+                }
+            )
+        )
+    )
+    ar_reflect = AnalysisResult(
+        sample_id="s2", judgement={"is_correct": True}, analysis_correct=False, error_reason="misjudged"
+    )
+    rr = executor_reflect.reflect(analysis_prompt, er_wrong, ar_reflect, spec_wrong)
+    assert rr.sample_id == "s2"
+    assert rr.reflection_success is True
+    assert rr.patch_suggestion["content"] == "add rule"
+    assert rr.notes == ["note1"]
+    print(f"✓ reflect 产出 ReflectionResult: success={rr.reflection_success}")
+
+    # execute_batch 分析所有样本（不只错误样本）
+    executor_batch = AnalysisExecutor(MockModelClient(_json.dumps({"is_correct": True})))
+    sample_set = SampleSet()
+    sample_set.add_spec(spec_ok)
+    sample_set.add_spec(spec_wrong)
+    batch_results = executor_batch.execute_batch(
+        analysis_prompt, extraction_prompt, [er_ok, er_wrong], sample_set
+    )
+    assert len(batch_results) == 2, "execute_batch 应分析所有样本"
+    print(f"✓ execute_batch 分析 {len(batch_results)} 个样本")
+
+    return True
+
+
 def main():
     """运行所有测试。"""
     print("=" * 60)
@@ -265,6 +384,7 @@ def main():
         test_structured_prompt,
         test_config,
         test_run_plan,
+        test_analysis_executor,
     ]
 
     passed = 0

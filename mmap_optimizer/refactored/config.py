@@ -52,6 +52,8 @@ class RefactoredConfig:
     sampling: SamplerConfig = field(default_factory=SamplerConfig)
     prompt_optimization: PromptOptimizationConfig = field(default_factory=PromptOptimizationConfig)
     fewshot_optimization: FewshotConfig = field(default_factory=FewshotConfig)
+    # model client 配置，用于构建真实 executor
+    models: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典格式。"""
@@ -120,6 +122,7 @@ class RefactoredConfig:
                     "type": self.fewshot_optimization.sampler.type,
                 },
             },
+            "models": dict(self.models),
         }
 
     @classmethod
@@ -131,6 +134,7 @@ class RefactoredConfig:
         sampling_data = data.get("sampling", {})
         prompt_optimization_data = data.get("prompt_optimization", {})
         fewshot_optimization_data = data.get("fewshot_optimization", {})
+        models_data = data.get("models", {})
 
         # 构建 RunConfig
         run_config = RunConfig(
@@ -222,6 +226,7 @@ class RefactoredConfig:
             sampling=sampling_config,
             prompt_optimization=prompt_optimization_config,
             fewshot_optimization=fewshot_config,
+            models=models_data,
         )
 
 

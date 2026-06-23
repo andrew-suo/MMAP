@@ -162,3 +162,124 @@ class StructuredPrompt:
                 result.append(child)
             result.extend(self._get_mutable_children(child))
         return result
+
+    def render_to_model_prompt(self) -> str:
+        """渲染为适合模型输入的纯文本格式。
+
+        与 ``to_markdown`` 相比，本方法输出更紧凑的纯文本：
+        - 保留章节层级结构（用缩进表达）
+        - 保留代码块和表格原文
+        - 去除多余空行，降低 token 消耗
+        """
+        lines: list[str] = []
+        for section in self.sections:
+            self._render_section_for_model(section, lines, indent_level=0)
+        return "\n".join(lines).strip()
+
+    def _render_section_for_model(
+        self,
+        section: PromptSection,
+        lines: list[str],
+        indent_level: int,
+    ) -> None:
+        """递归渲染章节为模型输入格式。"""
+        indent = "  " * indent_level
+        # 章节标题：用层级前缀表达，例如 "## Title"
+        prefix = "#" * section.level
+        lines.append(f"{indent}{prefix} {section.title}")
+
+        if section.content:
+            # 保留代码块和表格原文，按行追加
+            for content_line in section.content.splitlines():
+                lines.append(f"{indent}{content_line}" if indent else content_line)
+
+        for bullet in section.bullets:
+            lines.append(f"{indent}- {bullet}")
+
+        for child in section.children:
+            self._render_section_for_model(child, lines, indent_level + 1)
+
+    def render_with_fewshot(self, fewshot_examples: list) -> str:
+        """渲染带 few-shot 示例的 prompt。
+
+        在 prompt 末尾追加 few-shot 示例 section。
+        """
+        base = self.to_markdown()
+        if not fewshot_examples:
+            return base
+
+        lines: list[str] = [base, ""]
+        lines.append("# Few-shot Examples")
+        lines.append("")
+
+        for idx, example in enumerate(fewshot_examples, start=1):
+            lines.append(f"## Example {idx}")
+            lines.append("")
+
+            # 兼容 dict 和 dataclass 两种形式
+            input_text = _get_attr(example, "input_text", "")
+            output_text = _get_attr(example, "output_text", "")
+            input_images = _get_attr(example, "input_images", []) or []
+            output_data = _get_attr(example, "output_data", {}) or {}
+
+            if input_text:
+                lines.append("Input:")
+                lines.append(input_text)
+                lines.append("")
+
+            if input_images:
+                lines.append("Input Images:")
+                for img in input_images:
+                    lines.append(f"- {img}")
+                lines.append("")
+
+            if output_text:
+                lines.append("Output:")
+                lines.append(output_text)
+                lines.append("")
+
+            if output_data:
+                lines.append("Output Data:")
+                lines.append(_format_data(output_data))
+                lines.append("")
+
+        return "\n".join(lines).strip()
+
+
+def _get_attr(obj: Any, name: str, default: Any = None) -> Any:
+    """从 dict 或对象中获取属性。"""
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def _format_data(data: Any) -> str:
+    """将数据格式化为字符串。"""
+    if isinstance(data, str):
+        return data
+    try:
+        import json
+
+        return json.dumps(data, ensure_ascii=False, indent=2)
+    except Exception:
+        return str(data)
+
+
+class StructuredPromptRenderer:
+    """将 StructuredPrompt 渲染成模型输入字符串。"""
+
+    def render(self, prompt: StructuredPrompt) -> str:
+        """渲染为完整 Markdown。"""
+        return prompt.to_markdown()
+
+    def render_with_fewshot(self, prompt: StructuredPrompt, fewshot_examples: list) -> str:
+        """渲染带 few-shot 的 prompt。"""
+        return prompt.render_with_fewshot(fewshot_examples)
+
+    def render_system_message(self, prompt: StructuredPrompt) -> str:
+        """渲染为 system message 格式。"""
+        return self.render(prompt)
+
+    def render_to_model_prompt(self, prompt: StructuredPrompt) -> str:
+        """渲染为适合模型输入的纯文本格式。"""
+        return prompt.render_to_model_prompt()

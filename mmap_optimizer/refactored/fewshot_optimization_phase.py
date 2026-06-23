@@ -117,12 +117,14 @@ class FewshotOptimizationPhase:
         output_dir: Path,
         seed: int = 42,
         initial_fewshot_examples: list[FewshotExample] | None = None,
+        fewshot_executor=None,  # FewshotExecutor 实例
     ):
         self.config = config
         self.extraction_prompt = extraction_prompt
         self.sample_set = sample_set
         self.output_dir = output_dir
         self.seed = seed
+        self.fewshot_executor = fewshot_executor
 
         # 创建 sampler
         self.sampler = create_sampler(config.sampler)
@@ -234,6 +236,22 @@ class FewshotOptimizationPhase:
 
     def _execute_extraction(self, batch: SampleBatch) -> list[ExtractionResult]:
         """执行抽取（使用当前 few-shot examples）。"""
+        if self.fewshot_executor is not None:
+            results = self.fewshot_executor.execute_extraction(
+                extraction_prompt=self.extraction_prompt,
+                fewshot_examples=self.fewshot_examples,
+                batch=batch,
+                sample_set=self.sample_set,
+            )
+            # 更新 SampleTrace
+            for result in results:
+                traces = self.sample_set.get_traces_for_iteration("fewshot_optimization", batch.iteration)
+                for trace in traces:
+                    if trace.sample_id == result.sample_id:
+                        trace.base_extraction_result_id = result.sample_id
+                        trace.base_extraction_status = result.status
+            return results
+
         results: list[ExtractionResult] = []
 
         for sample_id in batch.sample_ids:
@@ -265,6 +283,22 @@ class FewshotOptimizationPhase:
         fewshot_examples: list[FewshotExample],
     ) -> list[ExtractionResult]:
         """使用新的 few-shot examples 执行抽取。"""
+        if self.fewshot_executor is not None:
+            results = self.fewshot_executor.execute_validation(
+                extraction_prompt=self.extraction_prompt,
+                fewshot_examples=fewshot_examples,
+                batch=batch,
+                sample_set=self.sample_set,
+            )
+            # 更新 SampleTrace
+            for result in results:
+                traces = self.sample_set.get_traces_for_iteration("fewshot_optimization", batch.iteration)
+                for trace in traces:
+                    if trace.sample_id == result.sample_id:
+                        trace.final_extraction_result_id = result.sample_id
+                        trace.final_extraction_status = result.status
+            return results
+
         results: list[ExtractionResult] = []
 
         for sample_id in batch.sample_ids:
@@ -297,6 +331,28 @@ class FewshotOptimizationPhase:
         metrics: FewshotMetrics,
     ) -> None:
         """统计原始 few-shot 指标。"""
+        if self.fewshot_executor is not None:
+            eval_records = self.fewshot_executor.evaluate_results(results, self.sample_set)
+            accuracy = self.fewshot_executor.compute_accuracy(eval_records)
+            correct_count = sum(1 for r in eval_records if r.correct)
+            wrong_count = sum(1 for r in eval_records if r.status == "wrong")
+            invalid_count = sum(1 for r in eval_records if r.status == "invalid")
+            total = len(eval_records)
+
+            metrics.base_correct_count = correct_count
+            metrics.base_wrong_count = wrong_count
+            metrics.base_invalid_count = invalid_count
+            metrics.base_accuracy = accuracy if total > 0 else 0.0
+
+            # 更新样本状态
+            for result in results:
+                state = self.sample_set.states.get(result.sample_id)
+                if state:
+                    has_error = result.status in ["wrong", "invalid"]
+                    state.update_error(has_error)
+                    state.last_extraction_status = result.status
+            return
+
         correct_count = sum(1 for r in results if r.status == "correct")
         wrong_count = sum(1 for r in results if r.status == "wrong")
         invalid_count = sum(1 for r in results if r.status == "invalid")
@@ -322,6 +378,20 @@ class FewshotOptimizationPhase:
         metrics: FewshotMetrics,
     ) -> None:
         """统计最终 few-shot 指标。"""
+        if self.fewshot_executor is not None:
+            eval_records = self.fewshot_executor.evaluate_results(results, self.sample_set)
+            accuracy = self.fewshot_executor.compute_accuracy(eval_records)
+            correct_count = sum(1 for r in eval_records if r.correct)
+            wrong_count = sum(1 for r in eval_records if r.status == "wrong")
+            invalid_count = sum(1 for r in eval_records if r.status == "invalid")
+            total = len(eval_records)
+
+            metrics.final_correct_count = correct_count
+            metrics.final_wrong_count = wrong_count
+            metrics.final_invalid_count = invalid_count
+            metrics.final_accuracy = accuracy if total > 0 else 0.0
+            return
+
         correct_count = sum(1 for r in results if r.status == "correct")
         wrong_count = sum(1 for r in results if r.status == "wrong")
         invalid_count = sum(1 for r in results if r.status == "invalid")

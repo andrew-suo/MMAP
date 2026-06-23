@@ -1,14 +1,4 @@
-"""自适应 Batch Size 控制器。
-
-根据设计文档，Prompt Optimization Phase 中，每轮最终 extraction prompt 指标
-与本轮原始 extraction prompt 指标对比，动态调整下一轮的 batch size。
-
-规则：
-- 指标上升：batch size 翻倍
-- 指标下降：batch size 收缩 (乘以 0.8)
-- 无明显变化：保持不变
-- 回滚或无进展：视为轻度失败，收缩 batch size
-"""
+"""Batch Size Controller。"""
 
 from __future__ import annotations
 
@@ -56,21 +46,10 @@ class BatchSizeController:
         rollback: bool = False,
         no_progress: bool = False,
     ) -> int:
-        """根据本轮结果更新下一轮 batch size。
-
-        Args:
-            base_accuracy: 本轮原始 prompt 准确率
-            final_accuracy: 本轮最终 prompt 准确率（如果成功应用 patch）
-            rollback: 是否发生回滚
-            no_progress: 是否无进展
-
-        Returns:
-            下一轮的 batch size
-        """
+        """根据本轮结果更新下一轮 batch size。"""
         if not self.config.enabled:
             return self.state.current_batch_size
 
-        # 记录本轮结果
         delta = None
         if final_accuracy is not None:
             delta = final_accuracy - base_accuracy
@@ -84,37 +63,30 @@ class BatchSizeController:
             "batch_size_before": self.state.current_batch_size,
         }
 
-        # 计算下一轮 batch size
         next_batch_size = self.state.current_batch_size
 
         if rollback and self.config.shrink_on_rollback:
-            # 回滚视为轻度失败
             next_batch_size = max(
                 self.config.min_batch_size,
                 int(self.state.current_batch_size * self.config.decrease_factor),
             )
         elif no_progress and self.config.shrink_on_no_progress:
-            # 无进展视为轻度失败
             next_batch_size = max(
                 self.config.min_batch_size,
                 int(self.state.current_batch_size * self.config.decrease_factor),
             )
         elif delta is not None:
             if delta > self.config.improvement_epsilon:
-                # 指标上升，batch size 翻倍
                 next_batch_size = min(
                     self.config.max_batch_size,
                     int(self.state.current_batch_size * self.config.growth_factor),
                 )
             elif delta < -self.config.improvement_epsilon:
-                # 指标下降，batch size 收缩
                 next_batch_size = max(
                     self.config.min_batch_size,
                     int(self.state.current_batch_size * self.config.decrease_factor),
                 )
-            # 无明显变化时保持不变
 
-        # 更新状态
         self.state.current_batch_size = next_batch_size
         self.state.last_accuracy_delta = delta
         record["batch_size_after"] = next_batch_size

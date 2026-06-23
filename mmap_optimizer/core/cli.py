@@ -10,8 +10,8 @@ import json
 import sys
 from pathlib import Path
 
-from .config import load_config
-from .runner import MMAPRunner
+from ..core.config import load_config
+from ..core.runner import MMAPRunner
 
 
 def main() -> None:
@@ -249,20 +249,31 @@ def info_command(args: argparse.Namespace) -> None:
 
     print("\n模块结构:")
     print("  mmap_optimizer")
-    print("    ├── sample.py          # Sample 三层设计")
-    print("    ├── dataset_loader.py  # 数据集加载")
-    print("    ├── sampler.py         # 抽样策略")
-    print("    ├── batch_size_controller.py  # Batch Size 控制")
-    print("    ├── structured_prompt.py  # 结构化 Prompt")
-    print("    ├── prompt_structuring_phase.py  # Prompt Structuring Phase")
-    print("    ├── patch.py           # Patch 模型")
-    print("    ├── extraction_prompt_optimization_stage.py  # Extraction Stage")
-    print("    ├── analysis_prompt_optimization_stage.py  # Analysis Stage")
-    print("    ├── prompt_optimization_phase.py  # Prompt Optimization Phase")
-    print("    ├── fewshot_optimization_phase.py  # Few-shot Optimization Phase")
-    print("    ├── config.py          # 配置模块")
-    print("    ├── runner.py          # 主运行器")
-    print("    └── cli.py             # CLI 入口")
+    print("    ├── core/              # 核心组件")
+    print("    │   ├── config.py      # 配置模块")
+    print("    │   ├── runner.py      # 主运行器")
+    print("    │   ├── logging.py     # 日志配置")
+    print("    │   └── cli.py         # CLI 入口")
+    print("    ├── data/              # 数据模块")
+    print("    │   ├── sample.py      # Sample 三层设计")
+    print("    │   ├── dataset_loader.py  # 数据集加载")
+    print("    │   └── sampler.py     # 抽样策略")
+    print("    ├── phases/            # Phase 定义")
+    print("    │   ├── prompt_structuring.py  # Prompt Structuring Phase")
+    print("    │   ├── prompt_optimization.py  # Prompt Optimization Phase")
+    print("    │   └── fewshot_optimization.py  # Few-shot Optimization Phase")
+    print("    ├── stages/            # Stage 定义")
+    print("    │   ├── batch_size_controller.py  # Batch Size 控制")
+    print("    │   ├── extraction_prompt_optimization.py  # Extraction Stage")
+    print("    │   └── analysis_prompt_optimization.py  # Analysis Stage")
+    print("    ├── prompt/            # Prompt 模块")
+    print("    │   └── structured_prompt.py  # 结构化 Prompt")
+    print("    ├── patch/             # Patch 模块")
+    print("    │   ├── types.py       # Patch 数据类型")
+    print("    │   ├── tree_reduce.py # Tree Merge 算法")
+    print("    │   └── ...")
+    print("    ├── executors/         # 执行器")
+    print("    └── model/             # 模型客户端")
 
     print("\n三阶段流程:")
     print("  1. Prompt Structuring Phase")

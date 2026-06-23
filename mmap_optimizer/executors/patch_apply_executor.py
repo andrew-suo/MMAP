@@ -11,7 +11,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..structured_prompt import PromptSection, StructuredPrompt
+from ..prompt.structured_prompt import PromptSection, StructuredPrompt
 
 
 @dataclass

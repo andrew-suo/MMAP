@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..patch_types import AnalysisPatch, ExtractionPatch, PatchMergeReport
-from ..sample import SampleSet
-from ..structured_prompt import StructuredPrompt
+from ..patch.types import AnalysisPatch, ExtractionPatch, PatchMergeReport
+from ..data.sample import SampleSet
+from ..prompt.structured_prompt import StructuredPrompt
 from .patch_validator import PatchValidator
 
 # 老系统导入：用 try/except 包裹，便于在老系统不可用时回退到 passthrough。

@@ -6,9 +6,9 @@
 
 from __future__ import annotations
 
-from ..patch_types import AnalysisPatch, ExtractionPatch
-from ..sample import SampleSet
-from ..structured_prompt import PromptSection, StructuredPrompt
+from ..patch.types import AnalysisPatch, ExtractionPatch
+from ..data.sample import SampleSet
+from ..prompt.structured_prompt import PromptSection, StructuredPrompt
 
 
 class PatchValidator:

@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..extraction_prompt_optimization_stage import ExtractionResult
-from ..patch_types import PatchTestRecord, ToxicityReport
-from ..sample import SampleBatch, SampleSet, SampleState
-from ..structured_prompt import StructuredPrompt
+from ..stages.extraction_prompt_optimization import ExtractionResult
+from ..patch.types import PatchTestRecord, ToxicityReport
+from ..data.sample import SampleBatch, SampleSet, SampleState
+from ..prompt.structured_prompt import StructuredPrompt
 from .patch_apply_executor import PatchApplyExecutor
 
 

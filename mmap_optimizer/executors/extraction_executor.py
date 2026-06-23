@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from ..model.client import ModelClient
-from ..extraction_prompt_optimization_stage import ExtractionResult
-from ..fewshot_optimization_phase import FewshotExample
-from ..sample import SampleBatch, SampleSet, SampleSpec
-from ..structured_prompt import StructuredPrompt, StructuredPromptRenderer
+from ..stages.extraction_prompt_optimization import ExtractionResult
+from ..phases.fewshot_optimization import FewshotExample
+from ..data.sample import SampleBatch, SampleSet, SampleSpec
+from ..prompt.structured_prompt import StructuredPrompt, StructuredPromptRenderer
 
 
 class ExtractionExecutor:

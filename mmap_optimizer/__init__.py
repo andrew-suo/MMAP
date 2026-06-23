@@ -18,7 +18,7 @@
 - 运行器：MMAPRunner, RunPlan, RunSummary
 """
 
-from .sample import (
+from .data.sample import (
     SampleAsset,
     SampleSpec,
     SampleState,
@@ -27,13 +27,13 @@ from .sample import (
     SampleBatch,
 )
 
-from .dataset_loader import (
+from .data.dataset_loader import (
     DatasetLoader,
     load_sample_specs,
     create_sample_set,
 )
 
-from .sampler import (
+from .data.sampler import (
     SamplerConfig,
     BaseSampler,
     RandomSampler,
@@ -43,31 +43,31 @@ from .sampler import (
     create_sampler,
 )
 
-from .batch_size_controller import (
+from .stages.batch_size_controller import (
     BatchSizeControllerConfig,
     BatchSizeControllerState,
     BatchSizeController,
 )
 
-from .structured_prompt import (
+from .prompt.structured_prompt import (
     PromptSection,
     StructuredPrompt,
 )
 
-from .prompt_structuring_phase import (
+from .phases.prompt_structuring import (
     PromptStructuringConfig,
     MarkdownParser,
     PromptStructuringPhase,
 )
 
-from .patch_types import (
+from .patch.types import (
     ExtractionPatch,
     AnalysisPatch,
     PatchMergeReport,
     ToxicityReport,
 )
 
-from .extraction_prompt_optimization_stage import (
+from .stages.extraction_prompt_optimization import (
     ExtractionResult,
     AnalysisResult,
     EvalRecord,
@@ -75,19 +75,19 @@ from .extraction_prompt_optimization_stage import (
     ExtractionPromptOptimizationStage,
 )
 
-from .analysis_prompt_optimization_stage import (
+from .stages.analysis_prompt_optimization import (
     ReflectionResult,
     AnalysisMetrics,
     AnalysisPromptOptimizationStage,
 )
 
-from .prompt_optimization_phase import (
+from .phases.prompt_optimization import (
     PromptOptimizationConfig,
     PromptOptimizationIterationResult,
     PromptOptimizationPhase,
 )
 
-from .fewshot_optimization_phase import (
+from .phases.fewshot_optimization import (
     FewshotExample,
     FewshotConfig,
     FewshotMetrics,
@@ -95,14 +95,14 @@ from .fewshot_optimization_phase import (
     FewshotOptimizationPhase,
 )
 
-from .config import (
+from .core.config import (
     RunConfig,
     DatasetConfig,
     RefactoredConfig,
     load_config,
 )
 
-from .runner import (
+from .core.runner import (
     RunPlanStep,
     RunPlan,
     RunSummary,

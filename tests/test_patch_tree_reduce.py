@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from mmap_optimizer.patch.clusterer import cluster_patches
 from mmap_optimizer.patch.conflict import detect_patch_conflicts
 from mmap_optimizer.patch.schema import Patch

@@ -259,12 +259,12 @@ def test_analysis_executor():
 
     from mmap_optimizer.model.client import MockModelClient
     from mmap_optimizer.executors.analysis_executor import AnalysisExecutor
-    from mmap_optimizer.extraction_prompt_optimization_stage import (
+    from mmap_optimizer.stages.extraction_prompt_optimization import (
         AnalysisResult,
         ExtractionResult,
     )
-    from mmap_optimizer.sample import SampleSet, SampleSpec
-    from mmap_optimizer.structured_prompt import (
+    from mmap_optimizer.data.sample import SampleSet, SampleSpec
+    from mmap_optimizer.prompt.structured_prompt import (
         PromptSection,
         StructuredPrompt,
     )

@@ -14,10 +14,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .extraction_prompt_optimization_stage import ExtractionResult
-from .sampler import SamplerConfig, create_sampler
-from .sample import SampleBatch, SampleSet, SampleTrace, SampleSpec, SampleState
-from .structured_prompt import StructuredPrompt
+from ..stages.extraction_prompt_optimization import ExtractionResult
+from ..data.sampler import SamplerConfig, create_sampler
+from ..data.sample import SampleBatch, SampleSet, SampleTrace, SampleSpec, SampleState
+from ..prompt.structured_prompt import StructuredPrompt
 
 
 @dataclass

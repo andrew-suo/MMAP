@@ -112,6 +112,9 @@ class PromptOptimizationPhase:
         self.iteration_results: list[PromptOptimizationIterationResult] = []
         self.prompt_versions: list[dict[str, Any]] = []
         self.patch_apply_reports: list[dict[str, Any]] = []
+        # PR4: 暴露每轮 stage 实例，供 runner 读取 compression_report
+        self.extraction_stages: list[ExtractionPromptOptimizationStage] = []
+        self.analysis_stages: list[AnalysisPromptOptimizationStage] = []
 
     def run(self) -> list[PromptOptimizationIterationResult]:
         """执行完整的 Prompt Optimization Phase。"""
@@ -135,6 +138,13 @@ class PromptOptimizationPhase:
 
     def _run_iteration(self, iteration: int) -> PromptOptimizationIterationResult:
         """执行单轮迭代。"""
+        # PR4: 捕获 iteration 开始前的状态
+        import copy
+        batch_size_before = copy.deepcopy(self.batch_size_controller)
+        sample_states_before = {
+            sid: copy.deepcopy(state) for sid, state in self.sample_set.states.items()
+        }
+
         # Stage 1: Sampling Stage
         batch = self._sampling_stage(iteration)
 
@@ -152,8 +162,10 @@ class PromptOptimizationPhase:
             patch_apply_executor=self.executors.get("patch_apply"),
             merge_executor=self.executors.get("merge"),
             toxicity_test_executor=self.executors.get("toxicity_test"),
+            compression_executor=self.executors.get("compression"),
         )
         extraction_metrics = extraction_stage.run()
+        self.extraction_stages.append(extraction_stage)
 
         # 更新 extraction prompt（使用 accepted_prompt 而非仅自增 version）
         if extraction_stage.accepted_prompt is not None:
@@ -183,8 +195,10 @@ class PromptOptimizationPhase:
             extraction_prompt=self.extraction_prompt,
             merge_executor=self.executors.get("merge"),
             toxicity_test_executor=self.executors.get("toxicity_test"),
+            compression_executor=self.executors.get("compression"),
         )
         analysis_metrics = analysis_stage.run()
+        self.analysis_stages.append(analysis_stage)
 
         # 更新 analysis prompt（使用 accepted_prompt 而非仅自增 version）
         if analysis_stage.accepted_prompt is not None:
@@ -216,7 +230,14 @@ class PromptOptimizationPhase:
         )
 
         # 保存 artifact
-        self._save_iteration_artifacts(iteration, extraction_stage, analysis_stage, result)
+        self._save_iteration_artifacts(
+            iteration,
+            extraction_stage,
+            analysis_stage,
+            result,
+            batch_size_before=batch_size_before,
+            sample_states_before=sample_states_before,
+        )
 
         return result
 
@@ -306,6 +327,8 @@ class PromptOptimizationPhase:
         extraction_stage: ExtractionPromptOptimizationStage,
         analysis_stage: AnalysisPromptOptimizationStage,
         result: PromptOptimizationIterationResult,
+        batch_size_before=None,
+        sample_states_before=None,
     ) -> None:
         """保存单轮迭代的 artifacts。"""
         import json
@@ -322,7 +345,7 @@ class PromptOptimizationPhase:
             d = data.to_dict() if hasattr(data, "to_dict") else data
             path.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        iteration_dir = self.output_dir / f"prompt_iter_{iteration:03d}"
+        iteration_dir = self.output_dir / "prompt_optimization" / f"iteration_{iteration}"
         iteration_dir.mkdir(parents=True, exist_ok=True)
 
         # 保存 batch
@@ -330,6 +353,46 @@ class PromptOptimizationPhase:
             json.dumps(result.batch.__dict__, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+        # PR4: 保存 sample traces
+        traces = self.sample_set.get_traces_for_iteration("prompt_optimization", iteration)
+        traces_data = []
+        for trace in traces:
+            trace_dict = {
+                "sample_id": trace.sample_id,
+                "phase": trace.phase,
+                "iteration": trace.iteration,
+                "selected": trace.selected,
+            }
+            for attr in ["base_extraction_result_id", "base_extraction_status", "reflection_result_id",
+                         "reflection_success", "generated_patch_ids", "generated_analysis_patch_ids",
+                         "transition"]:
+                val = getattr(trace, attr, None)
+                if val is not None:
+                    trace_dict[attr] = list(val) if isinstance(val, list) else val
+            traces_data.append(trace_dict)
+        with open(iteration_dir / "sample_traces.jsonl", "w", encoding="utf-8") as f:
+            for t in traces_data:
+                f.write(json.dumps(t, ensure_ascii=False) + "\n")
+
+        # PR4: 保存 sample state before/after
+        def _serialize_state(state):
+            """序列化 SampleState。"""
+            if hasattr(state, "to_dict"):
+                return state.to_dict()
+            return {k: v for k, v in vars(state).items()} if hasattr(state, "__dict__") else str(state)
+
+        if sample_states_before is not None:
+            before_data = {sid: _serialize_state(s) for sid, s in sample_states_before.items()}
+            _write_json(iteration_dir / "sample_state_before.json", before_data)
+
+        after_data = {sid: _serialize_state(s) for sid, s in self.sample_set.states.items()}
+        _write_json(iteration_dir / "sample_state_after.json", after_data)
+
+        # PR4: 保存 batch_size_controller before/after
+        if batch_size_before is not None:
+            _write_json(iteration_dir / "batch_size_controller_before.json", batch_size_before)
+        _write_json(iteration_dir / "batch_size_controller_after.json", self.batch_size_controller)
 
         # 保存 extraction metrics
         _write_json(iteration_dir / "extraction_metrics.json", result.extraction_metrics)
@@ -381,6 +444,10 @@ class PromptOptimizationPhase:
                 extraction_stage.toxicity_report.patch_test_records,
             )
 
+        # PR4: Compression report
+        if getattr(extraction_stage, "compression_report", None) is not None:
+            _write_json(extraction_dir / "compression_report.json", extraction_stage.compression_report)
+
         # --- Analysis artifacts ---
         analysis_dir = iteration_dir / "analysis"
         analysis_dir.mkdir(parents=True, exist_ok=True)
@@ -418,3 +485,7 @@ class PromptOptimizationPhase:
                 analysis_dir / "patch_test_records.jsonl",
                 analysis_stage.toxicity_report.patch_test_records,
             )
+
+        # PR4: Compression report
+        if getattr(analysis_stage, "compression_report", None) is not None:
+            _write_json(analysis_dir / "compression_report.json", analysis_stage.compression_report)

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .extraction_prompt_optimization_stage import AnalysisResult, ExtractionResult
-from .patch import AnalysisPatch, PatchMergeReport, ToxicityReport
+from .patch import AnalysisPatch, CompressionReport, PatchMergeReport, ToxicityReport
 from .sample import SampleBatch, SampleSet, SampleTrace
 from .structured_prompt import StructuredPrompt
 
@@ -89,6 +89,7 @@ class AnalysisPromptOptimizationStage:
         extraction_prompt=None,          # StructuredPrompt 实例（用于 generate_analysis_patches 和 execute_batch）
         merge_executor=None,             # MergeExecutor 实例
         toxicity_test_executor=None,     # ToxicityTestExecutor 实例
+        compression_executor=None,       # CompressionExecutor 实例
     ):
         self.analysis_prompt = analysis_prompt
         self.extraction_results = extraction_results
@@ -102,6 +103,7 @@ class AnalysisPromptOptimizationStage:
         self.extraction_prompt = extraction_prompt
         self.merge_executor = merge_executor
         self.toxicity_test_executor = toxicity_test_executor
+        self.compression_executor = compression_executor
 
         # 结果存储
         self.reflection_results: list[ReflectionResult] = []
@@ -132,6 +134,7 @@ class AnalysisPromptOptimizationStage:
         self.initial_merge_report: PatchMergeReport | None = None
         self.final_merge_report: PatchMergeReport | None = None
         self.toxicity_report: ToxicityReport | None = None
+        self.compression_report: CompressionReport | None = None
         self.transition_report: dict[str, Any] | None = None
 
     def run(self) -> AnalysisMetrics:
@@ -669,8 +672,55 @@ class AnalysisPromptOptimizationStage:
 
     def _step7_compress_if_needed(self) -> None:
         """Step 7: Analysis Prompt 压缩。"""
-        # 第一版暂不实现压缩
-        self.metrics.compression_accepted = False
+        if self.compression_executor is None:
+            self.metrics.compression_accepted = False
+            return
+
+        prompt_to_compress = self.final_prompt or self.accepted_prompt or self.analysis_prompt
+        if prompt_to_compress is None:
+            self.metrics.compression_accepted = False
+            return
+
+        line_limit = getattr(self, "line_limit", 250)
+        char_limit = getattr(self, "char_limit", 16000)
+
+        # Use final_analysis_results as pre-compression if available
+        pre_analysis = self.final_analysis_results or self.patched_analysis_results or self.base_analysis_results
+
+        compressed_prompt, report = self.compression_executor.compress_if_needed(
+            prompt=prompt_to_compress,
+            line_limit=line_limit,
+            char_limit=char_limit,
+            batch=self.batch,
+            sample_set=self.sample_set,
+            mode="analysis",
+            analysis_executor=self.analysis_executor,
+            extraction_prompt=self.extraction_prompt,
+            extraction_results=self.extraction_results,
+            pre_compression_analysis_results=pre_analysis,
+        )
+
+        self.compression_report = report
+
+        if report.accepted:
+            self.final_prompt = compressed_prompt
+            self.accepted_prompt = compressed_prompt
+            self.metrics.compression_accepted = True
+            # Re-run final analysis test with compressed prompt
+            if self.analysis_executor is not None:
+                self.final_analysis_results = self.analysis_executor.execute_batch(
+                    analysis_prompt=compressed_prompt,
+                    extraction_prompt=self.extraction_prompt,
+                    extraction_results=self.extraction_results,
+                    sample_set=self.sample_set,
+                )
+                correct = sum(1 for r in self.final_analysis_results if r.analysis_correct)
+                total = len(self.final_analysis_results)
+                self.metrics.final_accuracy = correct / total if total > 0 else 0.0
+                self.metrics.final_correct_count = correct
+                self.metrics.final_wrong_count = total - correct
+        else:
+            self.metrics.compression_accepted = False
 
     def _step8_final_test_and_metrics(self) -> None:
         """Step 8: 最终测试与统计。"""

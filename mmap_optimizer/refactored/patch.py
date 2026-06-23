@@ -263,3 +263,73 @@ class ToxicityReport:
             patch_test_records=data.get("patch_test_records", []),
             early_stop_enabled=data.get("early_stop_enabled", True),
         )
+
+
+@dataclass
+class CompressionReport:
+    """压缩报告。"""
+    id: str
+    prompt_type: str  # "extraction" | "analysis"
+    base_prompt_id: str
+    compressed_prompt_id: str | None = None
+    triggered: bool = False
+    accepted: bool = False
+    rejected_reason: str | None = None
+    line_count_before: int = 0
+    line_count_after: int = 0
+    char_count_before: int = 0
+    char_count_after: int = 0
+    base_accuracy: float | None = None
+    pre_compression_accuracy: float | None = None
+    post_compression_accuracy: float | None = None
+    broken_sample_ids: list[str] = field(default_factory=list)
+    fixed_sample_ids: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    still_over_limit: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """转换为字典格式。"""
+        return {
+            "id": self.id,
+            "prompt_type": self.prompt_type,
+            "base_prompt_id": self.base_prompt_id,
+            "compressed_prompt_id": self.compressed_prompt_id,
+            "triggered": self.triggered,
+            "accepted": self.accepted,
+            "rejected_reason": self.rejected_reason,
+            "line_count_before": self.line_count_before,
+            "line_count_after": self.line_count_after,
+            "char_count_before": self.char_count_before,
+            "char_count_after": self.char_count_after,
+            "base_accuracy": self.base_accuracy,
+            "pre_compression_accuracy": self.pre_compression_accuracy,
+            "post_compression_accuracy": self.post_compression_accuracy,
+            "broken_sample_ids": list(self.broken_sample_ids),
+            "fixed_sample_ids": list(self.fixed_sample_ids),
+            "warnings": list(self.warnings),
+            "still_over_limit": self.still_over_limit,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CompressionReport":
+        """从字典创建。"""
+        return cls(
+            id=data["id"],
+            prompt_type=data["prompt_type"],
+            base_prompt_id=data["base_prompt_id"],
+            compressed_prompt_id=data.get("compressed_prompt_id"),
+            triggered=data.get("triggered", False),
+            accepted=data.get("accepted", False),
+            rejected_reason=data.get("rejected_reason"),
+            line_count_before=data.get("line_count_before", 0),
+            line_count_after=data.get("line_count_after", 0),
+            char_count_before=data.get("char_count_before", 0),
+            char_count_after=data.get("char_count_after", 0),
+            base_accuracy=data.get("base_accuracy"),
+            pre_compression_accuracy=data.get("pre_compression_accuracy"),
+            post_compression_accuracy=data.get("post_compression_accuracy"),
+            broken_sample_ids=data.get("broken_sample_ids", []),
+            fixed_sample_ids=data.get("fixed_sample_ids", []),
+            warnings=data.get("warnings", []),
+            still_over_limit=data.get("still_over_limit", False),
+        )

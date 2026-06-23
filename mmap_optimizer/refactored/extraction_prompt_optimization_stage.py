@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from .patch import ExtractionPatch, PatchMergeReport, ToxicityReport
+from .patch import CompressionReport, ExtractionPatch, PatchMergeReport, ToxicityReport
 from .sample import SampleBatch, SampleSet, SampleState, SampleTrace
 from .structured_prompt import StructuredPrompt
 
@@ -137,6 +137,7 @@ class ExtractionPromptOptimizationStage:
         patch_apply_executor=None,       # PatchApplyExecutor 实例
         merge_executor=None,             # MergeExecutor 实例
         toxicity_test_executor=None,     # ToxicityTestExecutor 实例
+        compression_executor=None,       # CompressionExecutor 实例
     ):
         self.extraction_prompt = extraction_prompt
         self.analysis_prompt = analysis_prompt
@@ -152,6 +153,7 @@ class ExtractionPromptOptimizationStage:
         self.patch_apply_executor = patch_apply_executor
         self.merge_executor = merge_executor
         self.toxicity_test_executor = toxicity_test_executor
+        self.compression_executor = compression_executor
 
         # 结果存储
         self.base_extraction_results: list[ExtractionResult] = []
@@ -185,6 +187,7 @@ class ExtractionPromptOptimizationStage:
         self.initial_merge_report: PatchMergeReport | None = None
         self.final_merge_report: PatchMergeReport | None = None
         self.toxicity_report: ToxicityReport | None = None
+        self.compression_report: CompressionReport | None = None
         self.transition_report: dict[str, Any] | None = None
         self.patch_apply_report = None  # PatchApplyReport
 
@@ -843,8 +846,57 @@ class ExtractionPromptOptimizationStage:
 
     def _step8_compress_if_needed(self) -> None:
         """Step 8: Prompt 压缩（如果需要）。"""
-        # 第一版暂不实现压缩
-        self.metrics.compression_accepted = False
+        if self.compression_executor is None:
+            self.metrics.compression_accepted = False
+            return
+
+        # Determine the prompt to compress (final_prompt if set, otherwise accepted_prompt)
+        prompt_to_compress = self.final_prompt or self.accepted_prompt or self.extraction_prompt
+        if prompt_to_compress is None:
+            self.metrics.compression_accepted = False
+            return
+
+        # Get line/char limits from config or use defaults
+        line_limit = getattr(self, "line_limit", 300)
+        char_limit = getattr(self, "char_limit", 20000)
+
+        # Use final_eval_records as pre-compression eval if available, else base_eval_records
+        pre_eval = self.final_eval_records or self.patched_eval_records or self.base_eval_records
+
+        compressed_prompt, report = self.compression_executor.compress_if_needed(
+            prompt=prompt_to_compress,
+            line_limit=line_limit,
+            char_limit=char_limit,
+            batch=self.batch,
+            sample_set=self.sample_set,
+            mode="extraction",
+            extraction_executor=self.extraction_executor,
+            evaluation_executor=self.evaluation_executor,
+            pre_compression_eval_records=pre_eval,
+        )
+
+        self.compression_report = report
+
+        if report.accepted:
+            self.final_prompt = compressed_prompt
+            self.accepted_prompt = compressed_prompt
+            self.metrics.compression_accepted = True
+            # Re-run final test with compressed prompt if we have executors
+            if self.extraction_executor is not None and self.evaluation_executor is not None:
+                self.final_extraction_results = self.extraction_executor.execute(
+                    prompt=compressed_prompt, batch=self.batch, sample_set=self.sample_set
+                )
+                self.final_eval_records = self.evaluation_executor.evaluate(
+                    self.final_extraction_results, self.sample_set
+                )
+                correct = sum(1 for r in self.final_eval_records if r.status == "correct")
+                total = len(self.final_eval_records)
+                self.metrics.final_accuracy = correct / total if total > 0 else 0.0
+                self.metrics.final_correct_count = correct
+                self.metrics.final_wrong_count = sum(1 for r in self.final_eval_records if r.status == "wrong")
+                self.metrics.final_invalid_count = sum(1 for r in self.final_eval_records if r.status == "invalid")
+        else:
+            self.metrics.compression_accepted = False
 
     def _step9_final_test_and_metrics(self) -> None:
         """Step 9: 最终测试与统计。"""

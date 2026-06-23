@@ -161,81 +161,129 @@
 
 ## PR 3：真实 Merge 与 Greedy 测毒
 
-- [ ] Task 21: 实现 MergeExecutor
-  - [ ] SubTask 21.1: 创建 `executors/merge_executor.py`
-  - [ ] SubTask 21.2: 接入旧系统 `TreeReducePatchMerger`（`patch/tree_reduce.py`）
-  - [ ] SubTask 21.3: 实现数据结构转换：ExtractionPatch/AnalysisPatch ↔ 旧系统 Patch
-  - [ ] SubTask 21.4: 实现 merge 后重新 validate
-  - [ ] SubTask 21.5: 实现 merge report 生成（input/merged/dropped/conflict patch_ids）
-  - [ ] SubTask 21.6: 实现 fallback 到 rule-based merge
-  - [ ] SubTask 21.7: 编写单元测试
+- [x] Task 21: 实现 MergeExecutor
+  - [x] SubTask 21.1: 创建 `executors/merge_executor.py`
+  - [x] SubTask 21.2: 定义 `MergeReport` dataclass：id、strategy、input_patch_count、merged_patch_count、dropped_patch_count、conflict_count、input_patch_ids、merged_patch_ids、dropped_patch_ids、conflict_patch_ids、merge_reason、fallback_used、warnings
+  - [x] SubTask 21.3: 实现 `merge()` 方法，接受 patches、base_prompt、merge_strategy，返回 (merged_patches, merge_report)
+  - [x] SubTask 21.4: 接入旧系统 `TreeReducePatchMerger`（`patch/tree_reduce.py`），实现 tree_merge 策略
+  - [x] SubTask 21.5: 实现数据结构转换：ExtractionPatch/AnalysisPatch ↔ 旧系统 Patch
+  - [x] SubTask 21.6: 实现 merge 后重新 validate（使用 PatchValidator），失败标记 rejection_reason="MERGED_PATCH_VALIDATION_FAILED"
+  - [x] SubTask 21.7: 实现 passthrough fallback：真实 merge 失败时回退为 merged_patches = validated_patches，fallback_used=true
+  - [x] SubTask 21.8: 保留 hierarchical_merge 策略接口（本阶段非必须完整实现）
+  - [x] SubTask 21.9: 编写单元测试覆盖：passthrough fallback、tree merge 成功、merge 后 validate、invalid merged patch 被拒绝、merge report 字段完整
 
-- [ ] Task 22: 实现 ToxicityTestExecutor
-  - [ ] SubTask 22.1: 创建 `executors/toxicity_executor.py`
-  - [ ] SubTask 22.2: 实现 patch 按 source sample 难度排序
-  - [ ] SubTask 22.3: 实现 greedy 测毒循环（apply patch → 在 toxic_sample_ids 上测试 → 判定）
-  - [ ] SubTask 22.4: 实现 early stop（toxic sample 失败立即拒绝）
-  - [ ] SubTask 22.5: 实现空 toxic set 跳过逻辑
-  - [ ] SubTask 22.6: 实现 toxicity report 生成（tested/toxic/safe/broken_sample_ids）
-  - [ ] SubTask 22.7: 编写单元测试
+- [x] Task 22: 实现 ToxicityTestExecutor
+  - [x] SubTask 22.1: 创建 `executors/toxicity_executor.py`
+  - [x] SubTask 22.2: 定义 `ToxicityReport` dataclass：id、mode、tested_patch_count、safe_patch_count、toxic_patch_count、toxic_sample_ids、safe_patch_ids、toxic_patch_ids、patch_test_records、early_stop_enabled
+  - [x] SubTask 22.3: 定义 `PatchTestRecord` dataclass：patch_id、status(safe/toxic/skipped)、tested_sample_ids、broken_sample_ids、fixed_sample_ids、stop_reason
+  - [x] SubTask 22.4: 实现 `test()` 方法，接受 base_prompt、candidate_patches、toxic_sample_ids、sample_set、executor_set、mode、early_stop，返回 (safe_patches, toxic_patches, toxicity_report)
+  - [x] SubTask 22.5: 实现 ineffective patch 剔除：source_sample_ids 全部属于 unchanged_wrong 的 patch 标记为 INEFFECTIVE，不进入测毒
+  - [x] SubTask 22.6: 实现 patch 按来源样本难度排序：patch_difficulty desc、source_sample_count desc、patch_id asc
+  - [x] SubTask 22.7: 实现 greedy 测毒循环：逐 patch 应用到 cumulative_prompt，在 toxic_sample_ids 上测试
+  - [x] SubTask 22.8: 实现 extraction 模式测毒：使用 ExtractionExecutor + EvaluationExecutor + PatchApplyExecutor
+  - [x] SubTask 22.9: 实现 analysis 模式测毒：使用 AnalysisExecutor + PatchApplyExecutor + 已有 extraction_results
+  - [x] SubTask 22.10: 实现 early stop：toxic sample 被搞坏时立即拒绝当前 patch，进入下一个 patch
+  - [x] SubTask 22.11: 实现空 toxic set 跳过：所有非 ineffective patch 进入 safe_patches，标记 skipped_reason="NO_TOXIC_SAMPLES"
+  - [x] SubTask 22.12: 编写单元测试覆盖：空 toxic set 跳过、safe patch 接受、toxic patch 拒绝、early stop 生效、patch 排序、patch_test_records 生成
 
-- [ ] Task 23: 接入 MergeExecutor 和 ToxicityTestExecutor 到 stages
-  - [ ] SubTask 23.1: 替换 ExtractionPromptOptimizationStage Step 5 passthrough merge 为真实 MergeExecutor
-  - [ ] SubTask 23.2: 替换 ExtractionPromptOptimizationStage Step 7 patch set 级判断为真实 ToxicityTestExecutor
-  - [ ] SubTask 23.3: 替换 AnalysisPromptOptimizationStage Step 4 passthrough merge 为真实 MergeExecutor
-  - [ ] SubTask 23.4: 替换 AnalysisPromptOptimizationStage Step 6 patch set 级判断为真实 ToxicityTestExecutor
+- [x] Task 23: 接入 MergeExecutor 和 ToxicityTestExecutor 到 ExtractionPromptOptimizationStage
+  - [x] SubTask 23.1: 修改 `__init__` 接受 merge_executor 和 toxicity_test_executor 参数
+  - [x] SubTask 23.2: 替换 Step 5 passthrough merge 为 MergeExecutor.merge()，merge 后重新 validate
+  - [x] SubTask 23.3: Step 6 沿用 PR2 的 PatchApplyExecutor + ExtractionExecutor + EvaluationExecutor 进行 initial apply 和回归测试
+  - [x] SubTask 23.4: Step 7 实现 transition 分类（fixed/broken/unchanged_wrong/unchanged_correct）
+  - [x] SubTask 23.5: Step 7 实现 ineffective patch 剔除（source_sample_ids 全部属于 unchanged_wrong）
+  - [x] SubTask 23.6: Step 7 构造 toxic_sample_ids（broken sample ids）
+  - [x] SubTask 23.7: Step 7 调用 ToxicityTestExecutor.test() 执行 greedy 测毒
+  - [x] SubTask 23.8: Step 7 对 safe_patches 执行二次 merge（使用 MergeExecutor）
+  - [x] SubTask 23.9: Step 7 应用 final_merged_patches 到 base_prompt（不是 trial_prompt）
+  - [x] SubTask 23.10: Step 7 空 safe_patches 时 no_progress=true，accepted_prompt=None
+  - [x] SubTask 23.11: Step 9 基于 final_prompt 做最终测试（沿用 PR2）
 
-- [ ] Task 24: PR3 集成验证
-  - [ ] SubTask 24.1: 验证 ineffective patch 被剔除
-  - [ ] SubTask 24.2: 验证 toxic patch 被拒绝
-  - [ ] SubTask 24.3: 验证 safe patch 进入 final merge
-  - [ ] SubTask 24.4: 验证 early stop 生效
-  - [ ] SubTask 24.5: 验证 toxicity_report 包含 tested/toxic/safe/broken_sample_ids
+- [x] Task 24: 接入 MergeExecutor 和 ToxicityTestExecutor 到 AnalysisPromptOptimizationStage
+  - [x] SubTask 24.1: 修改 `__init__` 接受 merge_executor 和 toxicity_test_executor 参数
+  - [x] SubTask 24.2: 替换 Step 4 passthrough merge 为 MergeExecutor.merge()
+  - [x] SubTask 24.3: Step 5 沿用 PR2 的 PatchApplyExecutor + AnalysisExecutor 进行 initial apply 和回归测试
+  - [x] SubTask 24.4: Step 6 实现 analysis transition 分类
+  - [x] SubTask 24.5: Step 6 剔除 ineffective analysis patches
+  - [x] SubTask 24.6: Step 6 构造 analysis_toxic_sample_ids
+  - [x] SubTask 24.7: Step 6 调用 ToxicityTestExecutor.test(mode="analysis") 执行 greedy 测毒
+  - [x] SubTask 24.8: Step 6 对 safe analysis patches 执行二次 merge
+  - [x] SubTask 24.9: Step 6 应用 final_merged_patches 到 base analysis prompt
+  - [x] SubTask 24.10: Step 6 analysis no_progress 不影响 extraction prompt
+  - [x] SubTask 24.11: Step 8 基于 final_analysis_prompt 做最终测试（沿用 PR2）
+
+- [x] Task 25: 修改 PromptOptimizationPhase 和 factory 注入新 executor
+  - [x] SubTask 25.1: 修改 `PromptOptimizationPhase.__init__` 接受 merge_executor 和 toxicity_test_executor
+  - [x] SubTask 25.2: 将新 executor 传给 ExtractionPromptOptimizationStage 和 AnalysisPromptOptimizationStage
+  - [x] SubTask 25.3: 在 factory.py 中构建 MergeExecutor 实例（替换 _MockMergeExecutor）
+  - [x] SubTask 25.4: 在 factory.py 中构建 ToxicityTestExecutor 实例（替换 _MockToxicityTestExecutor）
+  - [x] SubTask 25.5: 在 runner.py 中将新 executor 注入到 PromptOptimizationPhase
+
+- [x] Task 26: 补齐 PR3 阶段 Artifact
+  - [x] SubTask 26.1: 保存 extraction/ 下新增 artifact：initial_merge_report.json、transition_report.json、ineffective_patches.jsonl、toxicity_report.json、safe_patches.jsonl、toxic_patches.jsonl、final_merge_report.json、final_merged_patches.jsonl、patch_test_records.jsonl
+  - [x] SubTask 26.2: 保存 analysis/ 下新增 artifact：initial_merge_report.json、transition_report.json、ineffective_patches.jsonl、toxicity_report.json、safe_patches.jsonl、toxic_patches.jsonl、final_merge_report.json、final_merged_patches.jsonl、patch_test_records.jsonl
+
+- [x] Task 27: PR3 集成测试
+  - [x] SubTask 27.1: 编写集成测试：validated patches → initial merge → initial apply → patched eval → toxic sample set → greedy toxicity test → final merge → final apply → final eval
+  - [x] SubTask 27.2: 验证 safe patch 能进入 final prompt
+  - [x] SubTask 27.3: 验证 ineffective patch 被剔除
+  - [x] SubTask 27.4: 验证 toxic patch 被拒绝
+  - [x] SubTask 27.5: 验证 safe patch 二次 merge 后 prompt 改变
+  - [x] SubTask 27.6: 验证 final prompt 指标不低于 base prompt
+  - [x] SubTask 27.7: 编写 analysis 集成测试：analysis ineffective patch 被剔除、analysis toxic patch 被拒绝、safe analysis patch 二次 merge、analysis no_progress 不影响 extraction prompt
+
+- [x] Task 28: PR3 Smoke 测试与验收
+  - [x] SubTask 28.1: 验证 factory.py 不再为 merge 返回 mock executor
+  - [x] SubTask 28.2: 验证 factory.py 不再为 toxicity_test 返回 mock executor
+  - [x] SubTask 28.3: 验证 CLI 至少能跑通 1 轮真实 merge + 测毒流程
+  - [x] SubTask 28.4: 验证 toxicity_report 包含 tested/toxic/safe/broken_sample_ids
+  - [x] SubTask 28.5: 验证 patch_test_records 可追踪
+  - [x] SubTask 28.6: 验证 extraction prompt 最终推进只基于 safe patches
 
 ---
 
 ## PR 4：压缩、Artifact、端到端 Smoke
 
-- [ ] Task 25: 实现 CompressionExecutor
-  - [ ] SubTask 25.1: 创建 `executors/compression_executor.py`
-  - [ ] SubTask 25.2: 接入旧系统 `CompressionEngine`（`compression/engine.py`）
-  - [ ] SubTask 25.3: 实现超限检测（line_limit / char_limit）
-  - [ ] SubTask 25.4: 实现压缩后重新测试和接受标准判断
-  - [ ] SubTask 25.5: 实现压缩失败保留原 prompt
-  - [ ] SubTask 25.6: 实现 compression report 生成
-  - [ ] SubTask 25.7: 编写单元测试
+- [ ] Task 29: 实现 CompressionExecutor
+  - [ ] SubTask 29.1: 创建 `executors/compression_executor.py`
+  - [ ] SubTask 29.2: 接入旧系统 `CompressionEngine`（`compression/engine.py`）
+  - [ ] SubTask 29.3: 实现超限检测（line_limit / char_limit）
+  - [ ] SubTask 29.4: 实现压缩后重新测试和接受标准判断
+  - [ ] SubTask 29.5: 实现压缩失败保留原 prompt
+  - [ ] SubTask 29.6: 实现 compression report 生成
+  - [ ] SubTask 29.7: 编写单元测试
 
-- [ ] Task 26: 接入 CompressionExecutor 到 stages
-  - [ ] SubTask 26.1: 替换 ExtractionPromptOptimizationStage Step 8 mock 压缩
-  - [ ] SubTask 26.2: 替换 AnalysisPromptOptimizationStage Step 7 mock 压缩
+- [ ] Task 30: 接入 CompressionExecutor 到 stages
+  - [ ] SubTask 30.1: 替换 ExtractionPromptOptimizationStage Step 8 mock 压缩
+  - [ ] SubTask 30.2: 替换 AnalysisPromptOptimizationStage Step 7 mock 压缩
 
-- [ ] Task 27: 补齐全链路 Artifact
-  - [ ] SubTask 27.1: 在 PromptOptimizationPhase 保存 extraction/ 下 12 个文件（base_results、base_eval、analysis_results、draft_patches、initial_merge_report、patched_results、patched_eval、toxicity_report、final_merge_report、final_results、final_eval、metrics）
-  - [ ] SubTask 27.2: 在 PromptOptimizationPhase 保存 analysis/ 下 9 个文件（base_metrics、reflection_results、draft_patches、initial_merge_report、patched_analysis_results、toxicity_report、final_merge_report、final_analysis_results、metrics）
-  - [ ] SubTask 27.3: 保存 sample_traces.jsonl（每轮）
-  - [ ] SubTask 27.4: 保存 sample_state_before.json 和 sample_state_after.json
-  - [ ] SubTask 27.5: 保存 batch_size_controller_before.json 和 batch_size_controller_after.json
-  - [ ] SubTask 27.6: 在 FewshotOptimizationPhase 保存 fewshot/ 下 6 个文件（base_results、base_eval、selected_examples、final_results、final_eval、metrics）
-  - [ ] SubTask 27.7: 保存 compression_report.json（如果触发）
+- [ ] Task 31: 补齐全链路 Artifact
+  - [ ] SubTask 31.1: 在 PromptOptimizationPhase 保存 extraction/ 下 12 个文件（base_results、base_eval、analysis_results、draft_patches、initial_merge_report、patched_results、patched_eval、toxicity_report、final_merge_report、final_results、final_eval、metrics）
+  - [ ] SubTask 31.2: 在 PromptOptimizationPhase 保存 analysis/ 下 9 个文件（base_metrics、reflection_results、draft_patches、initial_merge_report、patched_analysis_results、toxicity_report、final_merge_report、final_analysis_results、metrics）
+  - [ ] SubTask 31.3: 保存 sample_traces.jsonl（每轮）
+  - [ ] SubTask 31.4: 保存 sample_state_before.json 和 sample_state_after.json
+  - [ ] SubTask 31.5: 保存 batch_size_controller_before.json 和 batch_size_controller_after.json
+  - [ ] SubTask 31.6: 在 FewshotOptimizationPhase 保存 fewshot/ 下 6 个文件（base_results、base_eval、selected_examples、final_results、final_eval、metrics）
+  - [ ] SubTask 31.7: 保存 compression_report.json（如果触发）
 
-- [ ] Task 28: 修复 Runner 问题
-  - [ ] SubTask 28.1: 修复 yaml 导入顺序 bug（runner.py 行 438-442 的 try-except 应移到文件顶部）
-  - [ ] SubTask 28.2: 保存最终 few-shot examples 到顶层目录
-  - [ ] SubTask 28.3: 增加 rollback / no_progress 标记到 run_summary
+- [ ] Task 32: 修复 Runner 问题
+  - [ ] SubTask 32.1: 修复 yaml 导入顺序 bug（runner.py 行 438-442 的 try-except 应移到文件顶部）
+  - [ ] SubTask 32.2: 保存最终 few-shot examples 到顶层目录
+  - [ ] SubTask 32.3: 增加 rollback / no_progress 标记到 run_summary
 
-- [ ] Task 29: 准备小数据集和端到端 Smoke
-  - [ ] SubTask 29.1: 准备 10～20 条小样本数据集（data/smoke_samples.jsonl）
-  - [ ] SubTask 29.2: 创建 smoke 测试配置（configs/smoke_config.yaml，rounds=1）
-  - [ ] SubTask 29.3: 编写端到端 smoke 测试脚本
-  - [ ] SubTask 29.4: 验证 CLI 能跑通真实小数据集
-  - [ ] SubTask 29.5: 验证不出现 mock output
+- [ ] Task 33: 准备小数据集和端到端 Smoke
+  - [ ] SubTask 33.1: 准备 10～20 条小样本数据集（data/smoke_samples.jsonl）
+  - [ ] SubTask 33.2: 创建 smoke 测试配置（configs/smoke_config.yaml，rounds=1）
+  - [ ] SubTask 33.3: 编写端到端 smoke 测试脚本
+  - [ ] SubTask 33.4: 验证 CLI 能跑通真实小数据集
+  - [ ] SubTask 33.5: 验证不出现 mock output
 
-- [ ] Task 30: PR4 最终验收
-  - [ ] SubTask 30.1: 验证 prompt 超限时触发压缩
-  - [ ] SubTask 30.2: 验证压缩后不降才接受
-  - [ ] SubTask 30.3: 验证一次完整 Run 产物完整
-  - [ ] SubTask 30.4: 验证 CLI 能跑通真实 10～20 条样本
-  - [ ] SubTask 30.5: 验证三阶段全流程无 mock
+- [ ] Task 34: PR4 最终验收
+  - [ ] SubTask 34.1: 验证 prompt 超限时触发压缩
+  - [ ] SubTask 34.2: 验证压缩后不降才接受
+  - [ ] SubTask 34.3: 验证一次完整 Run 产物完整
+  - [ ] SubTask 34.4: 验证 CLI 能跑通真实 10～20 条样本
+  - [ ] SubTask 34.5: 验证三阶段全流程无 mock
 
 ---
 
@@ -260,16 +308,20 @@
 - [Task 18] depends on [Task 17]（artifact 补齐依赖主流程跑通）
 - [Task 19] depends on [Task 18]（集成测试依赖 artifact 可验证）
 - [Task 20] depends on [Task 19]（smoke 测试依赖集成测试通过）
-- [Task 21] depends on [Task 20]（PR3 依赖 PR2 完成）
-- [Task 22] depends on [Task 21]
-- [Task 23] depends on [Task 21, Task 22]
-- [Task 24] depends on [Task 23]
-- [Task 25] depends on [Task 24]（PR4 依赖 PR3 完成）
-- [Task 26] depends on [Task 25]
-- [Task 27] depends on [Task 26]
-- [Task 28] depends on [Task 27]
-- [Task 29] depends on [Task 28]
+- [Task 21] depends on [Task 20]（PR3 依赖 PR2 完成，MergeExecutor 独立）
+- [Task 22] depends on [Task 21]（ToxicityTestExecutor 需要 MergeExecutor 的概念，但可独立实现）
+- [Task 23] depends on [Task 21, Task 22]（extraction stage 接入需要 merge 和 toxicity executor）
+- [Task 24] depends on [Task 21, Task 22]（analysis stage 接入可与 extraction stage 接入并行）
+- [Task 25] depends on [Task 23, Task 24]（phase/factory 注入依赖 stage 改造完成）
+- [Task 26] depends on [Task 25]（artifact 补齐依赖主流程跑通）
+- [Task 27] depends on [Task 26]（集成测试依赖 artifact 可验证）
+- [Task 28] depends on [Task 27]（smoke 测试依赖集成测试通过）
+- [Task 29] depends on [Task 28]（PR4 依赖 PR3 完成）
 - [Task 30] depends on [Task 29]
+- [Task 31] depends on [Task 30]
+- [Task 32] depends on [Task 31]
+- [Task 33] depends on [Task 32]
+- [Task 34] depends on [Task 33]
 
 ## 可并行任务
 
@@ -277,3 +329,4 @@
 - PR2 内：Task 12、Task 13 可并行（PatchGenerationExecutor 和 PatchApplyExecutor 独立）
 - PR2 内：Task 14、Task 15 可并行（extraction stage 和 analysis stage 接入独立）
 - PR3 内：Task 21、Task 22 可并行（MergeExecutor 和 ToxicityTestExecutor 独立）
+- PR3 内：Task 23、Task 24 可并行（extraction stage 和 analysis stage 接入独立）

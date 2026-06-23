@@ -221,35 +221,131 @@ PR2 阶段 Step 7 SHALL 基于 base_eval 和 patched_eval 做 patch set 级 tran
 
 ### Requirement: MergeExecutor
 
-系统 SHALL 提供 MergeExecutor，替换浅拷贝式 mock merge，接入旧系统 TreeReducePatchMerger。
+系统 SHALL 提供 MergeExecutor，替换 PR2 的 passthrough merge，接入旧系统 TreeReducePatchMerger，将多个 patch 合并成更少、更一致、更可应用的 patch 集合。
 
-#### Scenario: tree_merge
-- **WHEN** 给定 draft patches 和 merge_strategy="tree_merge"
-- **THEN** 执行树形归约，返回 merged patches 和 merge report
+#### Scenario: 输入与输出
+- **WHEN** 给定 patches、base_prompt、merge_strategy
+- **THEN** 返回 (merged_patches, merge_report)，patches 类型为 ExtractionPatch 或 AnalysisPatch
+
+#### Scenario: tree_merge 策略（默认）
+- **WHEN** merge_strategy="tree_merge"
+- **THEN** 执行树形归约，将多个 patch 按树状结构逐层归并，减少重复规则
+
+#### Scenario: hierarchical_merge 策略（可选）
+- **WHEN** merge_strategy="hierarchical_merge"
+- **THEN** 保留接口供后续复杂分层归并，本阶段非必须完整实现
+
+#### Scenario: passthrough fallback
+- **WHEN** 真实 merge 失败
+- **THEN** 回退为 merged_patches = validated_patches，merge_report.fallback_used=true
 
 #### Scenario: merge 后重新 validate
 - **WHEN** merge 完成
-- **THEN** merged patches 经过 PatchValidator 验证
+- **THEN** merged patches 经过 PatchValidator 验证，通过进入 initial_merged_patches，失败标记 rejection_reason="MERGED_PATCH_VALIDATION_FAILED"
 
-#### Scenario: fallback
-- **WHEN** LLM merge 失败
-- **THEN** fallback 到 rule-based merge 或保留原 patch
+#### Scenario: MergeReport 字段完整
+- **WHEN** merge 完成
+- **THEN** merge_report 包含 id、strategy、input_patch_count、merged_patch_count、dropped_patch_count、conflict_count、input_patch_ids、merged_patch_ids、dropped_patch_ids、conflict_patch_ids、merge_reason、fallback_used、warnings
+
+#### Scenario: 数据结构转换
+- **WHEN** 调用旧系统 TreeReducePatchMerger
+- **THEN** 实现 ExtractionPatch/AnalysisPatch ↔ 旧系统 Patch 的双向数据结构转换
 
 ### Requirement: ToxicityTestExecutor
 
-系统 SHALL 提供 ToxicityTestExecutor，实现真实 greedy 测毒。
+系统 SHALL 提供 ToxicityTestExecutor，替换 PR2 的 patch set 级整体回归判断，实现 patch 级 greedy 测毒安全筛选。
+
+#### Scenario: 输入与输出
+- **WHEN** 给定 base_prompt、candidate_patches、toxic_sample_ids、sample_set、executor_set、mode、early_stop
+- **THEN** 返回 (safe_patches, toxic_patches, toxicity_report)，mode 为 extraction 或 analysis
+
+#### Scenario: patch 按来源样本难度排序
+- **WHEN** 候选 patch 进入测毒前
+- **THEN** 按 patch_difficulty（max of source_sample_ids difficulty_score）降序、source_sample_count 降序、patch_id 升序排序
 
 #### Scenario: greedy 测毒循环
-- **WHEN** 给定 candidate patches 和 toxic_sample_ids
-- **THEN** 按 source sample 难度排序，逐 patch 应用并在 toxic_sample_ids 上测试
+- **WHEN** 给定排序后的 candidate patches 和 toxic_sample_ids
+- **THEN** 逐 patch 应用到 cumulative_prompt，在 toxic_sample_ids 上测试，safe patch 累积到 cumulative_prompt，toxic patch 被拒绝
+
+#### Scenario: extraction 模式测毒
+- **WHEN** mode="extraction"
+- **THEN** 使用 ExtractionExecutor + EvaluationExecutor + PatchApplyExecutor，对 toxic_sample_ids 逐样本抽取和评估
+
+#### Scenario: analysis 模式测毒
+- **WHEN** mode="analysis"
+- **THEN** 使用 AnalysisExecutor + PatchApplyExecutor + 已有 extraction_results，对 toxic_sample_ids 逐样本执行 analysis
 
 #### Scenario: early stop
-- **WHEN** 某个 toxic sample 测试失败
-- **THEN** 立即拒绝当前 patch 为 TOXIC
+- **WHEN** 某个 toxic sample 被当前 patch 搞坏（extraction: eval_record.status != correct；analysis: analysis_result.analysis_correct == false）
+- **THEN** 立即停止当前 patch 的测毒，拒绝该 patch 为 TOXIC，进入下一个 patch
 
 #### Scenario: 空 toxic set 跳过
 - **WHEN** toxic_sample_ids 为空
-- **THEN** 跳过测毒，所有非无效 patch 进入 candidate-safe 集合
+- **THEN** 跳过 greedy 测毒，所有非 ineffective patch 进入 safe_patches，toxicity_report 标记 skipped_reason="NO_TOXIC_SAMPLES"
+
+#### Scenario: ToxicityReport 字段完整
+- **WHEN** 测毒完成
+- **THEN** toxicity_report 包含 id、mode、tested_patch_count、safe_patch_count、toxic_patch_count、toxic_sample_ids、safe_patch_ids、toxic_patch_ids、patch_test_records、early_stop_enabled
+
+#### Scenario: patch_test_record 字段完整
+- **WHEN** 每个 patch 测毒完成
+- **THEN** patch_test_record 包含 patch_id、status(safe/toxic/skipped)、tested_sample_ids、broken_sample_ids、fixed_sample_ids、stop_reason
+
+### Requirement: Ineffective Patch 剔除
+
+系统 SHALL 在测毒前剔除 ineffective patch，即 source_sample_ids 全部属于 unchanged_wrong 的 patch。
+
+#### Scenario: ineffective 判定
+- **WHEN** patch.source_sample_ids 全部属于 unchanged_wrong 集合
+- **THEN** patch.status="rejected"，patch.rejection_reason="INEFFECTIVE"，不进入测毒
+
+#### Scenario: analysis ineffective 判定
+- **WHEN** analysis patch 的 source_sample_ids 全部属于 analysis unchanged_wrong 集合
+- **THEN** 该 analysis patch 标记为 INEFFECTIVE
+
+### Requirement: Toxic Sample Set 构造
+
+系统 SHALL 基于 base_eval 和 patched_eval 的 transition 分类构造 toxic_sample_ids。
+
+#### Scenario: extraction toxic sample set
+- **WHEN** 比较 base_eval 和 patched_eval
+- **THEN** toxic_sample_ids = broken sample ids（base=correct, patched=wrong）
+
+#### Scenario: analysis toxic sample set
+- **WHEN** 比较 base_analysis_result 和 patched_analysis_result
+- **THEN** analysis_toxic_sample_ids = base analysis correct, patched analysis wrong 的样本
+
+### Requirement: Safe Patch 二次 Merge
+
+系统 SHALL 对测毒后的 safe_patches 重新 merge，因为 initial merge 中可能包含 ineffective/toxic/被拒绝的 patch。
+
+#### Scenario: final merge
+- **WHEN** 测毒完成得到 safe_patches
+- **THEN** 使用与 initial merge 相同的策略对 safe_patches 重新 merge，产出 final_merged_patches
+
+#### Scenario: final merge fallback
+- **WHEN** final merge 失败
+- **THEN** fallback 到 passthrough safe_patches，merge_report.fallback_used=true
+
+#### Scenario: final merge 后 validate
+- **WHEN** final merge 完成
+- **THEN** final_merged_patches 经过 PatchValidator 校验
+
+### Requirement: Final Prompt Apply（PR3）
+
+系统 SHALL 将 final_merged_patches 应用到本轮原始 base_prompt，而不是 initial trial prompt。
+
+#### Scenario: 应用 final merged patches
+- **WHEN** final_merged_patches 非空
+- **THEN** final_prompt = PatchApplyExecutor.apply(base_prompt, final_merged_patches)
+
+#### Scenario: 空 safe patch 处理
+- **WHEN** safe_patches 为空
+- **THEN** 本轮 no_progress，回滚到 base_prompt，不推进 prompt version
+
+#### Scenario: analysis no_progress 不影响 extraction
+- **WHEN** analysis prompt 无进展
+- **THEN** 不回滚 extraction prompt
 
 ### Requirement: CompressionExecutor
 
@@ -404,6 +500,78 @@ PromptOptimizationPhase SHALL 注入 patch_generation_executor 和 patch_apply_e
 #### Scenario: 记录 prompt lineage
 - **WHEN** prompt 推进
 - **THEN** 记录 base_prompt_id、new_prompt_id、version、applied_patch_ids、iteration、stage 到 prompt_versions.jsonl
+
+### Requirement: Extraction Prompt Optimization Stage（PR3 阶段）
+
+ExtractionPromptOptimizationStage 的 Step 5-7 SHALL 从 PR2 的简化逻辑升级为真实 merge + greedy 测毒：
+- Step 5: 使用 MergeExecutor 执行真实 tree merge，替换 passthrough merge
+- Step 6: 应用 initial merged patches，进行真实回归测试（沿用 PR2 的 PatchApplyExecutor + ExtractionExecutor + EvaluationExecutor）
+- Step 7: transition 分类 → 剔除 ineffective patches → 构造 toxic_sample_ids → patch 排序 → greedy 测毒 → safe patches 二次 merge → 应用 final merged patches 到 base prompt
+- Step 9: 基于 final_prompt 做最终测试（沿用 PR2）
+
+#### Scenario: Step 5 真实 merge
+- **WHEN** Step 5 执行
+- **THEN** 使用 MergeExecutor.merge(validated_patches, base_prompt, merge_strategy)，merge 后重新 validate
+
+#### Scenario: Step 7 ineffective 剔除
+- **WHEN** Step 7 transition 分类完成
+- **THEN** source_sample_ids 全部属于 unchanged_wrong 的 patch 被标记为 INEFFECTIVE，不进入测毒
+
+#### Scenario: Step 7 greedy 测毒
+- **WHEN** toxic_sample_ids 非空
+- **THEN** 对剩余 patch 按难度排序，逐 patch 在 toxic_sample_ids 上测试，safe patch 累积，toxic patch 拒绝
+
+#### Scenario: Step 7 safe patch 二次 merge
+- **WHEN** 测毒完成
+- **THEN** 对 safe_patches 重新 merge，产出 final_merged_patches
+
+#### Scenario: Step 7 final apply
+- **WHEN** final_merged_patches 非空
+- **THEN** final_prompt = PatchApplyExecutor.apply(base_prompt, final_merged_patches)，accepted_prompt = final_prompt
+
+#### Scenario: Step 7 空 safe patch
+- **WHEN** safe_patches 为空
+- **THEN** no_progress=true，accepted_prompt=None，回滚到 base_prompt
+
+### Requirement: Analysis Prompt Optimization Stage（PR3 阶段）
+
+AnalysisPromptOptimizationStage 的 Step 4-6 SHALL 从 PR2 的简化逻辑升级为真实 merge + greedy 测毒：
+- Step 4: 使用 MergeExecutor 执行真实 analysis patch merge
+- Step 5: 应用 initial merged analysis patches，重新运行 analysis（沿用 PR2）
+- Step 6: analysis transition 分类 → 剔除 ineffective analysis patches → 构造 analysis_toxic_sample_ids → greedy analysis 测毒 → safe analysis patches 二次 merge → 应用 final analysis patches 到 base analysis prompt
+- Step 8: 基于 final_analysis_prompt 做最终测试（沿用 PR2）
+
+#### Scenario: Step 4 真实 merge
+- **WHEN** Step 4 执行
+- **THEN** 使用 MergeExecutor.merge(validated_patches, analysis_prompt, merge_strategy)
+
+#### Scenario: Step 6 analysis greedy 测毒
+- **WHEN** analysis_toxic_sample_ids 非空
+- **THEN** 逐 patch 在 analysis_toxic_sample_ids 上测试 analysis_correct
+
+#### Scenario: Step 6 analysis no_progress 不影响 extraction
+- **WHEN** analysis prompt 无进展
+- **THEN** 不回滚 extraction prompt
+
+### Requirement: Prompt Optimization Phase（PR3 阶段）
+
+PromptOptimizationPhase SHALL 注入 merge_executor 和 toxicity_test_executor，并传给 ExtractionPromptOptimizationStage 和 AnalysisPromptOptimizationStage。
+
+#### Scenario: 注入新 executor
+- **WHEN** 创建 PromptOptimizationPhase
+- **THEN** 接受 merge_executor 和 toxicity_test_executor 并注入到 stages
+
+### Requirement: PR3 Artifact
+
+系统 SHALL 保存 PR3 阶段新增的 artifact，记录 merge、测毒、safe/toxic patch 的完整链路。
+
+#### Scenario: Extraction artifact
+- **WHEN** 一轮 extraction prompt optimization 完成
+- **THEN** extraction/ 下保存 initial_merge_report.json、transition_report.json、ineffective_patches.jsonl、toxicity_report.json、safe_patches.jsonl、toxic_patches.jsonl、final_merge_report.json、final_merged_patches.jsonl、final_prompt.json、patch_test_records.jsonl
+
+#### Scenario: Analysis artifact
+- **WHEN** 一轮 analysis prompt optimization 完成
+- **THEN** analysis/ 下保存 initial_merge_report.json、transition_report.json、ineffective_patches.jsonl、toxicity_report.json、safe_patches.jsonl、toxic_patches.jsonl、final_merge_report.json、final_merged_patches.jsonl、final_analysis_prompt.json、patch_test_records.jsonl
 
 ### Requirement: Few-shot Optimization Phase
 

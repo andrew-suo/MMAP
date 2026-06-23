@@ -1,3 +1,4 @@
+import os
 import ssl
 from unittest import mock
 
@@ -21,13 +22,25 @@ def test_openai_compatible_client_explicit_verify_ssl_false():
 
 
 def test_openai_compatible_client_from_env_default_verify_ssl():
-    client = OpenAICompatibleClient.from_env(base_url="https://example.test", api_key_env="TEST_KEY")
-    assert client.verify_ssl is True
+    os.environ["TEST_KEY"] = "test-value"
+    try:
+        client = OpenAICompatibleClient(
+            base_url="https://example.test", api_key=os.environ.get("TEST_KEY")
+        )
+        assert client.verify_ssl is True
+    finally:
+        del os.environ["TEST_KEY"]
 
 
 def test_openai_compatible_client_from_env_explicit_verify_ssl():
-    client = OpenAICompatibleClient.from_env(base_url="https://example.test", api_key_env="TEST_KEY", verify_ssl=False)
-    assert client.verify_ssl is False
+    os.environ["TEST_KEY"] = "test-value"
+    try:
+        client = OpenAICompatibleClient(
+            base_url="https://example.test", api_key=os.environ.get("TEST_KEY"), verify_ssl=False
+        )
+        assert client.verify_ssl is False
+    finally:
+        del os.environ["TEST_KEY"]
 
 
 def test_post_json_with_verify_ssl_true_does_not_create_context():

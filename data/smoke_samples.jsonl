@@ -1,0 +1,15 @@
+{"id":"smoke_001","input":{"text":"产品编号 A001，状态正常"},"ground_truth":{"result":"OK","product_id":"A001"},"metadata":{"category":"correct","difficulty":"easy"},"tags":["correct","easy"]}
+{"id":"smoke_002","input":{"text":"产品编号 A002，状态正常"},"ground_truth":{"result":"OK","product_id":"A002"},"metadata":{"category":"correct","difficulty":"easy"},"tags":["correct","easy"]}
+{"id":"smoke_003","input":{"text":"产品编号 A003，检测合格"},"ground_truth":{"result":"OK","product_id":"A003"},"metadata":{"category":"correct","difficulty":"easy"},"tags":["correct","easy"]}
+{"id":"smoke_004","input":{"text":"产品编号 B001，存在划痕"},"ground_truth":{"result":"NG","product_id":"B001","defect":"scratch"},"metadata":{"category":"error","difficulty":"medium"},"tags":["error","medium"]}
+{"id":"smoke_005","input":{"text":"产品编号 B002，颜色偏差"},"ground_truth":{"result":"NG","product_id":"B002","defect":"color"},"metadata":{"category":"error","difficulty":"medium"},"tags":["error","medium"]}
+{"id":"smoke_006","input":{"text":"产品编号 B003，尺寸超差"},"ground_truth":{"result":"NG","product_id":"B003","defect":"dimension"},"metadata":{"category":"error","difficulty":"medium"},"tags":["error","medium"]}
+{"id":"smoke_007","input":{"text":"产品编号 B004，表面污渍"},"ground_truth":{"result":"NG","product_id":"B004","defect":"stain"},"metadata":{"category":"error","difficulty":"medium"},"tags":["error","medium"]}
+{"id":"smoke_008","input":{"text":"产品编号 C001，图片模糊无法判断"},"ground_truth":{"result":"UNCERTAIN","product_id":"C001"},"metadata":{"category":"uncertain","difficulty":"hard"},"tags":["uncertain","hard","fewshot_candidate"]}
+{"id":"smoke_009","input":{"text":"产品编号 C002，遮挡严重"},"ground_truth":{"result":"UNCERTAIN","product_id":"C002"},"metadata":{"category":"uncertain","difficulty":"hard"},"tags":["uncertain","hard","fewshot_candidate"]}
+{"id":"smoke_010","input":{"text":"产品编号 C003，多目标无法定位"},"ground_truth":{"result":"UNCERTAIN","product_id":"C003"},"metadata":{"category":"uncertain","difficulty":"hard"},"tags":["uncertain","hard","fewshot_candidate"]}
+{"id":"smoke_011","input":{"text":"产品编号 D001，边界情况，轻微瑕疵"},"ground_truth":{"result":"NG","product_id":"D001","defect":"minor"},"metadata":{"category":"borderline","difficulty":"hard"},"tags":["borderline","hard","toxic_candidate"]}
+{"id":"smoke_012","input":{"text":"产品编号 D002，边界情况，可接受范围"},"ground_truth":{"result":"OK","product_id":"D002"},"metadata":{"category":"borderline","difficulty":"hard"},"tags":["borderline","hard","toxic_candidate"]}
+{"id":"smoke_013","input":{"text":"产品编号 D003，边界情况，需复核"},"ground_truth":{"result":"UNCERTAIN","product_id":"D003"},"metadata":{"category":"borderline","difficulty":"hard"},"tags":["borderline","hard","toxic_candidate"]}
+{"id":"smoke_014","input":{"text":"产品编号 E001，特殊型号，需专家判断"},"ground_truth":{"result":"OK","product_id":"E001","special":true},"metadata":{"category":"special","difficulty":"hard"},"tags":["special","hard","fewshot_candidate"]}
+{"id":"smoke_015","input":{"text":"产品编号 E002，新型号，无历史数据"},"ground_truth":{"result":"UNCERTAIN","product_id":"E002","special":true},"metadata":{"category":"special","difficulty":"hard"},"tags":["special","hard","fewshot_candidate"]}

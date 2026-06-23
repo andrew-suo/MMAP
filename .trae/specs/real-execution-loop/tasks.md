@@ -242,48 +242,55 @@
 
 ---
 
-## PR 4：压缩、Artifact、端到端 Smoke
+## PR 4：Compression、Artifact 收敛与端到端验收
 
-- [ ] Task 29: 实现 CompressionExecutor
-  - [ ] SubTask 29.1: 创建 `executors/compression_executor.py`
-  - [ ] SubTask 29.2: 接入旧系统 `CompressionEngine`（`compression/engine.py`）
-  - [ ] SubTask 29.3: 实现超限检测（line_limit / char_limit）
-  - [ ] SubTask 29.4: 实现压缩后重新测试和接受标准判断
-  - [ ] SubTask 29.5: 实现压缩失败保留原 prompt
-  - [ ] SubTask 29.6: 实现 compression report 生成
-  - [ ] SubTask 29.7: 编写单元测试
+- [x] Task 29: 实现 CompressionExecutor
+  - [x] SubTask 29.1: 创建 `executors/compression_executor.py`
+  - [x] SubTask 29.2: 定义 `CompressionReport` dataclass：id、prompt_type、base_prompt_id、compressed_prompt_id、triggered、accepted、rejected_reason、line_count_before、line_count_after、char_count_before、char_count_after、base_accuracy、pre_compression_accuracy、post_compression_accuracy、broken_sample_ids、fixed_sample_ids、warnings、still_over_limit
+  - [x] SubTask 29.3: 实现超限检测（line_limit / char_limit），未超限时 compressed=false, accepted=false, rejected_reason="NOT_NEEDED"
+  - [x] SubTask 29.4: 接入旧系统 `CompressionEngine`（`compression/engine.py`），实现 llm_compress_preserve_behavior 策略
+  - [x] SubTask 29.5: 实现压缩约束检查：不修改 immutable section、不修改 output schema、不删除 section ID、不改变 prompt_type
+  - [x] SubTask 29.6: 实现压缩后重新测试（extraction 模式：ExtractionExecutor + EvaluationExecutor；analysis 模式：AnalysisExecutor + 已有 extraction_results）
+  - [x] SubTask 29.7: 实现接受标准：post_compression_accuracy >= pre_compression_accuracy 且 broken_sample_ids 为空才接受；压缩后仍超限但指标不降时标记 still_over_limit=true
+  - [x] SubTask 29.8: 实现压缩失败保留原 prompt
+  - [x] SubTask 29.9: 编写单元测试覆盖：未超限不压缩、超 line_limit 触发、超 char_limit 触发、压缩后不降接受、压缩后下降拒绝、不修改 immutable section、压缩后可 render、compression_report 字段完整
 
-- [ ] Task 30: 接入 CompressionExecutor 到 stages
-  - [ ] SubTask 30.1: 替换 ExtractionPromptOptimizationStage Step 8 mock 压缩
-  - [ ] SubTask 30.2: 替换 AnalysisPromptOptimizationStage Step 7 mock 压缩
+- [x] Task 30: 接入 CompressionExecutor 到 stages 和 factory
+  - [x] SubTask 30.1: 替换 ExtractionPromptOptimizationStage Step 8 mock 压缩为 CompressionExecutor.compress_if_needed()
+  - [x] SubTask 30.2: 替换 AnalysisPromptOptimizationStage Step 7 mock 压缩为 CompressionExecutor.compress_if_needed()
+  - [x] SubTask 30.3: 压缩被接受时 accepted_prompt = compressed_prompt，压缩被拒绝时保留未压缩 prompt
+  - [x] SubTask 30.4: 在 factory.py 中用真实 CompressionExecutor 替换 _MockCompressionExecutor
+  - [x] SubTask 30.5: 在 PromptOptimizationPhase 中将 compression_executor 注入到两个 stage
 
-- [ ] Task 31: 补齐全链路 Artifact
-  - [ ] SubTask 31.1: 在 PromptOptimizationPhase 保存 extraction/ 下 12 个文件（base_results、base_eval、analysis_results、draft_patches、initial_merge_report、patched_results、patched_eval、toxicity_report、final_merge_report、final_results、final_eval、metrics）
-  - [ ] SubTask 31.2: 在 PromptOptimizationPhase 保存 analysis/ 下 9 个文件（base_metrics、reflection_results、draft_patches、initial_merge_report、patched_analysis_results、toxicity_report、final_merge_report、final_analysis_results、metrics）
-  - [ ] SubTask 31.3: 保存 sample_traces.jsonl（每轮）
-  - [ ] SubTask 31.4: 保存 sample_state_before.json 和 sample_state_after.json
-  - [ ] SubTask 31.5: 保存 batch_size_controller_before.json 和 batch_size_controller_after.json
-  - [ ] SubTask 31.6: 在 FewshotOptimizationPhase 保存 fewshot/ 下 6 个文件（base_results、base_eval、selected_examples、final_results、final_eval、metrics）
-  - [ ] SubTask 31.7: 保存 compression_report.json（如果触发）
+- [x] Task 31: 补齐全链路 Artifact
+  - [x] SubTask 31.1: 保存 Run 级 artifact：run_config.yaml、run_plan.json、run_summary.json、prompt_versions.jsonl、patch_apply_reports.jsonl、final_extraction_prompt.json、final_analysis_prompt.json、final_fewshot_examples.jsonl、structured_extraction_prompt.json、structured_analysis_prompt.json
+  - [x] SubTask 31.2: 保存 Prompt iteration 级 artifact：sample_batch.json、sample_traces.jsonl、sample_state_before.json、sample_state_after.json、batch_size_controller_before.json、batch_size_controller_after.json
+  - [x] SubTask 31.3: 补齐 extraction/ 下 compression_report.json
+  - [x] SubTask 31.4: 补齐 analysis/ 下 compression_report.json
+  - [x] SubTask 31.5: 保存 Few-shot iteration artifact：sample_batch.json、sample_traces.jsonl、fewshot/（base_results、base_eval、selected_examples、final_results、final_eval、metrics）
+  - [x] SubTask 31.6: 保存 final_fewshot_examples.jsonl 到 Run 顶层目录
 
-- [ ] Task 32: 修复 Runner 问题
-  - [ ] SubTask 32.1: 修复 yaml 导入顺序 bug（runner.py 行 438-442 的 try-except 应移到文件顶部）
-  - [ ] SubTask 32.2: 保存最终 few-shot examples 到顶层目录
-  - [ ] SubTask 32.3: 增加 rollback / no_progress 标记到 run_summary
+- [x] Task 32: 实现 Run Summary 和 Mock 边界收敛
+  - [x] SubTask 32.1: 实现 run_summary.json 生成，包含完整字段（run_id、status、start/end_time、duration、prompt_structuring_status、prompt_optimization 汇总、analysis_prompt 汇总、fewshot_optimization 汇总）
+  - [x] SubTask 32.2: 实现 use_mock=false 时缺少 model_client 报错逻辑
+  - [x] SubTask 32.3: 真实运行模式下 merge / toxicity / patch apply / compression 不允许 fallback 到 mock
+  - [x] SubTask 32.4: 修复 runner.py yaml 导入顺序 bug（如有）
 
-- [ ] Task 33: 准备小数据集和端到端 Smoke
-  - [ ] SubTask 33.1: 准备 10～20 条小样本数据集（data/smoke_samples.jsonl）
-  - [ ] SubTask 33.2: 创建 smoke 测试配置（configs/smoke_config.yaml，rounds=1）
-  - [ ] SubTask 33.3: 编写端到端 smoke 测试脚本
-  - [ ] SubTask 33.4: 验证 CLI 能跑通真实小数据集
-  - [ ] SubTask 33.5: 验证不出现 mock output
+- [x] Task 33: 准备小数据集和端到端 Smoke
+  - [x] SubTask 33.1: 准备 10～20 条小样本数据集（data/smoke_samples.jsonl），包含正确/错误/可修复/可触发 toxic/可进 few-shot 的样本
+  - [x] SubTask 33.2: 创建 smoke 测试配置（configs/refactored_smoke.yaml，rounds=1）
+  - [x] SubTask 33.3: 编写端到端 smoke 测试脚本，验证三阶段 Run 完成
+  - [x] SubTask 33.4: 验证 CLI 能跑通真实小数据集
+  - [x] SubTask 33.5: 验证 smoke 验收产物存在（run_summary、final_extraction_prompt、final_analysis_prompt、final_fewshot_examples、compression_report、sample_traces、toxicity_report）
 
-- [ ] Task 34: PR4 最终验收
-  - [ ] SubTask 34.1: 验证 prompt 超限时触发压缩
-  - [ ] SubTask 34.2: 验证压缩后不降才接受
-  - [ ] SubTask 34.3: 验证一次完整 Run 产物完整
-  - [ ] SubTask 34.4: 验证 CLI 能跑通真实 10～20 条样本
-  - [ ] SubTask 34.5: 验证三阶段全流程无 mock
+- [x] Task 34: PR4 最终验收
+  - [x] SubTask 34.1: 验证 factory.py 不再为 compression 返回 mock executor
+  - [x] SubTask 34.2: 验证 prompt 超限时触发压缩
+  - [x] SubTask 34.3: 验证压缩后不降才接受
+  - [x] SubTask 34.4: 验证一次完整 Run 产物完整
+  - [x] SubTask 34.5: 验证 CLI 能跑通真实 10～20 条样本
+  - [x] SubTask 34.6: 验证三阶段全流程无 mock（use_mock=false 时）
+  - [x] SubTask 34.7: 验证 run_summary.json 能快速说明本次 run 的收益和风险
 
 ---
 

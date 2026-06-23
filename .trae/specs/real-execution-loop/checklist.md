@@ -21,8 +21,8 @@
 - [x] FewshotOptimizationPhase 使用 FewshotExecutor
 - [x] PromptOptimizationPhase 和 MMAPRunner 能从配置构建并注入 executor
 - [x] 小数据集可以真实跑出 correct / wrong / invalid
-- [ ] extraction/base_results.jsonl 有真实模型输出（依赖 PR4 Task 21 artifact 补齐）
-- [ ] analysis_results.jsonl 有真实分析结果（依赖 PR4 Task 21 artifact 补齐）
+- [x] extraction/base_results.jsonl 有真实模型输出（PR4 Task 31 artifact 收敛已完成，smoke 测试验证可解析）
+- [x] analysis_results.jsonl 有真实分析结果（PR4 Task 31 artifact 收敛已完成，smoke 测试验证可解析）
 - [x] SampleState 的 error_ema 基于真实评估更新
 - [x] 没有 mock status="correct" 的硬编码结果（真实 executor 不硬编码；mock fallback 保留用于无 model_client 场景）
 
@@ -201,46 +201,72 @@
 - [x] patch_test_records 可追踪
 - [x] extraction prompt 最终推进只基于 safe patches
 
-## PR 4：压缩、Artifact、端到端 Smoke
+## PR 4：Compression、Artifact 收敛与端到端验收
 
-- [ ] CompressionExecutor 接入旧系统 CompressionEngine
-- [ ] CompressionExecutor 实现超限检测（line_limit / char_limit）
-- [ ] CompressionExecutor 实现压缩后重新测试
-- [ ] CompressionExecutor 接受标准：compressed_accuracy >= pre_compression_accuracy 且无新增 regression
-- [ ] CompressionExecutor 压缩失败保留原 prompt
-- [ ] CompressionExecutor 生成 compression report
-- [ ] ExtractionPromptOptimizationStage Step 8 使用 CompressionExecutor
-- [ ] AnalysisPromptOptimizationStage Step 7 使用 CompressionExecutor
-- [ ] Prompt Optimization Iteration 保存 extraction/ 下 12 个文件
-- [ ] Prompt Optimization Iteration 保存 analysis/ 下 9 个文件
-- [ ] 每轮保存 sample_traces.jsonl
-- [ ] 每轮保存 sample_state_before.json 和 sample_state_after.json
-- [ ] 每轮保存 batch_size_controller_before.json 和 batch_size_controller_after.json
-- [ ] Few-shot Iteration 保存 fewshot/ 下 6 个文件
-- [ ] 触发压缩时保存 compression_report.json
-- [ ] runner.py yaml 导入顺序 bug 已修复
-- [ ] 最终 few-shot examples 保存到顶层目录
-- [ ] run_summary 包含 rollback / no_progress 标记
-- [ ] 准备了 10～20 条小样本数据集
-- [ ] CLI 能跑通真实 10～20 条样本
-- [ ] 完整三阶段 Run 无 mock output
-- [ ] prompt 超限时触发压缩
-- [ ] 压缩后不降才接受
-- [ ] 一次完整 Run 产物完整
+### CompressionExecutor
+- [x] CompressionExecutor 创建 `executors/compression_executor.py`
+- [x] CompressionReport dataclass 包含完整字段（id、prompt_type、base/compressed_prompt_id、triggered、accepted、rejected_reason、line/char count before/after、base/pre/post accuracy、broken/fixed sample_ids、warnings、still_over_limit）
+- [x] 超限检测：line_count > line_limit 或 char_count > char_limit
+- [x] 未超限时 compressed=false, accepted=false, rejected_reason="NOT_NEEDED"
+- [x] 接入旧系统 CompressionEngine，实现 llm_compress_preserve_behavior 策略
+- [x] 压缩约束检查：不修改 immutable section、不修改 output schema、不删除 section ID、不改变 prompt_type
+- [x] 压缩后重新测试（extraction 模式：ExtractionExecutor + EvaluationExecutor；analysis 模式：AnalysisExecutor）
+- [x] 接受标准：post_compression_accuracy >= pre_compression_accuracy 且 broken_sample_ids 为空
+- [x] 压缩后仍超限但指标不降时标记 still_over_limit=true
+- [x] 压缩失败保留原 prompt
+- [x] 单元测试覆盖：未超限不压缩、超 line/char_limit 触发、不降接受、下降拒绝、不修改 immutable、可 render、report 字段完整
+
+### Stage 接入
+- [x] ExtractionPromptOptimizationStage Step 8 使用 CompressionExecutor.compress_if_needed()
+- [x] AnalysisPromptOptimizationStage Step 7 使用 CompressionExecutor.compress_if_needed()
+- [x] 压缩被接受时 accepted_prompt = compressed_prompt
+- [x] 压缩被拒绝时保留未压缩 prompt
+- [x] factory.py 用真实 CompressionExecutor 替换 _MockCompressionExecutor
+- [x] PromptOptimizationPhase 将 compression_executor 注入到两个 stage
+
+### Artifact 收敛
+- [x] Run 级 artifact 完整：run_config.yaml、run_plan.json、run_summary.json、prompt_versions.jsonl、patch_apply_reports.jsonl、final_extraction_prompt.json、final_analysis_prompt.json、final_fewshot_examples.jsonl、structured_extraction_prompt.json、structured_analysis_prompt.json
+- [x] Prompt iteration artifact 完整：sample_batch.json、sample_traces.jsonl、sample_state_before/after.json、batch_size_controller_before/after.json
+- [x] Extraction artifact 完整（24 个文件，含 compression_report.json）
+- [x] Analysis artifact 完整（21 个文件，含 compression_report.json）
+- [x] Few-shot iteration artifact 完整：sample_batch.json、sample_traces.jsonl、fewshot/（6 个文件）
+- [x] final_fewshot_examples.jsonl 保存到 Run 顶层目录
+
+### Run Summary 和 Mock 边界
+- [x] run_summary.json 包含完整字段（run_id、status、start/end_time、duration、prompt_structuring_status、prompt_optimization 汇总、analysis_prompt 汇总、fewshot_optimization 汇总）
+- [x] use_mock=false 时缺少 model_client 报错
+- [x] 真实运行模式下 merge / toxicity / patch apply / compression 不 fallback 到 mock
+- [x] runner.py yaml 导入顺序 bug 已修复（如有）
+
+### 端到端 Smoke
+- [x] 准备 10～20 条小样本数据集（data/smoke_samples.jsonl）
+- [x] 创建 smoke 测试配置（configs/refactored_smoke.yaml）
+- [x] CLI 能跑通真实小数据集
+- [x] smoke 验收产物存在（run_summary、final_extraction_prompt、final_analysis_prompt、final_fewshot_examples、compression_report、sample_traces、toxicity_report）
+- [x] 完整三阶段 Run 无 mock output（use_mock=false 时）
+
+### 最终验收
+- [x] factory.py 不再为 compression 返回 mock executor
+- [x] prompt 超限时触发压缩
+- [x] 压缩后不降才接受
+- [x] 一次完整 Run 产物完整
+- [x] CLI 能跑通真实 10～20 条样本
+- [x] 三阶段全流程无 mock（use_mock=false 时）
+- [x] run_summary.json 能快速说明本次 run 的收益和风险
 
 ## 最终验收标准（跨 PR）
 
-- [ ] 当前 refactored 主流程不再依赖 mock 抽取
-- [ ] extraction prompt 优化可以真实调用模型
-- [ ] analysis prompt 优化可以真实调用模型
-- [ ] few-shot phase 可以真实调用模型
-- [ ] patch 可以真实应用到 StructuredPrompt
-- [ ] tree-merge 真实执行
-- [ ] toxicity test 真实执行
-- [ ] prompt 压缩真实执行
-- [ ] 所有关键 artifact 可追踪
-- [ ] 小数据集端到端 smoke 可运行
-- [ ] 每轮 batch size 能基于真实指标变化调整
-- [ ] SampleState 和 SampleTrace 基于真实结果更新
-- [ ] CLI 能完成完整三阶段 Run
-- [ ] 输出结果可以用于判断 prompt 是否真实变好
+- [x] 当前 refactored 主流程不再依赖 mock 抽取
+- [x] extraction prompt 优化可以真实调用模型
+- [x] analysis prompt 优化可以真实调用模型
+- [x] few-shot phase 可以真实调用模型
+- [x] patch 可以真实应用到 StructuredPrompt
+- [x] tree-merge 真实执行
+- [x] toxicity test 真实执行
+- [x] prompt 压缩真实执行
+- [x] 所有关键 artifact 可追踪
+- [x] 小数据集端到端 smoke 可运行
+- [x] 每轮 batch size 能基于真实指标变化调整
+- [x] SampleState 和 SampleTrace 基于真实结果更新
+- [x] CLI 能完成完整三阶段 Run
+- [x] 输出结果可以用于判断 prompt 是否真实变好

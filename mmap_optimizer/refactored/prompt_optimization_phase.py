@@ -110,6 +110,8 @@ class PromptOptimizationPhase:
 
         # 结果存储
         self.iteration_results: list[PromptOptimizationIterationResult] = []
+        self.prompt_versions: list[dict[str, Any]] = []
+        self.patch_apply_reports: list[dict[str, Any]] = []
 
     def run(self) -> list[PromptOptimizationIterationResult]:
         """执行完整的 Prompt Optimization Phase。"""
@@ -146,14 +148,24 @@ class PromptOptimizationPhase:
             extraction_executor=self.executors.get("extraction"),
             evaluation_executor=self.executors.get("evaluation"),
             analysis_executor=self.executors.get("analysis"),
+            patch_generation_executor=self.executors.get("patch_generation"),
+            patch_apply_executor=self.executors.get("patch_apply"),
         )
         extraction_metrics = extraction_stage.run()
 
-        # 更新 extraction prompt（如果有 accepted patches）
-        if extraction_stage.final_merged_patches:
-            # 这里需要实际应用 patch，第一版使用 mock
-            self.extraction_prompt.version += 1
-            self.extraction_prompt.metadata["last_iteration"] = iteration
+        # 更新 extraction prompt（使用 accepted_prompt 而非仅自增 version）
+        if extraction_stage.accepted_prompt is not None:
+            old_prompt_id = self.extraction_prompt.id
+            old_version = self.extraction_prompt.version
+            self.extraction_prompt = extraction_stage.accepted_prompt
+            self._record_prompt_lineage(
+                stage="extraction",
+                iteration=iteration,
+                base_prompt_id=old_prompt_id,
+                new_prompt_id=self.extraction_prompt.id,
+                version=self.extraction_prompt.version,
+                apply_report=extraction_stage.patch_apply_report,
+            )
 
         # Stage 3: Analysis Prompt Optimization Stage
         analysis_stage = AnalysisPromptOptimizationStage(
@@ -164,13 +176,25 @@ class PromptOptimizationPhase:
             batch=batch,
             iteration=iteration,
             analysis_executor=self.executors.get("analysis"),
+            patch_generation_executor=self.executors.get("patch_generation"),
+            patch_apply_executor=self.executors.get("patch_apply"),
+            extraction_prompt=self.extraction_prompt,
         )
         analysis_metrics = analysis_stage.run()
 
-        # 更新 analysis prompt（如果有 accepted patches）
-        if analysis_stage.final_merged_patches:
-            self.analysis_prompt.version += 1
-            self.analysis_prompt.metadata["last_iteration"] = iteration
+        # 更新 analysis prompt（使用 accepted_prompt 而非仅自增 version）
+        if analysis_stage.accepted_prompt is not None:
+            old_prompt_id = self.analysis_prompt.id
+            old_version = self.analysis_prompt.version
+            self.analysis_prompt = analysis_stage.accepted_prompt
+            self._record_prompt_lineage(
+                stage="analysis",
+                iteration=iteration,
+                base_prompt_id=old_prompt_id,
+                new_prompt_id=self.analysis_prompt.id,
+                version=self.analysis_prompt.version,
+                apply_report=analysis_stage.patch_apply_report,
+            )
 
         # 构造结果
         rollback = extraction_metrics.rollback or extraction_metrics.no_progress
@@ -233,6 +257,45 @@ class PromptOptimizationPhase:
 
         return batch
 
+    def _record_prompt_lineage(
+        self,
+        stage: str,
+        iteration: int,
+        base_prompt_id: str,
+        new_prompt_id: str,
+        version: int,
+        apply_report=None,
+    ) -> None:
+        """记录 prompt lineage。"""
+        import json
+
+        lineage = {
+            "stage": stage,
+            "iteration": iteration,
+            "base_prompt_id": base_prompt_id,
+            "new_prompt_id": new_prompt_id,
+            "version": version,
+            "applied_patch_ids": apply_report.applied_patch_ids if apply_report else [],
+        }
+        self.prompt_versions.append(lineage)
+
+        if apply_report is not None:
+            report_dict = apply_report.to_dict() if hasattr(apply_report, "to_dict") else dict(apply_report)
+            report_dict["stage"] = stage
+            report_dict["iteration"] = iteration
+            self.patch_apply_reports.append(report_dict)
+
+        # 保存到文件
+        lineage_file = self.output_dir / "prompt_versions.jsonl"
+        lineage_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(lineage_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(lineage, ensure_ascii=False) + "\n")
+
+        if apply_report is not None:
+            report_file = self.output_dir / "patch_apply_reports.jsonl"
+            with open(report_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(report_dict, ensure_ascii=False) + "\n")
+
     def _save_iteration_artifacts(
         self,
         iteration: int,
@@ -241,30 +304,79 @@ class PromptOptimizationPhase:
         result: PromptOptimizationIterationResult,
     ) -> None:
         """保存单轮迭代的 artifacts。"""
+        import json
+
+        def _write_jsonl(path: Path, items: list) -> None:
+            """将列表写入 JSONL 文件。"""
+            with open(path, "w", encoding="utf-8") as f:
+                for item in items:
+                    data = item.to_dict() if hasattr(item, "to_dict") else item
+                    f.write(json.dumps(data, ensure_ascii=False) + "\n")
+
+        def _write_json(path: Path, data: Any) -> None:
+            """将数据写入 JSON 文件。"""
+            d = data.to_dict() if hasattr(data, "to_dict") else data
+            path.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+
         iteration_dir = self.output_dir / f"prompt_iter_{iteration:03d}"
         iteration_dir.mkdir(parents=True, exist_ok=True)
 
         # 保存 batch
-        import json
         (iteration_dir / "sample_batch.json").write_text(
             json.dumps(result.batch.__dict__, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
         # 保存 extraction metrics
-        (iteration_dir / "extraction_metrics.json").write_text(
-            json.dumps(result.extraction_metrics.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        _write_json(iteration_dir / "extraction_metrics.json", result.extraction_metrics)
 
         # 保存 analysis metrics
-        (iteration_dir / "analysis_metrics.json").write_text(
-            json.dumps(result.analysis_metrics.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        _write_json(iteration_dir / "analysis_metrics.json", result.analysis_metrics)
 
         # 保存 batch size controller state
-        (iteration_dir / "batch_size_controller.json").write_text(
-            json.dumps(self.batch_size_controller.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        _write_json(iteration_dir / "batch_size_controller.json", self.batch_size_controller)
+
+        # --- Extraction artifacts ---
+        extraction_dir = iteration_dir / "extraction"
+        extraction_dir.mkdir(parents=True, exist_ok=True)
+
+        _write_jsonl(extraction_dir / "base_results.jsonl", extraction_stage.base_extraction_results)
+        _write_jsonl(extraction_dir / "base_eval.jsonl", extraction_stage.base_eval_records)
+        _write_jsonl(extraction_dir / "analysis_results.jsonl", extraction_stage.analysis_results)
+        _write_jsonl(extraction_dir / "draft_patches.jsonl", extraction_stage.draft_patches)
+        _write_jsonl(extraction_dir / "validated_patches.jsonl", getattr(extraction_stage, "validated_patches", []))
+        _write_jsonl(extraction_dir / "rejected_patches.jsonl", getattr(extraction_stage, "rejected_patches", []))
+        if extraction_stage.initial_merge_report is not None:
+            _write_json(extraction_dir / "initial_merge_report.json", extraction_stage.initial_merge_report)
+        if getattr(extraction_stage, "patched_prompt", None) is not None:
+            _write_json(extraction_dir / "patched_prompt.json", extraction_stage.patched_prompt)
+        if getattr(extraction_stage, "patch_apply_report", None) is not None:
+            _write_json(extraction_dir / "patch_apply_report.json", extraction_stage.patch_apply_report)
+        _write_jsonl(extraction_dir / "patched_results.jsonl", extraction_stage.patched_extraction_results)
+        _write_jsonl(extraction_dir / "patched_eval.jsonl", getattr(extraction_stage, "patched_eval_records", []))
+        if getattr(extraction_stage, "accepted_prompt", None) is not None:
+            _write_json(extraction_dir / "final_prompt.json", extraction_stage.accepted_prompt)
+        _write_jsonl(extraction_dir / "final_results.jsonl", extraction_stage.final_extraction_results)
+        _write_jsonl(extraction_dir / "final_eval.jsonl", getattr(extraction_stage, "final_eval_records", []))
+        _write_json(extraction_dir / "metrics.json", extraction_stage.metrics)
+
+        # --- Analysis artifacts ---
+        analysis_dir = iteration_dir / "analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+
+        _write_json(analysis_dir / "base_metrics.json", analysis_stage.metrics)
+        _write_jsonl(analysis_dir / "reflection_results.jsonl", analysis_stage.reflection_results)
+        _write_jsonl(analysis_dir / "draft_patches.jsonl", analysis_stage.draft_patches)
+        _write_jsonl(analysis_dir / "validated_patches.jsonl", getattr(analysis_stage, "validated_patches", []))
+        _write_jsonl(analysis_dir / "rejected_patches.jsonl", getattr(analysis_stage, "rejected_patches", []))
+        if analysis_stage.initial_merge_report is not None:
+            _write_json(analysis_dir / "initial_merge_report.json", analysis_stage.initial_merge_report)
+        if getattr(analysis_stage, "patched_prompt", None) is not None:
+            _write_json(analysis_dir / "patched_analysis_prompt.json", analysis_stage.patched_prompt)
+        if getattr(analysis_stage, "patch_apply_report", None) is not None:
+            _write_json(analysis_dir / "patch_apply_report.json", analysis_stage.patch_apply_report)
+        _write_jsonl(analysis_dir / "patched_analysis_results.jsonl", analysis_stage.patched_analysis_results)
+        if getattr(analysis_stage, "accepted_prompt", None) is not None:
+            _write_json(analysis_dir / "final_analysis_prompt.json", analysis_stage.accepted_prompt)
+        _write_jsonl(analysis_dir / "final_analysis_results.jsonl", analysis_stage.final_analysis_results)
+        _write_json(analysis_dir / "metrics.json", analysis_stage.metrics)

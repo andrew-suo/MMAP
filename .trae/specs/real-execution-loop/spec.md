@@ -93,39 +93,131 @@
 
 ### Requirement: PatchGenerationExecutor
 
-系统 SHALL 提供 PatchGenerationExecutor，基于 analysis_correct=true 的样本生成真实 patch。
+系统 SHALL 提供 PatchGenerationExecutor，基于 analysis_correct=true 的样本生成真实 patch，替换固定生成 mock patch 的行为。支持 ExtractionPatch 和 AnalysisPatch 两类 patch。
 
-#### Scenario: 只基于有效分析生成 patch
+#### Scenario: 只基于有效分析生成 extraction patch
 - **WHEN** 给定 AnalysisResult 列表
-- **THEN** 只对 analysis_correct=true 的样本生成 patch
+- **THEN** 只对 analysis_correct=true 的样本生成 ExtractionPatch
+
+#### Scenario: 只基于有效反思生成 analysis patch
+- **WHEN** 给定 ReflectionResult 列表
+- **THEN** 只对 reflection_success=true 且存在 patch_suggestion 的样本生成 AnalysisPatch
 
 #### Scenario: patch 绑定 source_sample_ids
 - **WHEN** patch 生成
-- **THEN** patch 必须绑定 source_sample_ids，指定 target_section_id
+- **THEN** patch 必须绑定 source_sample_ids，指定 target_section_id，来源不明的 patch 拒绝生成
 
-#### Scenario: 拒绝 immutable section
-- **WHEN** patch 指向 immutable section
-- **THEN** patch 被拒绝并记录 rejection_reason
+#### Scenario: patch 目标必须存在
+- **WHEN** patch 的 target_section_id 在 prompt 中不存在
+- **THEN** 该 patch 被拒绝，不进入 candidate 列表
+
+#### Scenario: patch 内容不允许为空或占位符
+- **WHEN** patch content 为空或为 "Mock patch content"、"TODO"、"N/A" 等无意义占位符
+- **THEN** 该 patch 被拒绝
+
+#### Scenario: 每个 patch 包含完整字段
+- **WHEN** patch 生成成功
+- **THEN** patch 包含 id、target_section_id、operation_type、content、rationale、source_sample_ids、status
+
+### Requirement: PatchValidator
+
+系统 SHALL 提供 PatchValidator，在 patch 生成后、应用前进行统一校验。校验项包括：target_section_id 是否存在、target section 是否 mutable、operation_type 是否合法、content 是否为空、source_sample_ids 是否为空且存在于 SampleSet、patch 是否尝试修改输出 schema、patch 是否包含明显 mock/placeholder 内容。
+
+#### Scenario: 校验通过
+- **WHEN** patch 所有校验项通过
+- **THEN** patch status 设为 "candidate"
+
+#### Scenario: 校验失败
+- **WHEN** 任一校验项失败
+- **THEN** patch status 设为 "rejected"，rejection_reason 为 "VALIDATION_FAILED:<reason>"
+
+#### Scenario: 批量校验
+- **WHEN** 给定 patch 列表
+- **THEN** 返回通过校验的 patch 列表和被拒绝的 patch 列表
 
 ### Requirement: PatchApplyExecutor
 
-系统 SHALL 提供 PatchApplyExecutor，让 patch 真正作用于 StructuredPrompt。
+系统 SHALL 提供 PatchApplyExecutor，让 patch 真正作用于 StructuredPrompt，而不是只自增 version。第一版只支持 replace、append、delete 三种操作，暂不实现 insert_before/insert_after。
 
-#### Scenario: 修改 mutable section
-- **WHEN** 给定 base StructuredPrompt 和 patch list
-- **THEN** 生成新的 StructuredPrompt，patch 只修改 mutable section
+#### Scenario: replace 操作
+- **WHEN** patch operation_type 为 "replace"
+- **THEN** 目标 section 的 content 被替换为 patch content
+
+#### Scenario: append 操作
+- **WHEN** patch operation_type 为 "append"
+- **THEN** patch content 追加到目标 section 的 content 末尾
+
+#### Scenario: delete 操作默认禁用
+- **WHEN** patch operation_type 为 "delete" 且配置未显式开启 delete
+- **THEN** 该 patch 被拒绝；delete 只清空 section content，不删除 section 本身
 
 #### Scenario: 拒绝 immutable section
 - **WHEN** patch 指向 immutable section（如 output schema）
-- **THEN** 该 patch 被拒绝，不污染原 prompt
+- **THEN** 该 patch 被拒绝，rejection_reason 为 "IMMUTABLE_SECTION"，不污染原 prompt
 
-#### Scenario: 支持 replace/append/delete
-- **WHEN** patch operation_type 为 replace/insert_after/insert_before/delete
-- **THEN** 对应 section 内容被正确修改
-
-#### Scenario: 版本递增
+#### Scenario: 版本递增与 lineage
 - **WHEN** patch 应用成功
-- **THEN** 新 prompt 的 version 递增
+- **THEN** new_prompt.version = base_prompt.version + 1，new_prompt.parent_id = base_prompt.id，new_prompt.metadata["applied_patch_ids"] 记录已应用的 patch id 列表
+
+#### Scenario: changed 判定
+- **WHEN** patch 应用完成
+- **THEN** 比较 before_hash 和 after_hash，如果相同则 changed=false，即使 patch 没报错也不能认为 prompt 成功推进
+
+### Requirement: PatchApplyReport
+
+每次 patch apply 都 SHALL 生成 PatchApplyReport，记录应用的详细信息。
+
+#### Scenario: report 字段完整
+- **WHEN** patch apply 完成
+- **THEN** report 包含 id、base_prompt_id、new_prompt_id、applied_patch_ids、rejected_patch_ids、modified_section_ids、before_hash、after_hash、changed、warnings
+
+#### Scenario: 无有效 patch 时 changed=false
+- **WHEN** 所有 patch 被拒绝或应用后内容未变化
+- **THEN** changed=false，warnings 记录原因
+
+### Requirement: Passthrough Merge（PR2 临时）
+
+PR2 阶段 Step 5 SHALL 使用 passthrough merge 替代真实 tree-merge，保留接口供 PR3 替换。
+
+#### Scenario: passthrough 传递
+- **WHEN** 给定 validated patches
+- **THEN** initial_merged_patches = validated_patches，不做实际合并
+
+#### Scenario: 保留 merge report
+- **WHEN** passthrough merge 完成
+- **THEN** 生成 merge report，merge_strategy="passthrough"，记录 input_patch_count 和 merged_patch_count
+
+### Requirement: Patch Set 级安全判断（PR2 临时）
+
+PR2 阶段 Step 7 SHALL 基于 base_eval 和 patched_eval 做 patch set 级 transition 分类，不做逐 patch greedy 测毒。
+
+#### Scenario: transition 分类
+- **WHEN** 比较 base_eval 和 patched_eval
+- **THEN** 分类为 fixed、broken、unchanged_wrong、unchanged_correct
+
+#### Scenario: 接受规则
+- **WHEN** fixed > 0 且 broken = 0
+- **THEN** patch set 被接受，trial_prompt 成为 accepted_prompt
+
+#### Scenario: 无收益拒绝
+- **WHEN** fixed = 0
+- **THEN** patch set 被认为无明显收益，不推进 prompt
+
+#### Scenario: unsafe 回滚
+- **WHEN** broken > 0
+- **THEN** 本轮标记为 unsafe，回滚到 base_prompt
+
+### Requirement: Prompt Lineage 追踪
+
+系统 SHALL 记录每次 prompt 推进的 lineage 信息。
+
+#### Scenario: lineage 记录
+- **WHEN** prompt 成功推进
+- **THEN** 记录 base_prompt_id、new_prompt_id、version、applied_patch_ids、iteration、stage
+
+#### Scenario: PromptOptimizationPhase 使用 accepted_prompt
+- **WHEN** extraction_stage 或 analysis_stage 产出 accepted_prompt
+- **THEN** PromptOptimizationPhase 更新当前 prompt 为 accepted_prompt，不再仅自增 version
 
 ### Requirement: MergeExecutor
 
@@ -229,38 +321,93 @@
 
 ## MODIFIED Requirements
 
-### Requirement: Extraction Prompt Optimization Stage
+### Requirement: Extraction Prompt Optimization Stage（PR2 阶段）
 
-ExtractionPromptOptimizationStage 的 9 个 step SHALL 使用 executor 接口替换所有 mock 实现：
-- Step 1: 使用 ExtractionExecutor
-- Step 2: 使用 EvaluationExecutor
-- Step 3: 使用 AnalysisExecutor
-- Step 4: 使用 PatchGenerationExecutor
-- Step 5: 使用 MergeExecutor
-- Step 6: 使用 PatchApplyExecutor + ExtractionExecutor + EvaluationExecutor
-- Step 7: 使用 ToxicityTestExecutor
-- Step 8: 使用 CompressionExecutor
-- Step 9: 使用 ExtractionExecutor + EvaluationExecutor
+ExtractionPromptOptimizationStage 的 Step 4-9 SHALL 使用真实 executor 替换 mock 实现：
+- Step 4: 使用 PatchGenerationExecutor 生成 draft patches + PatchValidator 校验，产出 draft_patches、validated_patches、rejected_patches
+- Step 5: 使用 passthrough merge（临时），保留 merge report，供 PR3 替换为真实 MergeExecutor
+- Step 6: 使用 PatchApplyExecutor 应用 patch，如果 apply_report.changed=true 则使用 ExtractionExecutor + EvaluationExecutor 重新抽取和评估
+- Step 7: 基于 base_eval 和 patched_eval 做 patch set 级 transition 分类（fixed/broken/unchanged），不做逐 patch 测毒
+- Step 8: 保留 compression 预留接口（PR2 不实现）
+- Step 9: 使用真实 ExtractionExecutor + EvaluationExecutor 执行 final test，不再生成 mock final output
 
-### Requirement: Analysis Prompt Optimization Stage
+#### Scenario: Step 4 真实生成 patch
+- **WHEN** Step 4 执行
+- **THEN** 从 analysis_correct=true 的样本生成 draft patches，经 PatchValidator 校验后只保留 candidate patches
 
-AnalysisPromptOptimizationStage 的 8 个 step SHALL 使用 executor 接口替换所有 mock 实现：
-- Step 1: 复用 extraction stage 的 analysis_results
-- Step 2: 使用 AnalysisExecutor（反思模式）
-- Step 3: 使用 PatchGenerationExecutor
-- Step 4: 使用 MergeExecutor
-- Step 5: 使用 PatchApplyExecutor + AnalysisExecutor
-- Step 6: 使用 ToxicityTestExecutor
-- Step 7: 使用 CompressionExecutor
-- Step 8: 使用 AnalysisExecutor
+#### Scenario: Step 6 apply + 回归测试
+- **WHEN** apply_report.changed=true
+- **THEN** 使用 trial_prompt 重新执行 ExtractionExecutor 和 EvaluationExecutor，产出 patched_results 和 patched_eval
+
+#### Scenario: Step 6 apply 未变化
+- **WHEN** apply_report.changed=false
+- **THEN** 本轮标记 no_progress，不进入后续 accepted prompt
+
+#### Scenario: Step 7 接受判断
+- **WHEN** fixed > 0 且 broken = 0
+- **THEN** patch set 被接受，trial_prompt 成为 accepted_prompt
+
+#### Scenario: Step 7 回滚
+- **WHEN** broken > 0
+- **THEN** 回滚到 base_prompt，标记 unsafe
+
+#### Scenario: Step 9 真实 final test
+- **WHEN** Step 7 判定接受
+- **THEN** 使用 accepted_prompt 在原 SampleBatch 上重新测试，产出 final_results 和 final_eval
+- **WHEN** Step 7 判定拒绝
+- **THEN** final_prompt = base_prompt，final_accuracy = base_accuracy，no_progress = true
+
+### Requirement: Analysis Prompt Optimization Stage（PR2 阶段）
+
+AnalysisPromptOptimizationStage 的 Step 3-8 SHALL 使用真实 executor 替换 mock 实现：
+- Step 3: 使用 PatchGenerationExecutor 生成 analysis draft patches + PatchValidator 校验
+- Step 4: 使用 passthrough merge（临时）
+- Step 5: 使用 PatchApplyExecutor 应用 analysis patch，复用本轮 extraction results 重新执行 AnalysisExecutor
+- Step 6: 基于 base_analysis_accuracy 和 patched_analysis_accuracy 做 patch set 级判断
+- Step 7: 保留 compression 预留接口（PR2 不实现）
+- Step 8: 使用真实 AnalysisExecutor 执行 final test
+
+#### Scenario: Step 3 真实生成 analysis patch
+- **WHEN** Step 3 执行
+- **THEN** 从 reflection_success=true 且有 patch_suggestion 的样本生成 draft patches
+
+#### Scenario: Step 5 apply + analysis 回归
+- **WHEN** apply_report.changed=true
+- **THEN** 使用 trial_analysis_prompt 重新执行 AnalysisExecutor，产出 patched_analysis_results
+
+#### Scenario: Step 6 接受判断
+- **WHEN** patched_analysis_accuracy >= base_analysis_accuracy 且无明显 regression
+- **THEN** analysis patch set 被接受
+
+#### Scenario: Step 6 回滚
+- **WHEN** analysis accuracy 下降
+- **THEN** 回滚 analysis prompt，不影响 extraction prompt 的成功推进
+
+#### Scenario: Step 8 真实 final analysis test
+- **WHEN** Step 6 判定接受
+- **THEN** 使用 accepted_analysis_prompt 重新运行 analysis，统计 final_analysis_accuracy
+
+### Requirement: Prompt Optimization Phase（PR2 阶段）
+
+PromptOptimizationPhase SHALL 注入 patch_generation_executor 和 patch_apply_executor，并传给 ExtractionPromptOptimizationStage 和 AnalysisPromptOptimizationStage。SHALL 使用 accepted_prompt 真正更新当前 prompt，不再仅自增 version。SHALL 记录 prompt lineage。
+
+#### Scenario: 注入新 executor
+- **WHEN** 创建 PromptOptimizationPhase
+- **THEN** 接受 patch_generation_executor 和 patch_apply_executor 并注入到 stages
+
+#### Scenario: 使用 accepted_prompt 更新
+- **WHEN** extraction_stage.accepted_prompt is not None
+- **THEN** self.extraction_prompt = extraction_stage.accepted_prompt
+- **WHEN** analysis_stage.accepted_prompt is not None
+- **THEN** self.analysis_prompt = analysis_stage.accepted_prompt
+
+#### Scenario: 记录 prompt lineage
+- **WHEN** prompt 推进
+- **THEN** 记录 base_prompt_id、new_prompt_id、version、applied_patch_ids、iteration、stage 到 prompt_versions.jsonl
 
 ### Requirement: Few-shot Optimization Phase
 
 FewshotOptimizationPhase SHALL 使用 FewshotExecutor 替换 mock 抽取和验证，使用真实模型调用和 evaluator。
-
-### Requirement: Prompt Optimization Phase
-
-PromptOptimizationPhase SHALL 使用 PatchApplyExecutor 真正应用 patch 到 StructuredPrompt，不再仅自增 version。SHALL 保存全链路 artifact。
 
 ### Requirement: Runner
 

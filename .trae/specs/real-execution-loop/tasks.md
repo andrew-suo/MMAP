@@ -7,7 +7,7 @@
 ## PR 1：真实执行与评估接入
 
 - [x] Task 1: 创建 executors 目录和基础接口
-  - [x] SubTask 1.1: 创建 `mmap_optimizer/refactored/executors/__init__.py`
+  - [x] SubTask 1.1: 创建 `mmap_optimizer/executors/__init__.py`
   - [x] SubTask 1.2: 定义各 executor 的 Protocol/ABC 接口（ExtractionExecutor、EvaluationExecutor、AnalysisExecutor、FewshotExecutor）
   - [x] SubTask 1.3: 创建 executor 工厂函数，从配置构建 executor 实例
 
@@ -278,7 +278,7 @@
 
 - [x] Task 33: 准备小数据集和端到端 Smoke
   - [x] SubTask 33.1: 准备 10～20 条小样本数据集（data/smoke_samples.jsonl），包含正确/错误/可修复/可触发 toxic/可进 few-shot 的样本
-  - [x] SubTask 33.2: 创建 smoke 测试配置（configs/refactored_smoke.yaml，rounds=1）
+  - [x] SubTask 33.2: 创建 smoke 测试配置（configs/smoke.yaml，rounds=1）
   - [x] SubTask 33.3: 编写端到端 smoke 测试脚本，验证三阶段 Run 完成
   - [x] SubTask 33.4: 验证 CLI 能跑通真实小数据集
   - [x] SubTask 33.5: 验证 smoke 验收产物存在（run_summary、final_extraction_prompt、final_analysis_prompt、final_fewshot_examples、compression_report、sample_traces、toxicity_report）

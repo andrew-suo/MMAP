@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
-from mmap_optimizer.prompt.ir import PromptIR
 from .schema import Patch
 
 
@@ -21,7 +21,7 @@ RELAXED = ("放宽", "忽略", "不作为不合格", "无需判不合格", "可�
 STRICT = ("严格", "必须", "一律判不合格", "必须判不合格", "不得忽略")
 
 
-def detect_patch_conflicts(patches: list[Patch], prompt_ir: PromptIR | None = None) -> list[PatchConflict]:
+def detect_patch_conflicts(patches: list[Patch], prompt_ir: Any | None = None) -> list[PatchConflict]:
     conflicts: list[PatchConflict] = []
     for patch in patches:
         if prompt_ir is not None:

@@ -29,19 +29,19 @@ from pathlib import Path
 
 import pytest
 
-from mmap_optimizer.refactored.config import RefactoredConfig, load_config
-from mmap_optimizer.refactored.executors.compression_executor import CompressionExecutor
-from mmap_optimizer.refactored.executors.factory import create_executors
-from mmap_optimizer.refactored.extraction_prompt_optimization_stage import EvalRecord
-from mmap_optimizer.refactored.runner import MMAPRunner
-from mmap_optimizer.refactored.sample import SampleBatch, SampleSet, SampleSpec
-from mmap_optimizer.refactored.structured_prompt import PromptSection, StructuredPrompt
+from mmap_optimizer.config import RefactoredConfig, load_config
+from mmap_optimizer.executors.compression_executor import CompressionExecutor
+from mmap_optimizer.executors.factory import create_executors
+from mmap_optimizer.extraction_prompt_optimization_stage import EvalRecord
+from mmap_optimizer.runner import MMAPRunner
+from mmap_optimizer.sample import SampleBatch, SampleSet, SampleSpec
+from mmap_optimizer.structured_prompt import PromptSection, StructuredPrompt
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SMOKE_CONFIG = REPO_ROOT / "configs" / "refactored_smoke.yaml"
+SMOKE_CONFIG = REPO_ROOT / "configs" / "smoke.yaml"
 SMOKE_DATASET = REPO_ROOT / "data" / "smoke_samples.jsonl"
-EXTRACTION_PROMPT = REPO_ROOT / "prompts" / "raw" / "extraction.txt"
-ANALYSIS_PROMPT = REPO_ROOT / "prompts" / "raw" / "analysis.txt"
+EXTRACTION_PROMPT = REPO_ROOT / "prompts" / "extraction.txt"
+ANALYSIS_PROMPT = REPO_ROOT / "prompts" / "analysis.txt"
 
 
 def _make_sample_set(sample_ids: list[str]) -> SampleSet:
@@ -179,7 +179,7 @@ def test_acceptance_03_compression_runs_regression_test():
 
 def test_acceptance_04_compression_accept_criteria():
     """CompressionReport 记录接受标准相关字段。"""
-    from mmap_optimizer.refactored.patch import CompressionReport
+    from mmap_optimizer.patch_types import CompressionReport
 
     # 构造一个接受的 report
     report = CompressionReport(
@@ -470,7 +470,7 @@ def test_acceptance_14_smoke_dataset_runs_end_to_end(tmp_path):
 def test_acceptance_15_cli_help_contains_run_command():
     """CLI run --help 输出包含 run 命令和 use-mock 选项。"""
     result = subprocess.run(
-        [sys.executable, "-m", "mmap_optimizer.refactored.cli", "run", "--help"],
+        [sys.executable, "-m", "mmap_optimizer.cli", "run", "--help"],
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
@@ -487,7 +487,7 @@ def test_acceptance_15b_cli_run_command_works(tmp_path):
     output_dir = tmp_path / "cli_acceptance"
     result = subprocess.run(
         [
-            sys.executable, "-m", "mmap_optimizer.refactored.cli", "run",
+            sys.executable, "-m", "mmap_optimizer.cli", "run",
             "--config", str(SMOKE_CONFIG),
             "--extraction-prompt", str(EXTRACTION_PROMPT),
             "--analysis-prompt", str(ANALYSIS_PROMPT),
@@ -526,7 +526,7 @@ def test_acceptance_16b_cli_no_mock_without_model_client_errors(tmp_path):
     output_dir = tmp_path / "cli_no_mock"
     result = subprocess.run(
         [
-            sys.executable, "-m", "mmap_optimizer.refactored.cli", "run",
+            sys.executable, "-m", "mmap_optimizer.cli", "run",
             "--config", str(SMOKE_CONFIG),
             "--extraction-prompt", str(EXTRACTION_PROMPT),
             "--analysis-prompt", str(ANALYSIS_PROMPT),
@@ -551,10 +551,10 @@ def test_acceptance_17_real_mode_uses_real_executors():
     executors = create_executors({}, use_mock=True)
 
     # 这些 executor 始终为真实实现，不依赖 model_client
-    from mmap_optimizer.refactored.executors.merge_executor import MergeExecutor
-    from mmap_optimizer.refactored.executors.toxicity_executor import ToxicityTestExecutor
-    from mmap_optimizer.refactored.executors.patch_apply_executor import PatchApplyExecutor
-    from mmap_optimizer.refactored.executors.compression_executor import CompressionExecutor
+    from mmap_optimizer.executors.merge_executor import MergeExecutor
+    from mmap_optimizer.executors.toxicity_executor import ToxicityTestExecutor
+    from mmap_optimizer.executors.patch_apply_executor import PatchApplyExecutor
+    from mmap_optimizer.executors.compression_executor import CompressionExecutor
 
     assert isinstance(executors["merge"], MergeExecutor), "merge 应为真实 MergeExecutor"
     assert isinstance(executors["toxicity_test"], ToxicityTestExecutor), "toxicity_test 应为真实 ToxicityTestExecutor"
@@ -564,7 +564,7 @@ def test_acceptance_17_real_mode_uses_real_executors():
 
 def test_acceptance_17b_factory_does_not_return_mock_compression():
     """factory.py 不返回 _MockCompressionExecutor。"""
-    from mmap_optimizer.refactored.executors.factory import _MockCompressionExecutor
+    from mmap_optimizer.executors.factory import _MockCompressionExecutor
 
     executors = create_executors({}, use_mock=True)
     assert not isinstance(executors["compression"], _MockCompressionExecutor), (

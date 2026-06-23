@@ -122,26 +122,84 @@
 
 ## PR 3：真实 Merge 与 Greedy 测毒
 
-- [ ] MergeExecutor 接入旧系统 TreeReducePatchMerger
-- [ ] MergeExecutor 实现 ExtractionPatch/AnalysisPatch ↔ 旧系统 Patch 数据结构转换
-- [ ] MergeExecutor merge 后重新 validate
-- [ ] MergeExecutor 生成 merge report（input/merged/dropped/conflict patch_ids）
-- [ ] MergeExecutor 支持 fallback 到 rule-based merge
-- [ ] ToxicityTestExecutor 实现 patch 按难度排序
-- [ ] ToxicityTestExecutor 实现 greedy 测毒循环
-- [ ] ToxicityTestExecutor 实现 early stop
-- [ ] ToxicityTestExecutor 实现空 toxic set 跳过
-- [ ] ToxicityTestExecutor 生成 toxicity report（tested/toxic/safe/broken_sample_ids）
-- [ ] ExtractionPromptOptimizationStage Step 5 使用 MergeExecutor
-- [ ] ExtractionPromptOptimizationStage Step 7 使用 ToxicityTestExecutor
-- [ ] AnalysisPromptOptimizationStage Step 4 使用 MergeExecutor
-- [ ] AnalysisPromptOptimizationStage Step 6 使用 ToxicityTestExecutor
-- [ ] ineffective patch 会被剔除
-- [ ] toxic patch 会被拒绝
-- [ ] safe patch 会进入 final merge
-- [ ] toxic sample set 来源清楚
-- [ ] early stop 生效
-- [ ] toxicity_report 包含 tested / toxic / safe / broken_sample_ids
+### MergeExecutor
+- [x] MergeExecutor 创建 `executors/merge_executor.py`
+- [x] MergeReport dataclass 包含完整字段（id、strategy、input/merged/dropped/conflict patch_count、input/merged/dropped/conflict patch_ids、merge_reason、fallback_used、warnings）
+- [x] merge() 方法接受 patches、base_prompt、merge_strategy，返回 (merged_patches, merge_report)
+- [x] 接入旧系统 TreeReducePatchMerger，实现 tree_merge 策略
+- [x] 实现 ExtractionPatch/AnalysisPatch ↔ 旧系统 Patch 数据结构转换
+- [x] merge 后重新 validate（PatchValidator），失败标记 rejection_reason="MERGED_PATCH_VALIDATION_FAILED"
+- [x] passthrough fallback：真实 merge 失败时回退，fallback_used=true
+- [x] hierarchical_merge 策略接口保留（本阶段非必须完整实现）
+- [x] 单元测试覆盖：passthrough fallback、tree merge 成功、merge 后 validate、invalid merged patch 被拒绝、merge report 字段完整
+
+### ToxicityTestExecutor
+- [x] ToxicityTestExecutor 创建 `executors/toxicity_executor.py`
+- [x] ToxicityReport dataclass 包含完整字段（id、mode、tested/safe/toxic patch_count、toxic_sample_ids、safe/toxic patch_ids、patch_test_records、early_stop_enabled）
+- [x] PatchTestRecord dataclass 包含完整字段（patch_id、status、tested/broken/fixed sample_ids、stop_reason）
+- [x] test() 方法接受 base_prompt、candidate_patches、toxic_sample_ids、sample_set、executor_set、mode、early_stop
+- [x] ineffective patch 剔除：source_sample_ids 全部属于 unchanged_wrong 的 patch 标记为 INEFFECTIVE
+- [x] patch 按来源样本难度排序（patch_difficulty desc、source_sample_count desc、patch_id asc）
+- [x] greedy 测毒循环：逐 patch 应用到 cumulative_prompt，在 toxic_sample_ids 上测试
+- [x] extraction 模式测毒使用 ExtractionExecutor + EvaluationExecutor + PatchApplyExecutor
+- [x] analysis 模式测毒使用 AnalysisExecutor + PatchApplyExecutor + 已有 extraction_results
+- [x] early stop：toxic sample 被搞坏时立即拒绝当前 patch，进入下一个 patch
+- [x] 空 toxic set 跳过：所有非 ineffective patch 进入 safe_patches，标记 skipped_reason="NO_TOXIC_SAMPLES"
+- [x] 单元测试覆盖：空 toxic set 跳过、safe patch 接受、toxic patch 拒绝、early stop 生效、patch 排序、patch_test_records 生成
+
+### Extraction Stage 接入
+- [x] Step 5 使用 MergeExecutor.merge() 替换 passthrough merge，merge 后重新 validate
+- [x] Step 6 沿用 PR2 的 PatchApplyExecutor + ExtractionExecutor + EvaluationExecutor
+- [x] Step 7 实现 transition 分类（fixed/broken/unchanged_wrong/unchanged_correct）
+- [x] Step 7 剔除 ineffective patches（source_sample_ids 全部属于 unchanged_wrong）
+- [x] Step 7 构造 toxic_sample_ids（broken sample ids）
+- [x] Step 7 调用 ToxicityTestExecutor.test() 执行 greedy 测毒
+- [x] Step 7 对 safe_patches 执行二次 merge（MergeExecutor）
+- [x] Step 7 应用 final_merged_patches 到 base_prompt（不是 trial_prompt）
+- [x] Step 7 空 safe_patches 时 no_progress=true，accepted_prompt=None
+- [x] Step 9 基于 final_prompt 做最终测试
+
+### Analysis Stage 接入
+- [x] Step 4 使用 MergeExecutor.merge() 替换 passthrough merge
+- [x] Step 5 沿用 PR2 的 PatchApplyExecutor + AnalysisExecutor
+- [x] Step 6 实现 analysis transition 分类
+- [x] Step 6 剔除 ineffective analysis patches
+- [x] Step 6 构造 analysis_toxic_sample_ids
+- [x] Step 6 调用 ToxicityTestExecutor.test(mode="analysis") 执行 greedy 测毒
+- [x] Step 6 对 safe analysis patches 执行二次 merge
+- [x] Step 6 应用 final_merged_patches 到 base analysis prompt
+- [x] Step 6 analysis no_progress 不影响 extraction prompt
+- [x] Step 8 基于 final_analysis_prompt 做最终测试
+
+### Phase / Factory / Runner
+- [x] PromptOptimizationPhase 注入 merge_executor 和 toxicity_test_executor
+- [x] factory.py 构建 MergeExecutor 实例（替换 _MockMergeExecutor）
+- [x] factory.py 构建 ToxicityTestExecutor 实例（替换 _MockToxicityTestExecutor）
+- [x] runner.py 将新 executor 注入到 PromptOptimizationPhase
+
+### Artifact
+- [x] extraction/ 下保存 initial_merge_report.json、transition_report.json、ineffective_patches.jsonl、toxicity_report.json、safe_patches.jsonl、toxic_patches.jsonl、final_merge_report.json、final_merged_patches.jsonl、patch_test_records.jsonl
+- [x] analysis/ 下保存 initial_merge_report.json、transition_report.json、ineffective_patches.jsonl、toxicity_report.json、safe_patches.jsonl、toxic_patches.jsonl、final_merge_report.json、final_merged_patches.jsonl、patch_test_records.jsonl
+
+### 集成测试
+- [x] validated patches → initial merge → initial apply → patched eval → toxic sample set → greedy toxicity test → final merge → final apply → final eval 链路跑通
+- [x] safe patch 能进入 final prompt
+- [x] ineffective patch 被剔除
+- [x] toxic patch 被拒绝
+- [x] safe patch 二次 merge 后 prompt 改变
+- [x] final prompt 指标不低于 base prompt
+- [x] analysis ineffective patch 被剔除
+- [x] analysis toxic patch 被拒绝
+- [x] safe analysis patch 二次 merge
+- [x] analysis no_progress 不影响 extraction prompt
+
+### Smoke 测试与验收
+- [x] factory.py 不再为 merge 返回 mock executor
+- [x] factory.py 不再为 toxicity_test 返回 mock executor
+- [x] CLI 至少能跑通 1 轮真实 merge + 测毒流程
+- [x] toxicity_report 包含 tested/toxic/safe/broken_sample_ids
+- [x] patch_test_records 可追踪
+- [x] extraction prompt 最终推进只基于 safe patches
 
 ## PR 4：压缩、Artifact、端到端 Smoke
 

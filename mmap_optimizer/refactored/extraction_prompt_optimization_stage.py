@@ -135,6 +135,8 @@ class ExtractionPromptOptimizationStage:
         analysis_executor=None,    # AnalysisExecutor 实例
         patch_generation_executor=None,  # PatchGenerationExecutor 实例
         patch_apply_executor=None,       # PatchApplyExecutor 实例
+        merge_executor=None,             # MergeExecutor 实例
+        toxicity_test_executor=None,     # ToxicityTestExecutor 实例
     ):
         self.extraction_prompt = extraction_prompt
         self.analysis_prompt = analysis_prompt
@@ -148,6 +150,8 @@ class ExtractionPromptOptimizationStage:
         self.analysis_executor = analysis_executor
         self.patch_generation_executor = patch_generation_executor
         self.patch_apply_executor = patch_apply_executor
+        self.merge_executor = merge_executor
+        self.toxicity_test_executor = toxicity_test_executor
 
         # 结果存储
         self.base_extraction_results: list[ExtractionResult] = []
@@ -163,10 +167,16 @@ class ExtractionPromptOptimizationStage:
         self.final_extraction_results: list[ExtractionResult] = []
         self.final_eval_records: list[EvalRecord] = []
 
+        # PR3 测毒相关结果
+        self.ineffective_patches: list[ExtractionPatch] = []
+        self.safe_patches: list[ExtractionPatch] = []
+        self.toxic_patches: list[ExtractionPatch] = []
+
         # Prompt 版本
         self.trial_prompt: StructuredPrompt | None = None
         self.patched_prompt: StructuredPrompt | None = None
         self.accepted_prompt: StructuredPrompt | None = None
+        self.final_prompt: StructuredPrompt | None = None
 
         # 指标
         self.metrics = ExtractionMetrics()
@@ -175,6 +185,7 @@ class ExtractionPromptOptimizationStage:
         self.initial_merge_report: PatchMergeReport | None = None
         self.final_merge_report: PatchMergeReport | None = None
         self.toxicity_report: ToxicityReport | None = None
+        self.transition_report: dict[str, Any] | None = None
         self.patch_apply_report = None  # PatchApplyReport
 
     def run(self) -> ExtractionMetrics:
@@ -403,6 +414,18 @@ class ExtractionPromptOptimizationStage:
 
     def _step5_initial_merge(self) -> None:
         """Step 5: Tree Merge 生成初始 merged patch。"""
+        if self.merge_executor is not None:
+            # PR3: 使用真实 MergeExecutor
+            merged_patches, merge_report = self.merge_executor.merge(
+                patches=self.validated_patches,
+                prompt=self.extraction_prompt,
+                merge_strategy="tree_merge",
+                sample_set=self.sample_set,
+            )
+            self.initial_merged_patches = merged_patches
+            self.initial_merge_report = merge_report
+            return
+
         if self.patch_generation_executor is not None:
             # 使用 passthrough merge：直接透传 validated_patches
             self.initial_merged_patches = self.validated_patches.copy()
@@ -485,6 +508,142 @@ class ExtractionPromptOptimizationStage:
 
     def _step7_regression_and_toxicity_test(self) -> None:
         """Step 7: 回归分析、无效剔除与测毒。"""
+        if self.patch_apply_executor is not None and self.toxicity_test_executor is not None:
+            # PR3: 真实 merge + greedy 测毒
+
+            # 1. Transition 分类
+            base_eval_map = {r.sample_id: r for r in self.base_eval_records}
+            patched_eval_map = {r.sample_id: r for r in self.patched_eval_records}
+
+            fixed_sample_ids: list[str] = []
+            broken_sample_ids: list[str] = []
+            unchanged_wrong_ids: list[str] = []
+            unchanged_correct_ids: list[str] = []
+
+            for sample_id in self.batch.sample_ids:
+                base_record = base_eval_map.get(sample_id)
+                patched_record = patched_eval_map.get(sample_id)
+
+                # 缺少 base 或 patched 评估记录时跳过
+                if base_record is None or patched_record is None:
+                    continue
+
+                base_correct = base_record.status == "correct"
+                patched_correct = patched_record.status == "correct"
+
+                if not base_correct and patched_correct:
+                    fixed_sample_ids.append(sample_id)
+                elif base_correct and not patched_correct:
+                    broken_sample_ids.append(sample_id)
+                elif not base_correct and not patched_correct:
+                    unchanged_wrong_ids.append(sample_id)
+                else:
+                    unchanged_correct_ids.append(sample_id)
+
+            # 2. 构造 toxic_sample_ids
+            toxic_sample_ids = broken_sample_ids
+
+            # 3. 调用 ToxicityTestExecutor
+            safe_patches, toxic_patches, toxicity_report = self.toxicity_test_executor.test(
+                base_prompt=self.extraction_prompt,
+                candidate_patches=self.initial_merged_patches,
+                toxic_sample_ids=toxic_sample_ids,
+                sample_set=self.sample_set,
+                mode="extraction",
+                early_stop=True,
+                extraction_executor=self.extraction_executor,
+                evaluation_executor=self.evaluation_executor,
+                unchanged_wrong_sample_ids=unchanged_wrong_ids,
+                sample_states=self.sample_set.states,
+            )
+
+            self.safe_patches = safe_patches
+            self.toxic_patches = toxic_patches
+            self.toxicity_report = toxicity_report
+
+            # Populate ineffective_patches from initial_merged_patches
+            # (ToxicityTestExecutor marks them with status="rejected", rejection_reason="INEFFECTIVE")
+            self.ineffective_patches = [
+                p for p in self.initial_merged_patches
+                if p.status == "rejected" and getattr(p, "rejection_reason", None) == "INEFFECTIVE"
+            ]
+
+            # Populate transition_report
+            self.transition_report = {
+                "fixed_sample_ids": list(fixed_sample_ids),
+                "broken_sample_ids": list(broken_sample_ids),
+                "unchanged_wrong_ids": list(unchanged_wrong_ids),
+                "unchanged_correct_ids": list(unchanged_correct_ids),
+                "toxic_sample_ids": list(toxic_sample_ids),
+            }
+
+            # 4. Safe patches 二次 merge
+            if safe_patches and self.merge_executor is not None:
+                final_merged_patches, final_merge_report = self.merge_executor.merge(
+                    patches=safe_patches,
+                    prompt=self.extraction_prompt,
+                    merge_strategy="tree_merge",
+                    sample_set=self.sample_set,
+                )
+                self.final_merged_patches = final_merged_patches
+                self.final_merge_report = final_merge_report
+            elif safe_patches:
+                self.final_merged_patches = safe_patches.copy()
+                self.final_merge_report = PatchMergeReport(
+                    id=f"merge_report_final_{self.iteration}",
+                    input_patch_count=len(safe_patches),
+                    merged_patch_count=len(safe_patches),
+                    conflict_count=0,
+                    strategy="passthrough",
+                    fallback_used=True,
+                )
+            else:
+                self.final_merged_patches = []
+
+            # 5. 应用 final_merged_patches 到 base_prompt
+            if self.final_merged_patches:
+                final_prompt, final_apply_report = self.patch_apply_executor.apply(
+                    self.extraction_prompt, self.final_merged_patches
+                )
+                self.final_prompt = final_prompt
+                self.accepted_prompt = final_prompt
+                for patch in self.final_merged_patches:
+                    patch.status = "accepted"
+            else:
+                self.final_prompt = None
+                self.accepted_prompt = None
+                self.metrics.no_progress = True
+
+            # 6. 更新指标
+            self.metrics.accepted_patch_count = len(self.final_merged_patches)
+            self.metrics.rejected_patch_count = (
+                len(self.rejected_patches) + len(toxic_patches)
+            )
+            self.metrics.toxic_patch_count = len(toxic_patches)
+
+            # 7. 更新 SampleTrace transition
+            traces = self.sample_set.get_traces_for_iteration(
+                "prompt_optimization", self.iteration
+            )
+            for trace in traces:
+                if trace.sample_id in fixed_sample_ids:
+                    trace.transition = "fixed"
+                elif trace.sample_id in broken_sample_ids:
+                    trace.transition = "broken"
+                elif trace.sample_id in unchanged_wrong_ids:
+                    trace.transition = "unchanged_wrong"
+                else:
+                    trace.transition = "unchanged_correct"
+
+                # 更新状态统计
+                state = self.sample_set.states.get(trace.sample_id)
+                if state:
+                    if trace.transition == "fixed":
+                        state.historical_fixed_count += 1
+                    elif trace.transition == "broken":
+                        state.historical_broken_count += 1
+            return
+
         if self.patch_apply_executor is not None:
             # 使用真实 executor：基于 base_eval_records 和 patched_eval_records
             # 做 transition 分类，只做 patch set 级判断

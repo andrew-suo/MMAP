@@ -9,6 +9,7 @@ patch 生成/应用/合并、测毒、压缩、few-shot 等操作。
 
 from __future__ import annotations
 
+from ..patch import PatchTestRecord, ToxicityReport
 from .factory import create_executors
 from .interfaces import (
     AnalysisExecutorProtocol,
@@ -21,9 +22,11 @@ from .interfaces import (
     PatchGenerationExecutorProtocol,
     ToxicityTestExecutorProtocol,
 )
+from .merge_executor import MergeExecutor
 from .patch_apply_executor import PatchApplyExecutor, PatchApplyReport
 from .patch_generation_executor import PatchGenerationExecutor
 from .patch_validator import PatchValidator
+from .toxicity_executor import ToxicityTestExecutor
 
 __all__ = [
     # Protocol 接口
@@ -41,6 +44,11 @@ __all__ = [
     "PatchApplyExecutor",
     "PatchApplyReport",
     "PatchValidator",
+    "MergeExecutor",
+    "ToxicityTestExecutor",
+    # 数据模型
+    "ToxicityReport",
+    "PatchTestRecord",
     # 工厂函数
     "create_executors",
 ]

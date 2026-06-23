@@ -150,6 +150,8 @@ class PromptOptimizationPhase:
             analysis_executor=self.executors.get("analysis"),
             patch_generation_executor=self.executors.get("patch_generation"),
             patch_apply_executor=self.executors.get("patch_apply"),
+            merge_executor=self.executors.get("merge"),
+            toxicity_test_executor=self.executors.get("toxicity_test"),
         )
         extraction_metrics = extraction_stage.run()
 
@@ -179,6 +181,8 @@ class PromptOptimizationPhase:
             patch_generation_executor=self.executors.get("patch_generation"),
             patch_apply_executor=self.executors.get("patch_apply"),
             extraction_prompt=self.extraction_prompt,
+            merge_executor=self.executors.get("merge"),
+            toxicity_test_executor=self.executors.get("toxicity_test"),
         )
         analysis_metrics = analysis_stage.run()
 
@@ -360,6 +364,23 @@ class PromptOptimizationPhase:
         _write_jsonl(extraction_dir / "final_eval.jsonl", getattr(extraction_stage, "final_eval_records", []))
         _write_json(extraction_dir / "metrics.json", extraction_stage.metrics)
 
+        # PR3: Extraction 阶段新增 artifact
+        if getattr(extraction_stage, "transition_report", None) is not None:
+            _write_json(extraction_dir / "transition_report.json", extraction_stage.transition_report)
+        _write_jsonl(extraction_dir / "ineffective_patches.jsonl", getattr(extraction_stage, "ineffective_patches", []))
+        if getattr(extraction_stage, "toxicity_report", None) is not None:
+            _write_json(extraction_dir / "toxicity_report.json", extraction_stage.toxicity_report)
+        _write_jsonl(extraction_dir / "safe_patches.jsonl", getattr(extraction_stage, "safe_patches", []))
+        _write_jsonl(extraction_dir / "toxic_patches.jsonl", getattr(extraction_stage, "toxic_patches", []))
+        if getattr(extraction_stage, "final_merge_report", None) is not None:
+            _write_json(extraction_dir / "final_merge_report.json", extraction_stage.final_merge_report)
+        _write_jsonl(extraction_dir / "final_merged_patches.jsonl", getattr(extraction_stage, "final_merged_patches", []))
+        if getattr(extraction_stage, "toxicity_report", None) is not None:
+            _write_jsonl(
+                extraction_dir / "patch_test_records.jsonl",
+                extraction_stage.toxicity_report.patch_test_records,
+            )
+
         # --- Analysis artifacts ---
         analysis_dir = iteration_dir / "analysis"
         analysis_dir.mkdir(parents=True, exist_ok=True)
@@ -380,3 +401,20 @@ class PromptOptimizationPhase:
             _write_json(analysis_dir / "final_analysis_prompt.json", analysis_stage.accepted_prompt)
         _write_jsonl(analysis_dir / "final_analysis_results.jsonl", analysis_stage.final_analysis_results)
         _write_json(analysis_dir / "metrics.json", analysis_stage.metrics)
+
+        # PR3: Analysis 阶段新增 artifact
+        if getattr(analysis_stage, "transition_report", None) is not None:
+            _write_json(analysis_dir / "transition_report.json", analysis_stage.transition_report)
+        _write_jsonl(analysis_dir / "ineffective_patches.jsonl", getattr(analysis_stage, "ineffective_patches", []))
+        if getattr(analysis_stage, "toxicity_report", None) is not None:
+            _write_json(analysis_dir / "toxicity_report.json", analysis_stage.toxicity_report)
+        _write_jsonl(analysis_dir / "safe_patches.jsonl", getattr(analysis_stage, "safe_patches", []))
+        _write_jsonl(analysis_dir / "toxic_patches.jsonl", getattr(analysis_stage, "toxic_patches", []))
+        if getattr(analysis_stage, "final_merge_report", None) is not None:
+            _write_json(analysis_dir / "final_merge_report.json", analysis_stage.final_merge_report)
+        _write_jsonl(analysis_dir / "final_merged_patches.jsonl", getattr(analysis_stage, "final_merged_patches", []))
+        if getattr(analysis_stage, "toxicity_report", None) is not None:
+            _write_jsonl(
+                analysis_dir / "patch_test_records.jsonl",
+                analysis_stage.toxicity_report.patch_test_records,
+            )

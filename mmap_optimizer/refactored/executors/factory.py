@@ -29,6 +29,8 @@ from .fewshot_executor import FewshotExecutor
 from .patch_apply_executor import PatchApplyExecutor
 from .patch_generation_executor import PatchGenerationExecutor
 from .patch_validator import PatchValidator
+from .merge_executor import MergeExecutor
+from .toxicity_executor import ToxicityTestExecutor
 from .interfaces import (
     AnalysisExecutorProtocol,
     CompressionExecutorProtocol,
@@ -364,8 +366,8 @@ def create_executors(config: dict[str, Any]) -> dict[str, Any]:
         "patch_generation": PatchGenerationExecutor(),
         "patch_apply": PatchApplyExecutor(),
         "patch_validator": PatchValidator(),
-        "merge": _MockMergeExecutor(),
-        "toxicity_test": _MockToxicityTestExecutor(),
+        "merge": MergeExecutor(),
+        "toxicity_test": ToxicityTestExecutor(),
         "compression": _MockCompressionExecutor(),
         "fewshot": fewshot_executor,
         "model_client": model_client,

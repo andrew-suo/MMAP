@@ -118,6 +118,15 @@ class PatchMergeReport:
     merged_patches: list[dict[str, Any]] = field(default_factory=list)
     conflicts: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    strategy: str = "tree_merge"
+    dropped_patch_count: int = 0
+    input_patch_ids: list[str] = field(default_factory=list)
+    merged_patch_ids: list[str] = field(default_factory=list)
+    dropped_patch_ids: list[str] = field(default_factory=list)
+    conflict_patch_ids: list[str] = field(default_factory=list)
+    merge_reason: str = ""
+    fallback_used: bool = False
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典格式。"""
@@ -129,7 +138,76 @@ class PatchMergeReport:
             "merged_patches": list(self.merged_patches),
             "conflicts": list(self.conflicts),
             "metadata": dict(self.metadata),
+            "strategy": self.strategy,
+            "dropped_patch_count": self.dropped_patch_count,
+            "input_patch_ids": list(self.input_patch_ids),
+            "merged_patch_ids": list(self.merged_patch_ids),
+            "dropped_patch_ids": list(self.dropped_patch_ids),
+            "conflict_patch_ids": list(self.conflict_patch_ids),
+            "merge_reason": self.merge_reason,
+            "fallback_used": self.fallback_used,
+            "warnings": list(self.warnings),
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PatchMergeReport":
+        """从字典格式创建。"""
+        return cls(
+            id=data["id"],
+            input_patch_count=data["input_patch_count"],
+            merged_patch_count=data["merged_patch_count"],
+            conflict_count=data["conflict_count"],
+            merged_patches=data.get("merged_patches", []),
+            conflicts=data.get("conflicts", []),
+            metadata=data.get("metadata", {}),
+            strategy=data.get("strategy", "tree_merge"),
+            dropped_patch_count=data.get("dropped_patch_count", 0),
+            input_patch_ids=data.get("input_patch_ids", []),
+            merged_patch_ids=data.get("merged_patch_ids", []),
+            dropped_patch_ids=data.get("dropped_patch_ids", []),
+            conflict_patch_ids=data.get("conflict_patch_ids", []),
+            merge_reason=data.get("merge_reason", ""),
+            fallback_used=data.get("fallback_used", False),
+            warnings=data.get("warnings", []),
+        )
+
+
+@dataclass
+class PatchTestRecord:
+    """单个 patch 的测毒测试记录。
+
+    记录 patch 在测毒过程中的状态、被测试的样本、
+    broken / fixed 样本以及提前停止原因。
+    """
+    patch_id: str
+    status: str  # "safe", "toxic", "skipped"
+    tested_sample_ids: list[str] = field(default_factory=list)
+    broken_sample_ids: list[str] = field(default_factory=list)
+    fixed_sample_ids: list[str] = field(default_factory=list)
+    stop_reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """转换为字典格式。"""
+        return {
+            "patch_id": self.patch_id,
+            "status": self.status,
+            "tested_sample_ids": list(self.tested_sample_ids),
+            "broken_sample_ids": list(self.broken_sample_ids),
+            "fixed_sample_ids": list(self.fixed_sample_ids),
+            "stop_reason": self.stop_reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PatchTestRecord":
+        """从字典格式创建。"""
+        return cls(
+            patch_id=data["patch_id"],
+            status=data["status"],
+            tested_sample_ids=data.get("tested_sample_ids", []),
+            broken_sample_ids=data.get("broken_sample_ids", []),
+            fixed_sample_ids=data.get("fixed_sample_ids", []),
+            stop_reason=data.get("stop_reason"),
+        )
 
 
 @dataclass
@@ -143,6 +221,11 @@ class ToxicityReport:
     safe_patches: list[str] = field(default_factory=list)  # patch IDs
     toxic_sample_ids: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    mode: str = "extraction"  # "extraction" or "analysis"
+    safe_patch_ids: list[str] = field(default_factory=list)  # alias for safe_patches
+    toxic_patch_ids: list[str] = field(default_factory=list)  # alias for toxic_patches
+    patch_test_records: list[dict[str, Any]] = field(default_factory=list)
+    early_stop_enabled: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典格式。"""
@@ -155,4 +238,28 @@ class ToxicityReport:
             "safe_patches": list(self.safe_patches),
             "toxic_sample_ids": list(self.toxic_sample_ids),
             "metadata": dict(self.metadata),
+            "mode": self.mode,
+            "safe_patch_ids": list(self.safe_patch_ids),
+            "toxic_patch_ids": list(self.toxic_patch_ids),
+            "patch_test_records": list(self.patch_test_records),
+            "early_stop_enabled": self.early_stop_enabled,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToxicityReport":
+        """从字典格式创建。"""
+        return cls(
+            id=data["id"],
+            tested_patch_count=data["tested_patch_count"],
+            toxic_patch_count=data["toxic_patch_count"],
+            safe_patch_count=data["safe_patch_count"],
+            toxic_patches=data.get("toxic_patches", []),
+            safe_patches=data.get("safe_patches", []),
+            toxic_sample_ids=data.get("toxic_sample_ids", []),
+            metadata=data.get("metadata", {}),
+            mode=data.get("mode", "extraction"),
+            safe_patch_ids=data.get("safe_patch_ids", []),
+            toxic_patch_ids=data.get("toxic_patch_ids", []),
+            patch_test_records=data.get("patch_test_records", []),
+            early_stop_enabled=data.get("early_stop_enabled", True),
+        )

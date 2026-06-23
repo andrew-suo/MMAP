@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import mimetypes
 import os
 from pathlib import Path
@@ -24,10 +23,6 @@ class OpenAICompatibleClient:
         self.api_key = api_key
         self.model = model
         self.verify_ssl = verify_ssl
-
-    @classmethod
-    def from_env(cls, base_url: str, api_key_env: str, model: str | None = None, verify_ssl: bool = True) -> "OpenAICompatibleClient":
-        return cls(base_url=base_url, api_key=os.environ.get(api_key_env), model=model, verify_ssl=verify_ssl)
 
     def complete(self, messages: list[dict[str, Any]], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:
         payload = self._build_payload(messages=messages, model_config=model_config, response_format=response_format)

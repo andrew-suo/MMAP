@@ -43,18 +43,6 @@ def _setup_handler(logger: logging.Logger) -> None:
     logger.setLevel(getattr(logging, DEFAULT_LOG_LEVEL, logging.INFO))
 
 
-def set_log_level(level: str | int) -> None:
-    """Set log level for all cached loggers.
-
-    Args:
-        level: Log level as string ('DEBUG', 'INFO', 'WARNING', 'ERROR') or int
-    """
-    if isinstance(level, str):
-        level = getattr(logging, level.upper(), logging.INFO)
-    for logger in _loggers.values():
-        logger.setLevel(level)
-
-
 def _safe_log_dict(data: dict[str, Any], *, max_value_len: int = 200) -> str:
     """Safely format a dict for logging, redacting sensitive keys.
 
@@ -109,20 +97,3 @@ def log_stage(logger: logging.Logger, stage: str, message: str = "", **kwargs: A
         logger.info(f"[stage={stage}] {body}")
     else:
         logger.info(f"[stage={stage}]")
-
-
-def log_progress(logger: logging.Logger, message: str, **kwargs: Any) -> None:
-    """Log a progress message with structured extras.
-
-    Uses _safe_log_dict for consistent redaction.
-
-    Args:
-        logger: Logger instance
-        message: Progress message
-        **kwargs: Additional structured data
-    """
-    if kwargs:
-        extra = _safe_log_dict(kwargs)
-        logger.info(f"{message} {extra}")
-    else:
-        logger.info(message)

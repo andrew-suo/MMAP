@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from mmap_optimizer.logging import _safe_log_dict, get_logger, log_progress, log_stage, set_log_level
+from mmap_optimizer.logging import _safe_log_dict, get_logger, log_stage
 
 
 class TestSafeLogDict:
@@ -99,46 +99,6 @@ class TestLogStage:
             log_stage(logger, "model_request", api_key="secret123")
         assert "secret123" not in caplog.text
         assert "api_key=<REDACTED>" in caplog.text
-
-
-class TestLogProgress:
-    """Tests for log_progress function."""
-
-    def test_log_progress_without_kwargs(self, caplog):
-        """log_progress should log message."""
-        logger = get_logger("test_log_progress_no_kwargs")
-        with caplog.at_level(logging.INFO):
-            log_progress(logger, "Processing started")
-        assert "Processing started" in caplog.text
-
-    def test_log_progress_with_kwargs(self, caplog):
-        """log_progress should log message with extra data."""
-        logger = get_logger("test_log_progress_with_kwargs")
-        with caplog.at_level(logging.INFO):
-            log_progress(logger, "model_request_start", model="gpt-4", duration_ms=150)
-        assert "model_request_start" in caplog.text
-        assert "model=gpt-4" in caplog.text
-        assert "duration_ms=150" in caplog.text
-
-
-class TestSetLogLevel:
-    """Tests for set_log_level function."""
-
-    def test_set_log_level_string(self, caplog):
-        """set_log_level should accept string level."""
-        logger = get_logger("test_set_level_string")
-        set_log_level("DEBUG")
-        with caplog.at_level(logging.DEBUG):
-            logger.debug("debug message")
-        assert "debug message" in caplog.text
-
-    def test_set_log_level_int(self, caplog):
-        """set_log_level should accept int level."""
-        logger = get_logger("test_set_level_int")
-        set_log_level(logging.DEBUG)
-        with caplog.at_level(logging.DEBUG):
-            logger.debug("debug int message")
-        assert "debug int message" in caplog.text
 
 
 class TestLoggerRedactionIntegration:

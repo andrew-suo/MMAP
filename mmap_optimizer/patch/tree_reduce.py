@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
-from mmap_optimizer.prompt.ir import PromptIR
 from .clusterer import PatchCluster, cluster_patches
 from .conflict import PatchConflict, detect_patch_conflicts
 from .deduplicate import is_duplicate_patch, is_subsumed_patch, merge_trace, normalize_patch_text
@@ -20,7 +20,7 @@ class TreeReduceMergeResult:
 
 
 class TreeReducePatchMerger:
-    def merge(self, *, round_id: str, patches: list[Patch], prompt_ir: PromptIR | None = None) -> TreeReduceMergeResult:
+    def merge(self, *, round_id: str, patches: list[Patch], prompt_ir: Any | None = None) -> TreeReduceMergeResult:
         report = PatchMergeReport(id=f"patch_merge_{round_id}", round_id=round_id, input_patch_ids=[patch.id for patch in patches])
         final_patches: list[Patch] = []
         rejected_patches: list[Patch] = []
@@ -42,7 +42,7 @@ class TreeReducePatchMerger:
         report.merged_patch_ids = sorted(set(report.merged_patch_ids))
         return TreeReduceMergeResult(final_patches=final_patches, rejected_patches=rejected_patches, merge_report=report)
 
-    def _merge_cluster(self, round_id: str, cluster: PatchCluster, prompt_ir: PromptIR | None) -> tuple[list[Patch], list[Patch], dict]:
+    def _merge_cluster(self, round_id: str, cluster: PatchCluster, prompt_ir: Any | None) -> tuple[list[Patch], list[Patch], dict]:
         info = {
             "cluster_id": cluster.id,
             "input_patch_ids": cluster.patch_ids,

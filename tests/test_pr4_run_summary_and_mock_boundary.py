@@ -20,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from mmap_optimizer.refactored.config import RefactoredConfig, RunConfig, load_config
-from mmap_optimizer.refactored.executors.factory import create_executors
-from mmap_optimizer.refactored.runner import (
+from mmap_optimizer.config import RefactoredConfig, RunConfig, load_config
+from mmap_optimizer.executors.factory import create_executors
+from mmap_optimizer.runner import (
     AnalysisPromptSummary,
     FewshotOptimizationSummary,
     MMAPRunner,
@@ -251,7 +251,7 @@ def test_config_from_dict_reads_use_mock():
 def test_create_executors_use_mock_true_returns_mock():
     """use_mock=True 返回 mock executor。"""
     executors = create_executors({}, use_mock=True)
-    from mmap_optimizer.refactored.executors.factory import (
+    from mmap_optimizer.executors.factory import (
         _MockExtractionExecutor,
         _MockEvaluationExecutor,
         _MockAnalysisExecutor,
@@ -262,9 +262,9 @@ def test_create_executors_use_mock_true_returns_mock():
     assert isinstance(executors["analysis"], _MockAnalysisExecutor)
     assert isinstance(executors["fewshot"], _MockFewshotExecutor)
     # merge / toxicity / patch_apply 始终为真实实现（不依赖 model_client）
-    from mmap_optimizer.refactored.executors.merge_executor import MergeExecutor
-    from mmap_optimizer.refactored.executors.toxicity_executor import ToxicityTestExecutor
-    from mmap_optimizer.refactored.executors.patch_apply_executor import PatchApplyExecutor
+    from mmap_optimizer.executors.merge_executor import MergeExecutor
+    from mmap_optimizer.executors.toxicity_executor import ToxicityTestExecutor
+    from mmap_optimizer.executors.patch_apply_executor import PatchApplyExecutor
     assert isinstance(executors["merge"], MergeExecutor)
     assert isinstance(executors["toxicity_test"], ToxicityTestExecutor)
     assert isinstance(executors["patch_apply"], PatchApplyExecutor)
@@ -279,7 +279,7 @@ def test_create_executors_use_mock_false_without_model_client_raises():
 def test_create_executors_use_mock_none_falls_back_to_mock():
     """use_mock=None 无 model_client 时自动回退 mock。"""
     executors = create_executors({}, use_mock=None)
-    from mmap_optimizer.refactored.executors.factory import _MockExtractionExecutor
+    from mmap_optimizer.executors.factory import _MockExtractionExecutor
     assert isinstance(executors["extraction"], _MockExtractionExecutor)
     assert executors["model_client"] is None
 

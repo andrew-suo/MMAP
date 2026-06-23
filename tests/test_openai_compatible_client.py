@@ -1,6 +1,6 @@
 import base64
 
-from mmap_optimizer.dataset.sample import SampleAsset
+from mmap_optimizer.sample import SampleAsset
 from mmap_optimizer.model.openai_compatible import OpenAICompatibleClient
 
 

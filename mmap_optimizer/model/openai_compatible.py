@@ -11,8 +11,8 @@ import time
 import urllib.request
 from typing import Any
 
-from mmap_optimizer.dataset.sample import SampleAsset
-from mmap_optimizer.logging import get_logger, log_stage
+from ..logging import get_logger, log_stage
+from ..sample import SampleAsset
 from .client import ModelResponse
 
 logger = get_logger(__name__)

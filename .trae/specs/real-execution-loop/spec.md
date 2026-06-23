@@ -2,7 +2,7 @@
 
 ## Why
 
-当前 `mmap_optimizer/refactored/` 三阶段架构骨架已完成，但所有核心执行链路（抽取、评估、分析、patch 生成、patch 应用、merge、测毒、压缩、few-shot 验证）均为 mock 实现，无法产出真实可用的优化结果。需要补齐真实执行链路，使系统能用 10～20 条小数据集跑通端到端闭环，所有核心结果来自真实模型调用和真实 evaluator。
+当前 `mmap_optimizer/` 三阶段架构骨架已完成，但所有核心执行链路（抽取、评估、分析、patch 生成、patch 应用、merge、测毒、压缩、few-shot 验证）均为 mock 实现，无法产出真实可用的优化结果。需要补齐真实执行链路，使系统能用 10～20 条小数据集跑通端到端闭环，所有核心结果来自真实模型调用和真实 evaluator。
 
 ## What Changes
 
@@ -24,20 +24,20 @@
 
 - Affected specs: 无（首个 spec）
 - Affected code:
-  - `mmap_optimizer/refactored/extraction_prompt_optimization_stage.py`（9 个 step 全部替换 mock）
-  - `mmap_optimizer/refactored/analysis_prompt_optimization_stage.py`（8 个 step 全部替换 mock）
-  - `mmap_optimizer/refactored/fewshot_optimization_phase.py`（抽取和验证替换 mock）
-  - `mmap_optimizer/refactored/prompt_optimization_phase.py`（patch 应用替换 mock，artifact 补齐）
-  - `mmap_optimizer/refactored/runner.py`（artifact 补齐，yaml 导入 bug 修复）
-  - `mmap_optimizer/refactored/structured_prompt.py`（新增 render 能力）
-  - 新增 `mmap_optimizer/refactored/executors/` 目录及 9 个 executor
+  - `mmap_optimizer/extraction_prompt_optimization_stage.py`（9 个 step 全部替换 mock）
+  - `mmap_optimizer/analysis_prompt_optimization_stage.py`（8 个 step 全部替换 mock）
+  - `mmap_optimizer/fewshot_optimization_phase.py`（抽取和验证替换 mock）
+  - `mmap_optimizer/prompt_optimization_phase.py`（patch 应用替换 mock，artifact 补齐）
+  - `mmap_optimizer/runner.py`（artifact 补齐，yaml 导入 bug 修复）
+  - `mmap_optimizer/structured_prompt.py`（新增 render 能力）
+  - 新增 `mmap_optimizer/executors/` 目录及 9 个 executor
   - 复用旧系统：`model/`、`evaluation/`、`patch/validator.py`、`patch/applier.py`、`patch/tree_reduce.py`、`compression/`、`testing/prompt_test_runner.py`
 
 ## ADDED Requirements
 
 ### Requirement: Execution Adapter 层
 
-系统 SHALL 提供统一的 executor 适配层，位于 `mmap_optimizer/refactored/executors/`，包含 9 个 executor，负责把 refactored 数据结构转换为旧系统或模型调用所需格式。主流程 SHALL 通过 executor 接口调用执行逻辑，不直接依赖旧模块细节。
+系统 SHALL 提供统一的 executor 适配层，位于 `mmap_optimizer/executors/`，包含 9 个 executor，负责把 refactored 数据结构转换为旧系统或模型调用所需格式。主流程 SHALL 通过 executor 接口调用执行逻辑，不直接依赖旧模块细节。
 
 #### Scenario: Executor 注入
 - **WHEN** 创建 PromptOptimizationPhase 或 FewshotOptimizationPhase 时
@@ -484,7 +484,7 @@ PR2 阶段 Step 7 SHALL 基于 base_eval 和 patched_eval 做 patch set 级 tran
 系统 SHALL 支持用 10～20 条小数据集跑通端到端闭环。
 
 #### Scenario: 完整三阶段 Run
-- **WHEN** 执行 `python -m mmap_optimizer.refactored.cli run --config configs/refactored_smoke.yaml`
+- **WHEN** 执行 `python -m mmap_optimizer.cli run --config configs/smoke.yaml`
 - **THEN** 完成 Prompt Structuring → 1 轮 Prompt Optimization → 1 轮 Few-shot Optimization
 
 #### Scenario: 无 mock output

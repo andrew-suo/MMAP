@@ -12,26 +12,26 @@
 
 from __future__ import annotations
 
-from mmap_optimizer.refactored.executors.patch_apply_executor import PatchApplyExecutor
-from mmap_optimizer.refactored.executors.toxicity_executor import ToxicityTestExecutor
-from mmap_optimizer.refactored.extraction_prompt_optimization_stage import (
+from mmap_optimizer.executors.patch_apply_executor import PatchApplyExecutor
+from mmap_optimizer.executors.toxicity_executor import ToxicityTestExecutor
+from mmap_optimizer.extraction_prompt_optimization_stage import (
     AnalysisResult,
     EvalRecord,
     ExtractionResult,
 )
-from mmap_optimizer.refactored.patch import (
+from mmap_optimizer.patch_types import (
     AnalysisPatch,
     ExtractionPatch,
     PatchTestRecord,
     ToxicityReport,
 )
-from mmap_optimizer.refactored.sample import (
+from mmap_optimizer.sample import (
     SampleBatch,
     SampleSet,
     SampleSpec,
     SampleState,
 )
-from mmap_optimizer.refactored.structured_prompt import (
+from mmap_optimizer.structured_prompt import (
     PromptSection,
     StructuredPrompt,
 )

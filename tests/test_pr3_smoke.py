@@ -16,24 +16,24 @@ import json
 import tempfile
 from pathlib import Path
 
-from mmap_optimizer.refactored.extraction_prompt_optimization_stage import (
+from mmap_optimizer.extraction_prompt_optimization_stage import (
     AnalysisResult,
     EvalRecord,
     ExtractionResult,
 )
-from mmap_optimizer.refactored.executors.factory import create_executors
-from mmap_optimizer.refactored.executors.merge_executor import MergeExecutor
-from mmap_optimizer.refactored.executors.toxicity_executor import ToxicityTestExecutor
-from mmap_optimizer.refactored.prompt_optimization_phase import (
+from mmap_optimizer.executors.factory import create_executors
+from mmap_optimizer.executors.merge_executor import MergeExecutor
+from mmap_optimizer.executors.toxicity_executor import ToxicityTestExecutor
+from mmap_optimizer.prompt_optimization_phase import (
     PromptOptimizationConfig,
     PromptOptimizationPhase,
 )
-from mmap_optimizer.refactored.sample import (
+from mmap_optimizer.sample import (
     SampleSet,
     SampleSpec,
     SampleState,
 )
-from mmap_optimizer.refactored.structured_prompt import (
+from mmap_optimizer.structured_prompt import (
     PromptSection,
     StructuredPrompt,
 )
@@ -143,7 +143,7 @@ class ContentAwareMockAnalysisExecutor:
         )
 
     def reflect(self, analysis_prompt, extraction_result, analysis_result, sample_spec):
-        from mmap_optimizer.refactored.analysis_prompt_optimization_stage import (
+        from mmap_optimizer.analysis_prompt_optimization_stage import (
             ReflectionResult,
         )
 
@@ -328,8 +328,8 @@ def _read_json(path: Path) -> dict:
 
 def test_factory_returns_real_merge_executor():
     """验证 factory.py 不再为 merge 返回 mock executor。"""
-    from mmap_optimizer.refactored.executors.factory import create_executors
-    from mmap_optimizer.refactored.executors.merge_executor import MergeExecutor
+    from mmap_optimizer.executors.factory import create_executors
+    from mmap_optimizer.executors.merge_executor import MergeExecutor
 
     executors = create_executors({})
     merge = executors["merge"]
@@ -346,8 +346,8 @@ def test_factory_returns_real_merge_executor():
 
 def test_factory_returns_real_toxicity_test_executor():
     """验证 factory.py 不再为 toxicity_test 返回 mock executor。"""
-    from mmap_optimizer.refactored.executors.factory import create_executors
-    from mmap_optimizer.refactored.executors.toxicity_executor import (
+    from mmap_optimizer.executors.factory import create_executors
+    from mmap_optimizer.executors.toxicity_executor import (
         ToxicityTestExecutor,
     )
 

@@ -91,6 +91,7 @@ class PromptOptimizationPhase:
         sample_set: SampleSet,
         output_dir: Path,
         seed: int = 42,
+        executors: dict[str, Any] | None = None,
     ):
         self.config = config
         self.extraction_prompt = extraction_prompt
@@ -98,6 +99,8 @@ class PromptOptimizationPhase:
         self.sample_set = sample_set
         self.output_dir = output_dir
         self.seed = seed
+        # executor 字典，默认为空（stage 内部会回退到 mock）
+        self.executors = executors or {}
 
         # 创建 sampler
         self.sampler = create_sampler(config.sampler)
@@ -140,6 +143,9 @@ class PromptOptimizationPhase:
             sample_set=self.sample_set,
             batch=batch,
             iteration=iteration,
+            extraction_executor=self.executors.get("extraction"),
+            evaluation_executor=self.executors.get("evaluation"),
+            analysis_executor=self.executors.get("analysis"),
         )
         extraction_metrics = extraction_stage.run()
 
@@ -157,6 +163,7 @@ class PromptOptimizationPhase:
             sample_set=self.sample_set,
             batch=batch,
             iteration=iteration,
+            analysis_executor=self.executors.get("analysis"),
         )
         analysis_metrics = analysis_stage.run()
 

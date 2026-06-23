@@ -83,6 +83,7 @@ class AnalysisPromptOptimizationStage:
         sample_set: SampleSet,
         batch: SampleBatch,
         iteration: int,
+        analysis_executor=None,    # AnalysisExecutor 实例
     ):
         self.analysis_prompt = analysis_prompt
         self.extraction_results = extraction_results
@@ -90,6 +91,7 @@ class AnalysisPromptOptimizationStage:
         self.sample_set = sample_set
         self.batch = batch
         self.iteration = iteration
+        self.analysis_executor = analysis_executor
 
         # 结果存储
         self.reflection_results: list[ReflectionResult] = []
@@ -172,17 +174,26 @@ class AnalysisPromptOptimizationStage:
             if base_analysis is None:
                 continue
 
-            # Mock 反思结果
-            reflection = ReflectionResult(
-                sample_id=sample_id,
-                reflection_success=True,
-                error_reason="Mock reflection: analysis misjudged",
-                patch_suggestion={
-                    "target_section": "section_1",
-                    "operation": "replace",
-                    "content": "Mock analysis patch content",
-                },
-            )
+            if self.analysis_executor is not None:
+                # 使用真实 executor 反思
+                reflection = self.analysis_executor.reflect(
+                    self.analysis_prompt,
+                    extraction_result,
+                    base_analysis,
+                    spec,
+                )
+            else:
+                # Mock 反思结果
+                reflection = ReflectionResult(
+                    sample_id=sample_id,
+                    reflection_success=True,
+                    error_reason="Mock reflection: analysis misjudged",
+                    patch_suggestion={
+                        "target_section": "section_1",
+                        "operation": "replace",
+                        "content": "Mock analysis patch content",
+                    },
+                )
             self.reflection_results.append(reflection)
 
             # 更新 SampleTrace

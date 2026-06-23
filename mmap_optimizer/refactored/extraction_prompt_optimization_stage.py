@@ -130,6 +130,9 @@ class ExtractionPromptOptimizationStage:
         sample_set: SampleSet,
         batch: SampleBatch,
         iteration: int,
+        extraction_executor=None,  # ExtractionExecutor 实例
+        evaluation_executor=None,  # EvaluationExecutor 实例
+        analysis_executor=None,    # AnalysisExecutor 实例
     ):
         self.extraction_prompt = extraction_prompt
         self.analysis_prompt = analysis_prompt
@@ -137,8 +140,14 @@ class ExtractionPromptOptimizationStage:
         self.batch = batch
         self.iteration = iteration
 
+        # Executor
+        self.extraction_executor = extraction_executor
+        self.evaluation_executor = evaluation_executor
+        self.analysis_executor = analysis_executor
+
         # 结果存储
         self.base_extraction_results: list[ExtractionResult] = []
+        self.base_eval_records: list[EvalRecord] = []
         self.analysis_results: list[AnalysisResult] = []
         self.draft_patches: list[ExtractionPatch] = []
         self.initial_merged_patches: list[ExtractionPatch] = []
@@ -187,7 +196,27 @@ class ExtractionPromptOptimizationStage:
 
     def _step1_execute_extraction(self) -> None:
         """Step 1: 执行抽取。"""
-        # 这里需要调用模型执行抽取，第一版使用 mock 实现
+        if self.extraction_executor is not None:
+            # 使用真实 executor
+            self.base_extraction_results = self.extraction_executor.execute(
+                prompt=self.extraction_prompt,
+                batch=self.batch,
+                sample_set=self.sample_set,
+            )
+            # 更新 SampleTrace
+            for result in self.base_extraction_results:
+                trace = SampleTrace(
+                    sample_id=result.sample_id,
+                    phase="prompt_optimization",
+                    iteration=self.iteration,
+                    selected=True,
+                    base_extraction_result_id=result.sample_id,
+                    base_extraction_status=result.status,
+                )
+                self.sample_set.add_trace(trace)
+            return
+
+        # Fallback: mock 实现
         for sample_id in self.batch.sample_ids:
             spec = self.sample_set.specs.get(sample_id)
             if spec is None:
@@ -215,6 +244,32 @@ class ExtractionPromptOptimizationStage:
 
     def _step2_compute_base_metrics(self) -> None:
         """Step 2: 统计原始 prompt 指标。"""
+        if self.evaluation_executor is not None:
+            # 使用真实 executor 评估
+            self.base_eval_records = self.evaluation_executor.evaluate_batch(
+                self.base_extraction_results, self.sample_set
+            )
+            # 基于 eval_records 的 status 统计真实对错
+            correct_count = sum(1 for r in self.base_eval_records if r.status == "correct")
+            wrong_count = sum(1 for r in self.base_eval_records if r.status == "wrong")
+            invalid_count = sum(1 for r in self.base_eval_records if r.status == "invalid")
+            total = len(self.base_eval_records)
+
+            self.metrics.base_correct_count = correct_count
+            self.metrics.base_wrong_count = wrong_count
+            self.metrics.base_invalid_count = invalid_count
+            self.metrics.base_accuracy = correct_count / total if total > 0 else 0.0
+
+            # 更新样本状态（last_extraction_status 已由 EvaluationExecutor 更新）
+            for eval_record in self.base_eval_records:
+                state = self.sample_set.states.get(eval_record.sample_id)
+                if state:
+                    has_error = eval_record.status in ["wrong", "invalid"]
+                    state.update_error(has_error)
+                    state.last_extraction_status = eval_record.status
+            return
+
+        # Fallback: 基于 extraction status 统计
         correct_count = sum(1 for r in self.base_extraction_results if r.status == "correct")
         wrong_count = sum(1 for r in self.base_extraction_results if r.status == "wrong")
         invalid_count = sum(1 for r in self.base_extraction_results if r.status == "invalid")
@@ -235,7 +290,28 @@ class ExtractionPromptOptimizationStage:
 
     def _step3_analyze_results(self) -> None:
         """Step 3: 分析所有抽取结果。"""
-        # 这里需要调用 analysis prompt 进行分析，第一版使用 mock 实现
+        if self.analysis_executor is not None:
+            # 使用真实 executor
+            self.analysis_results = self.analysis_executor.execute_batch(
+                analysis_prompt=self.analysis_prompt,
+                extraction_prompt=self.extraction_prompt,
+                extraction_results=self.base_extraction_results,
+                sample_set=self.sample_set,
+            )
+            # 更新 SampleTrace
+            for analysis_result in self.analysis_results:
+                traces = self.sample_set.get_traces_for_iteration("prompt_optimization", self.iteration)
+                for trace in traces:
+                    if trace.sample_id == analysis_result.sample_id:
+                        trace.analysis_result_id = analysis_result.sample_id
+                        trace.analysis_correct = analysis_result.analysis_correct
+                # 更新样本状态
+                state = self.sample_set.states.get(analysis_result.sample_id)
+                if state:
+                    state.last_analysis_status = "correct" if analysis_result.analysis_correct else "wrong"
+            return
+
+        # Fallback: mock 实现
         for result in self.base_extraction_results:
             spec = self.sample_set.specs.get(result.sample_id)
             if spec is None:

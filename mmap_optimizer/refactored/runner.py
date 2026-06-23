@@ -19,12 +19,19 @@ from typing import Any
 from .analysis_prompt_optimization_stage import AnalysisMetrics
 from .config import RefactoredConfig
 from .dataset_loader import DatasetLoader
+from .executors import create_executors
 from .extraction_prompt_optimization_stage import ExtractionMetrics
 from .fewshot_optimization_phase import FewshotMetrics, FewshotOptimizationPhase
 from .prompt_optimization_phase import PromptOptimizationPhase
 from .prompt_structuring_phase import PromptStructuringPhase
 from .sample import SampleSet
 from .structured_prompt import StructuredPrompt
+
+# YAML 导入检查（在顶部导入，避免 _save_initial_artifacts 使用时未定义）
+try:
+    import yaml
+except Exception:
+    yaml = None
 
 
 @dataclass
@@ -138,6 +145,13 @@ class MMAPRunner:
         self.sample_set: SampleSet | None = None
         self.structured_extraction_prompt: StructuredPrompt | None = None
         self.structured_analysis_prompt: StructuredPrompt | None = None
+
+        # 构建 executor 字典（根据 config.models 决定使用真实实现或 mock）
+        self.executors = self._build_executors()
+
+    def _build_executors(self) -> dict[str, Any]:
+        """根据配置构建 executor 字典。"""
+        return create_executors(self.config.to_dict())
 
     def _create_run_plan(self) -> RunPlan:
         """创建 Run Plan。"""
@@ -278,6 +292,7 @@ class MMAPRunner:
             sample_set=self.sample_set,
             output_dir=self.output_dir,
             seed=self.config.run.seed,
+            executors=self.executors,
         )
 
         # 执行
@@ -339,6 +354,7 @@ class MMAPRunner:
             sample_set=self.sample_set,
             output_dir=self.output_dir,
             seed=self.config.run.seed,
+            fewshot_executor=self.executors.get("fewshot"),
         )
 
         # 执行
@@ -433,10 +449,3 @@ class MMAPRunner:
                 json.dumps(self.structured_analysis_prompt.to_dict(), indent=2),
                 encoding="utf-8",
             )
-
-
-# YAML 导入检查
-try:
-    import yaml
-except Exception:
-    yaml = None

@@ -23,6 +23,7 @@ from ..patch import (
 from ..sample import SampleBatch, SampleSet, SampleSpec, SampleState
 from ..structured_prompt import StructuredPrompt
 from .analysis_executor import AnalysisExecutor
+from .compression_executor import CompressionExecutor
 from .evaluation_executor import EvaluationExecutor
 from .extraction_executor import ExtractionExecutor
 from .fewshot_executor import FewshotExecutor
@@ -300,6 +301,23 @@ class _MockFewshotExecutor:
             extraction_prompt, fewshot_examples, batch, sample_set
         )
 
+    def evaluate_results(
+        self,
+        extraction_results: list[ExtractionResult],
+        sample_set: SampleSet,
+    ) -> list[EvalRecord]:
+        """评估抽取结果（mock 实现，复用 _MockEvaluationExecutor 逻辑）。"""
+        mock_eval = _MockEvaluationExecutor()
+        return mock_eval.evaluate_batch(extraction_results, sample_set)
+
+    def compute_accuracy(self, eval_records: list[EvalRecord]) -> float:
+        """计算准确率：correct_count / total_count。"""
+        total = len(eval_records)
+        if total == 0:
+            return 0.0
+        correct_count = sum(1 for r in eval_records if r.correct)
+        return correct_count / total
+
 
 def _build_model_client(model_config: dict[str, Any] | None) -> Any:
     """根据 model 配置构建 ModelClient。
@@ -320,13 +338,20 @@ def _build_model_client(model_config: dict[str, Any] | None) -> Any:
         return None
 
 
-def create_executors(config: dict[str, Any]) -> dict[str, Any]:
+def create_executors(
+    config: dict[str, Any],
+    use_mock: bool | None = None,
+) -> dict[str, Any]:
     """从配置创建所有 executor 实例。
 
-    第一版返回 Mock 实现，后续 PR 再接入真实实现。
+    PR4 Mock 边界收敛：
+    - ``use_mock=True``：强制使用 mock executor（用于单元测试 / 无 model_client 的本地开发）。
+    - ``use_mock=False``：强制使用真实 executor；若 model_client 不可用则抛出 RuntimeError。
+    - ``use_mock=None``（默认）：自动判断，有 model_client 则真实，否则 mock。
 
     Args:
         config: 配置字典，可包含 ``models`` 子配置。
+        use_mock: 是否强制使用 mock executor。
 
     Returns:
         包含所有 executor 实例的字典，键为 executor 名称：
@@ -347,8 +372,17 @@ def create_executors(config: dict[str, Any]) -> dict[str, Any]:
 
     model_client = _build_model_client(extraction_model_config or optimizer_model_config)
 
-    # 当 model_client 可用时，使用真实 executor 替代对应 Mock
-    if model_client is not None:
+    # PR4: 根据 use_mock 决定是否使用真实 executor
+    # use_mock=False 且 model_client 不可用时，直接报错（不允许 fallback 到 mock）
+    if use_mock is False and model_client is None:
+        raise RuntimeError(
+            "use_mock=false 但 model_client 不可用。"
+            "请配置有效的 models.* 配置，或显式设置 use_mock=true 以使用 mock 模式。"
+        )
+
+    # 当 model_client 可用且未强制 mock 时，使用真实 executor
+    use_real = model_client is not None and use_mock is not True
+    if use_real:
         extraction_executor: Any = ExtractionExecutor(model_client, extraction_model_config)
         evaluation_executor: Any = EvaluationExecutor()
         analysis_executor: Any = AnalysisExecutor(model_client, optimizer_model_config)
@@ -368,7 +402,7 @@ def create_executors(config: dict[str, Any]) -> dict[str, Any]:
         "patch_validator": PatchValidator(),
         "merge": MergeExecutor(),
         "toxicity_test": ToxicityTestExecutor(),
-        "compression": _MockCompressionExecutor(),
+        "compression": CompressionExecutor(model_client=model_client),
         "fewshot": fewshot_executor,
         "model_client": model_client,
     }

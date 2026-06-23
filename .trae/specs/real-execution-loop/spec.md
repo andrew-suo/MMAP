@@ -349,19 +349,95 @@ PR2 阶段 Step 7 SHALL 基于 base_eval 和 patched_eval 做 patch set 级 tran
 
 ### Requirement: CompressionExecutor
 
-系统 SHALL 提供 CompressionExecutor，实现真实 prompt 压缩。
+系统 SHALL 提供 CompressionExecutor，实现真实 prompt 压缩，替换 `_MockCompressionExecutor`。
 
-#### Scenario: 超限触发
-- **WHEN** prompt 超过 line_limit 或 char_limit
-- **THEN** 启动压缩
+#### Scenario: 超限检测
+- **WHEN** prompt 优化完成后检查 line_count > line_limit 或 char_count > char_limit
+- **THEN** 启动压缩；extraction prompt 使用 extraction_prompt.line_limit / char_limit，analysis prompt 使用 analysis_prompt.line_limit / char_limit
+
+#### Scenario: 未超限不压缩
+- **WHEN** prompt 未超限
+- **THEN** compressed=false, accepted=false, rejected_reason="NOT_NEEDED"，生成轻量 compression report
+
+#### Scenario: 压缩策略
+- **WHEN** 触发压缩
+- **THEN** 使用 llm_compress_preserve_behavior 策略：删除重复规则、合并相近规则、简化冗余表述、保留关键约束和 output schema、不改变业务语义、不删除 section 层级和 ID、不修改 immutable section
+
+#### Scenario: 压缩约束
+- **WHEN** 执行压缩
+- **THEN** 不允许修改 immutable section、不允许修改 output schema、不允许删除 section ID、不允许改变 prompt_type、不允许移除强约束、压缩后必须可 render、压缩后必须重新测试
+
+#### Scenario: 压缩后重新测试（extraction 模式）
+- **WHEN** extraction prompt 压缩完成
+- **THEN** 使用 compressed_extraction_prompt + 当前 few-shot set + SampleBatch 重新执行 ExtractionExecutor → EvaluationExecutor
+
+#### Scenario: 压缩后重新测试（analysis 模式）
+- **WHEN** analysis prompt 压缩完成
+- **THEN** 使用 compressed_analysis_prompt + 本轮 extraction_results + SampleBatch 重新执行 AnalysisExecutor
 
 #### Scenario: 接受标准
-- **WHEN** 压缩完成
-- **THEN** compressed_accuracy >= pre_compression_accuracy 且无新增 regression 才接受
+- **WHEN** 压缩后测试完成
+- **THEN** post_compression_accuracy >= pre_compression_accuracy 且 broken_sample_ids 为空才接受；否则拒绝压缩，保留未压缩 prompt
 
-#### Scenario: 压缩失败保留原 prompt
-- **WHEN** 压缩后指标下降
-- **THEN** 拒绝压缩，保留未压缩 prompt
+#### Scenario: 压缩后仍超限
+- **WHEN** 压缩后长度仍超限但指标不下降
+- **THEN** 可以接受，但 compression_report 中标记 still_over_limit=true
+
+#### Scenario: CompressionReport 字段完整
+- **WHEN** 压缩流程完成
+- **THEN** CompressionReport 包含：id、prompt_type、base_prompt_id、compressed_prompt_id、triggered、accepted、rejected_reason、line_count_before、line_count_after、char_count_before、char_count_after、base_accuracy、pre_compression_accuracy、post_compression_accuracy、broken_sample_ids、fixed_sample_ids、warnings
+
+### Requirement: Run Summary
+
+系统 SHALL 在每次 run 完成后生成 run_summary.json，用于快速判断 run 是否成功、是否有收益、是否发生回滚、是否存在风险。
+
+#### Scenario: run_summary 字段完整
+- **WHEN** run 完成
+- **THEN** run_summary.json 包含：run_id、status、start_time、end_time、duration_seconds、prompt_structuring_status、prompt_optimization（iterations、base_accuracy_first、final_accuracy_last、best_accuracy、total_accepted/rejected/toxic/ineffective_patches、rollback_count、no_progress_count、compression_triggered/accepted_count、batch_size_history）、analysis_prompt（base_accuracy_first、final_accuracy_last、total_accepted_patches、rollback_count、no_progress_count、compression_triggered/accepted_count）、fewshot_optimization（iterations、base_accuracy_first、final_accuracy_last、selected_example_ids、accepted）
+
+### Requirement: 全链路 Artifact 收敛
+
+系统 SHALL 保存全链路可追踪的 artifact，形成可复现的目录规范。
+
+#### Scenario: Run 级目录
+- **WHEN** 一次 run 完成
+- **THEN** runs/{run_id}/ 下保存：run_config.yaml、run_plan.json、run_summary.json、prompt_versions.jsonl、patch_apply_reports.jsonl、final_extraction_prompt.json、final_analysis_prompt.json、final_fewshot_examples.jsonl、structured_extraction_prompt.json、structured_analysis_prompt.json
+
+#### Scenario: Prompt iteration 目录
+- **WHEN** 一轮 prompt optimization 完成
+- **THEN** prompt_optimization/iteration_{i}/ 下保存：sample_batch.json、sample_traces.jsonl、sample_state_before.json、sample_state_after.json、batch_size_controller_before.json、batch_size_controller_after.json、extraction/、analysis/
+
+#### Scenario: Extraction artifact 完整
+- **WHEN** extraction stage 完成
+- **THEN** extraction/ 下保存 24 个文件：base_results、base_eval、analysis_results、draft_patches、validated_patches、rejected_patches、initial_merge_report、transition_report、ineffective_patches、toxicity_report、patch_test_records、safe_patches、toxic_patches、final_merge_report、final_merged_patches、patched_prompt、patch_apply_report、patched_results、patched_eval、final_prompt、final_results、final_eval、compression_report、metrics
+
+#### Scenario: Analysis artifact 完整
+- **WHEN** analysis stage 完成
+- **THEN** analysis/ 下保存 21 个文件：base_metrics、reflection_results、draft_patches、validated_patches、rejected_patches、initial_merge_report、transition_report、ineffective_patches、toxicity_report、patch_test_records、safe_patches、toxic_patches、final_merge_report、final_merged_patches、patched_analysis_prompt、patch_apply_report、patched_analysis_results、final_analysis_prompt、final_analysis_results、compression_report、metrics
+
+#### Scenario: Few-shot iteration artifact
+- **WHEN** 一轮 few-shot optimization 完成
+- **THEN** fewshot_optimization/iteration_{i}/ 下保存：sample_batch.json、sample_traces.jsonl、fewshot/（base_results、base_eval、selected_examples、final_results、final_eval、metrics）
+
+#### Scenario: Compression artifact
+- **WHEN** 触发压缩
+- **THEN** 额外保存 extraction/compression_report.json 或 analysis/compression_report.json
+
+### Requirement: Mock 边界收敛
+
+系统 SHALL 在真实运行模式下不依赖 mock executor。
+
+#### Scenario: 真实运行模式
+- **WHEN** use_mock=false
+- **THEN** model_client 必须可用，compression 必须使用真实 CompressionExecutor，merge / toxicity / patch apply 不允许 fallback 到 mock
+
+#### Scenario: 缺少 model_client 报错
+- **WHEN** use_mock=false 且 model_client 不可用
+- **THEN** CLI 应直接报错，除非 use_mock=true
+
+#### Scenario: mock 仅用于测试和开发
+- **WHEN** use_mock=true 或无 model_client 的本地开发
+- **THEN** 允许使用 mock executor，仅用于单元测试和 debug 模式
 
 ### Requirement: FewshotExecutor
 
@@ -408,12 +484,20 @@ PR2 阶段 Step 7 SHALL 基于 base_eval 和 patched_eval 做 patch set 级 tran
 系统 SHALL 支持用 10～20 条小数据集跑通端到端闭环。
 
 #### Scenario: 完整三阶段 Run
-- **WHEN** 执行 `python -m mmap_optimizer.refactored.cli run --config configs/refactored_config.yaml`
+- **WHEN** 执行 `python -m mmap_optimizer.refactored.cli run --config configs/refactored_smoke.yaml`
 - **THEN** 完成 Prompt Structuring → 1 轮 Prompt Optimization → 1 轮 Few-shot Optimization
 
 #### Scenario: 无 mock output
 - **WHEN** Run 完成
 - **THEN** 所有结果来自真实模型调用，不出现 "mock output" 字样
+
+#### Scenario: Smoke 验收产物
+- **WHEN** Run 完成
+- **THEN** run_summary.json、final_extraction_prompt.json、final_analysis_prompt.json、final_fewshot_examples.jsonl、compression_report.json、sample_traces.jsonl、toxicity_report.json 均存在
+
+#### Scenario: 小数据集要求
+- **WHEN** 准备 smoke 数据集
+- **THEN** 包含正确样本、错误样本、至少一个可被 patch 修复的错误、至少一个可能触发 toxic 的样本、至少一个可进入 few-shot 槽位的困难样本
 
 ## MODIFIED Requirements
 

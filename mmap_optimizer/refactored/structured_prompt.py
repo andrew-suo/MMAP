@@ -59,6 +59,7 @@ class StructuredPrompt:
     sections: list[PromptSection]
     raw_markdown: str
     version: int = 1
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典格式。"""
@@ -68,6 +69,7 @@ class StructuredPrompt:
             "sections": [section.to_dict() for section in self.sections],
             "raw_markdown": self.raw_markdown,
             "version": self.version,
+            "metadata": dict(self.metadata),
         }
 
     @classmethod
@@ -80,6 +82,7 @@ class StructuredPrompt:
             sections=sections,
             raw_markdown=data["raw_markdown"],
             version=data.get("version", 1),
+            metadata=data.get("metadata", {}),
         )
 
     def to_markdown(self) -> str:

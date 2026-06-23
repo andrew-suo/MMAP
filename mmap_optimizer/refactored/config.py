@@ -32,6 +32,9 @@ class RunConfig:
     """运行配置。"""
     seed: int = 42
     output_dir: str = "runs/exp_001"
+    # PR4: Mock 边界收敛。None=自动判断（有 model_client 则真实，否则 mock）；
+    # True=强制 mock；False=强制真实（缺 model_client 时报错）
+    use_mock: bool | None = None
 
 
 @dataclass
@@ -61,6 +64,7 @@ class RefactoredConfig:
             "run": {
                 "seed": self.run.seed,
                 "output_dir": self.run.output_dir,
+                "use_mock": self.run.use_mock,
             },
             "dataset": {
                 "path": self.dataset.path,
@@ -122,7 +126,7 @@ class RefactoredConfig:
                     "type": self.fewshot_optimization.sampler.type,
                 },
             },
-            "models": dict(self.models),
+            "models": dict(self.models) if isinstance(self.models, dict) else {},
         }
 
     @classmethod
@@ -135,11 +139,16 @@ class RefactoredConfig:
         prompt_optimization_data = data.get("prompt_optimization", {})
         fewshot_optimization_data = data.get("fewshot_optimization", {})
         models_data = data.get("models", {})
+        # PR4: 简单 YAML 解析器可能将 `models: {}` 解析为字符串 "{}"，
+        # 这里做一次类型修正，确保 models 始终为 dict。
+        if not isinstance(models_data, dict):
+            models_data = {}
 
         # 构建 RunConfig
         run_config = RunConfig(
             seed=run_data.get("seed", 42),
             output_dir=run_data.get("output_dir", "runs/exp_001"),
+            use_mock=run_data.get("use_mock", None),
         )
 
         # 构建 DatasetConfig

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .config import load_config
@@ -59,6 +60,18 @@ def main() -> None:
         "--output-dir",
         type=str,
         help="输出目录 (覆盖配置文件中的设置)",
+    )
+    run_parser.add_argument(
+        "--use-mock",
+        action="store_true",
+        default=None,
+        help="强制使用 mock executor（用于本地开发 / 无 model_client 环境）",
+    )
+    run_parser.add_argument(
+        "--no-mock",
+        action="store_true",
+        default=None,
+        help="强制使用真实 executor（缺 model_client 时报错）",
     )
 
     # validate 命令
@@ -125,13 +138,25 @@ def run_command(args: argparse.Namespace) -> None:
     print(f"Analysis prompt: {analysis_prompt_path}")
     print(f"输出目录: {config.run.output_dir}")
 
+    # PR4: 解析 use_mock 标志
+    use_mock: bool | None = None
+    if args.use_mock:
+        use_mock = True
+    elif args.no_mock:
+        use_mock = False
+
     # 创建运行器
     print("\n初始化 MMAP Runner...")
-    runner = MMAPRunner(
-        config=config,
-        extraction_prompt_path=extraction_prompt_path,
-        analysis_prompt_path=analysis_prompt_path,
-    )
+    try:
+        runner = MMAPRunner(
+            config=config,
+            extraction_prompt_path=extraction_prompt_path,
+            analysis_prompt_path=analysis_prompt_path,
+            use_mock=use_mock,
+        )
+    except RuntimeError as e:
+        print(f"错误: {e}")
+        sys.exit(1)
 
     # 显示 Run Plan
     print("\nRun Plan:")
@@ -149,23 +174,50 @@ def run_command(args: argparse.Namespace) -> None:
     print("\n运行完成!")
     print("\nRun Summary:")
     print(f"  状态: {summary.status}")
-    print(f"  Prompt Structuring: {summary.prompt_structuring_completed}")
-    print(f"  Prompt Optimization 轮数: {summary.prompt_optimization_rounds}")
-    print(f"  Few-shot Optimization 轮数: {summary.fewshot_optimization_rounds}")
-    print(f"  最终 Extraction Prompt ID: {summary.final_extraction_prompt_id}")
+    if summary.start_time:
+        print(f"  开始时间: {summary.start_time}")
+    if summary.end_time:
+        print(f"  结束时间: {summary.end_time}")
+    if summary.duration_seconds is not None:
+        print(f"  耗时: {summary.duration_seconds:.3f}s")
+    print(f"  Prompt Structuring: {summary.prompt_structuring_status}")
+
+    po = summary.prompt_optimization
+    print(f"\n  [Prompt Optimization]")
+    print(f"    迭代轮数: {po.iterations}")
+    if po.base_accuracy_first is not None:
+        print(f"    首轮 base accuracy: {po.base_accuracy_first:.4f}")
+    if po.final_accuracy_last is not None:
+        print(f"    末轮 final accuracy: {po.final_accuracy_last:.4f}")
+    if po.best_accuracy is not None:
+        print(f"    最佳 accuracy: {po.best_accuracy:.4f}")
+    print(f"    接受/拒绝/测毒 patches: {po.total_accepted_patches}/{po.total_rejected_patches}/{po.total_toxic_patches}")
+    print(f"    rollback/no_progress: {po.rollback_count}/{po.no_progress_count}")
+    print(f"    compression 触发/接受: {po.compression_triggered_count}/{po.compression_accepted_count}")
+
+    ap = summary.analysis_prompt
+    print(f"\n  [Analysis Prompt]")
+    if ap.base_accuracy_first is not None:
+        print(f"    首轮 base accuracy: {ap.base_accuracy_first:.4f}")
+    if ap.final_accuracy_last is not None:
+        print(f"    末轮 final accuracy: {ap.final_accuracy_last:.4f}")
+    print(f"    接受 patches: {ap.total_accepted_patches}")
+    print(f"    rollback/no_progress: {ap.rollback_count}/{ap.no_progress_count}")
+    print(f"    compression 触发/接受: {ap.compression_triggered_count}/{ap.compression_accepted_count}")
+
+    fo = summary.fewshot_optimization
+    print(f"\n  [Few-shot Optimization]")
+    print(f"    迭代轮数: {fo.iterations}")
+    if fo.base_accuracy_first is not None:
+        print(f"    首轮 base accuracy: {fo.base_accuracy_first:.4f}")
+    if fo.final_accuracy_last is not None:
+        print(f"    末轮 final accuracy: {fo.final_accuracy_last:.4f}")
+    print(f"    accepted: {fo.accepted}")
+    print(f"    选中示例数: {len(fo.selected_example_ids)}")
+
+    print(f"\n  最终 Extraction Prompt ID: {summary.final_extraction_prompt_id}")
     print(f"  最终 Analysis Prompt ID: {summary.final_analysis_prompt_id}")
     print(f"  最终 Few-shot 示例数: {summary.final_fewshot_example_count}")
-    print(f"  Extraction Patch 接受数: {summary.total_extraction_accepted_patches}")
-    print(f"  Analysis Patch 接受数: {summary.total_analysis_accepted_patches}")
-
-    if summary.extraction_accuracy_delta is not None:
-        print(f"  Extraction 准确率变化: {summary.extraction_accuracy_delta:.4f}")
-
-    if summary.analysis_accuracy_delta is not None:
-        print(f"  Analysis 准确率变化: {summary.analysis_accuracy_delta:.4f}")
-
-    if summary.fewshot_accuracy_delta is not None:
-        print(f"  Few-shot 准确率变化: {summary.fewshot_accuracy_delta:.4f}")
 
     print(f"\n输出目录: {config.run.output_dir}")
     print("=" * 60)

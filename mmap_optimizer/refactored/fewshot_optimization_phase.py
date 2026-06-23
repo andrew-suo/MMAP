@@ -470,10 +470,10 @@ class FewshotOptimizationPhase:
         result: FewshotOptimizationIterationResult,
     ) -> None:
         """保存单轮迭代的 artifacts。"""
-        iteration_dir = self.output_dir / f"fewshot_iter_{iteration:03d}"
-        iteration_dir.mkdir(parents=True, exist_ok=True)
-
         import json
+
+        iteration_dir = self.output_dir / "fewshot_optimization" / f"iteration_{iteration}"
+        iteration_dir.mkdir(parents=True, exist_ok=True)
 
         # 保存 batch
         (iteration_dir / "sample_batch.json").write_text(
@@ -481,14 +481,49 @@ class FewshotOptimizationPhase:
             encoding="utf-8",
         )
 
-        # 保存 metrics
-        (iteration_dir / "fewshot_metrics.json").write_text(
-            json.dumps(result.metrics.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        # PR4: 保存 sample traces
+        traces = self.sample_set.get_traces_for_iteration("fewshot_optimization", iteration)
+        with open(iteration_dir / "sample_traces.jsonl", "w", encoding="utf-8") as f:
+            for trace in traces:
+                trace_dict = {
+                    "sample_id": trace.sample_id,
+                    "phase": trace.phase,
+                    "iteration": trace.iteration,
+                    "selected": trace.selected,
+                }
+                f.write(json.dumps(trace_dict, ensure_ascii=False) + "\n")
 
-        # 保存 few-shot examples
-        (iteration_dir / "selected_examples.json").write_text(
-            json.dumps([e.to_dict() for e in result.new_fewshot_examples], indent=2, ensure_ascii=False),
-            encoding="utf-8",
+        # PR4: 保存 fewshot/ 子目录
+        fewshot_dir = iteration_dir / "fewshot"
+        fewshot_dir.mkdir(parents=True, exist_ok=True)
+
+        def _write_jsonl(path, items):
+            with open(path, "w", encoding="utf-8") as f:
+                for item in items:
+                    data = item.to_dict() if hasattr(item, "to_dict") else item
+                    f.write(json.dumps(data, ensure_ascii=False) + "\n")
+
+        def _write_json(path, data):
+            d = data.to_dict() if hasattr(data, "to_dict") else data
+            path.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        # 保存 base_results 和 base_eval (from result)
+        _write_jsonl(fewshot_dir / "base_results.jsonl", getattr(result, "base_results", []))
+        _write_jsonl(fewshot_dir / "base_eval.jsonl", getattr(result, "base_eval_records", []))
+
+        # 保存 selected_examples
+        _write_jsonl(fewshot_dir / "selected_examples.jsonl", result.new_fewshot_examples)
+
+        # 保存 final_results 和 final_eval
+        _write_jsonl(fewshot_dir / "final_results.jsonl", getattr(result, "final_results", []))
+        _write_jsonl(fewshot_dir / "final_eval.jsonl", getattr(result, "final_eval_records", []))
+
+        # 保存 metrics
+        _write_json(fewshot_dir / "metrics.json", result.metrics)
+
+        # 保留旧的 metrics 和 examples 文件（向后兼容）
+        _write_json(iteration_dir / "fewshot_metrics.json", result.metrics)
+        _write_json(
+            iteration_dir / "selected_examples.json",
+            [e.to_dict() for e in result.new_fewshot_examples],
         )

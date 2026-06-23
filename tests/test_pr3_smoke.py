@@ -395,7 +395,7 @@ def test_phase_runs_one_round_real_merge_and_toxicity():
         )
 
         # 验证 artifact 文件
-        extraction_dir = output_dir / "prompt_iter_001" / "extraction"
+        extraction_dir = output_dir / "prompt_optimization" / "iteration_1" / "extraction"
 
         toxicity_report_path = extraction_dir / "toxicity_report.json"
         assert toxicity_report_path.exists(), "toxicity_report.json 应存在"
@@ -434,7 +434,7 @@ def test_toxicity_report_contains_required_fields():
         }
         phase = _run_phase_with_effects(patch_effects, output_dir)
 
-        extraction_dir = output_dir / "prompt_iter_001" / "extraction"
+        extraction_dir = output_dir / "prompt_optimization" / "iteration_1" / "extraction"
         report = _read_json(extraction_dir / "toxicity_report.json")
 
         # 必需字段
@@ -498,7 +498,7 @@ def test_patch_test_records_traceable():
         }
         _run_phase_with_effects(patch_effects, output_dir)
 
-        extraction_dir = output_dir / "prompt_iter_001" / "extraction"
+        extraction_dir = output_dir / "prompt_optimization" / "iteration_1" / "extraction"
 
         records_path = extraction_dir / "patch_test_records.jsonl"
         assert records_path.exists(), "patch_test_records.jsonl 应存在"
@@ -578,7 +578,7 @@ def test_extraction_prompt_advancement_based_only_on_safe_patches():
         }
         phase = _run_phase_with_effects(patch_effects, output_dir)
 
-        extraction_dir = output_dir / "prompt_iter_001" / "extraction"
+        extraction_dir = output_dir / "prompt_optimization" / "iteration_1" / "extraction"
 
         # safe_patches 只含 P1
         safe_patches = _read_jsonl(extraction_dir / "safe_patches.jsonl")

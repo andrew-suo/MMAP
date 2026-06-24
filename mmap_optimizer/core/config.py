@@ -87,10 +87,20 @@ class DatasetConfig:
 
 
 @dataclass
+class PromptsConfig:
+    """Prompt 文件路径配置。"""
+    extraction: str = "prompts/extraction.txt"
+    analysis: str = "prompts/analysis.txt"
+    analysis_task: str = "prompts/analysis_task.txt"
+    analysis_reflection: str = "prompts/analysis_reflection.txt"
+
+
+@dataclass
 class RefactoredConfig:
     """重构后的完整配置。"""
     run: RunConfig = field(default_factory=RunConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
+    prompts: PromptsConfig = field(default_factory=PromptsConfig)
     prompt_structuring: PromptStructuringConfig = field(default_factory=PromptStructuringConfig)
     sampling: SamplerConfig = field(default_factory=SamplerConfig)
     prompt_optimization: PromptOptimizationConfig = field(default_factory=PromptOptimizationConfig)
@@ -111,6 +121,12 @@ class RefactoredConfig:
                 "format": self.dataset.format,
                 "image_root": self.dataset.image_root,
                 "ground_truth_path": self.dataset.ground_truth_path,
+            },
+            "prompts": {
+                "extraction": self.prompts.extraction,
+                "analysis": self.prompts.analysis,
+                "analysis_task": self.prompts.analysis_task,
+                "analysis_reflection": self.prompts.analysis_reflection,
             },
             "prompt_structuring": {
                 "enabled": self.prompt_structuring.enabled,
@@ -199,6 +215,15 @@ class RefactoredConfig:
             ground_truth_path=dataset_data.get("ground_truth_path"),
         )
 
+        # 构建 PromptsConfig
+        prompts_data = data.get("prompts", {})
+        prompts_config = PromptsConfig(
+            extraction=prompts_data.get("extraction", "prompts/extraction.txt"),
+            analysis=prompts_data.get("analysis", "prompts/analysis.txt"),
+            analysis_task=prompts_data.get("analysis_task", "prompts/analysis_task.txt"),
+            analysis_reflection=prompts_data.get("analysis_reflection", "prompts/analysis_reflection.txt"),
+        )
+
         # 构建 PromptStructuringConfig
         prompt_structuring_config = PromptStructuringConfig(
             enabled=prompt_structuring_data.get("enabled", True),
@@ -271,6 +296,7 @@ class RefactoredConfig:
         return cls(
             run=run_config,
             dataset=dataset_config,
+            prompts=prompts_config,
             prompt_structuring=prompt_structuring_config,
             sampling=sampling_config,
             prompt_optimization=prompt_optimization_config,

@@ -259,13 +259,17 @@ class MMAPRunner:
     def __init__(
         self,
         config: RefactoredConfig,
-        extraction_prompt_path: str | Path,
-        analysis_prompt_path: str | Path,
+        extraction_prompt_path: str | Path | None = None,
+        analysis_prompt_path: str | Path | None = None,
         use_mock: bool | None = None,
     ):
         self.config = config
-        self.extraction_prompt_path = Path(extraction_prompt_path)
-        self.analysis_prompt_path = Path(analysis_prompt_path)
+        self.extraction_prompt_path = Path(
+            extraction_prompt_path or config.prompts.extraction
+        )
+        self.analysis_prompt_path = Path(
+            analysis_prompt_path or config.prompts.analysis
+        )
 
         # 输出目录
         self.output_dir = Path(config.run.output_dir)

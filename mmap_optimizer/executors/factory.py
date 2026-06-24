@@ -380,12 +380,21 @@ def create_executors(
             "请配置有效的 models.* 配置，或显式设置 use_mock=true 以使用 mock 模式。"
         )
 
+    prompts_config = config.get("prompts", {}) if isinstance(config, dict) else {}
+    analysis_task_template_path = prompts_config.get("analysis_task")
+    analysis_reflection_template_path = prompts_config.get("analysis_reflection")
+
     # 当 model_client 可用且未强制 mock 时，使用真实 executor
     use_real = model_client is not None and use_mock is not True
     if use_real:
         extraction_executor: Any = ExtractionExecutor(model_client, extraction_model_config)
         evaluation_executor: Any = EvaluationExecutor()
-        analysis_executor: Any = AnalysisExecutor(model_client, optimizer_model_config)
+        analysis_executor: Any = AnalysisExecutor(
+            model_client,
+            optimizer_model_config,
+            analysis_task_template_path=analysis_task_template_path,
+            analysis_reflection_template_path=analysis_reflection_template_path,
+        )
         fewshot_executor: Any = FewshotExecutor(model_client, extraction_model_config)
     else:
         extraction_executor = _MockExtractionExecutor()

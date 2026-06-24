@@ -94,6 +94,7 @@ class PromptsConfig:
     analysis_task: str = "prompts/analysis_task.txt"
     analysis_reflection: str = "prompts/analysis_reflection.txt"
     prompt_standardization: str = "prompts/prompt_standardization.txt"
+    patch_generation: str = "prompts/patch_generation.txt"
 
 
 @dataclass
@@ -129,6 +130,7 @@ class RefactoredConfig:
                 "analysis_task": self.prompts.analysis_task,
                 "analysis_reflection": self.prompts.analysis_reflection,
                 "prompt_standardization": self.prompts.prompt_standardization,
+                "patch_generation": self.prompts.patch_generation,
             },
             "prompt_structuring": {
                 "enabled": self.prompt_structuring.enabled,
@@ -225,6 +227,7 @@ class RefactoredConfig:
             analysis_task=prompts_data.get("analysis_task", "prompts/analysis_task.txt"),
             analysis_reflection=prompts_data.get("analysis_reflection", "prompts/analysis_reflection.txt"),
             prompt_standardization=prompts_data.get("prompt_standardization", "prompts/prompt_standardization.txt"),
+            patch_generation=prompts_data.get("patch_generation", "prompts/patch_generation.txt"),
         )
 
         # 构建 PromptStructuringConfig

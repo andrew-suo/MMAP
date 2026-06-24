@@ -75,6 +75,12 @@ def main() -> None:
         help="Prompt 标准化模板文件路径 (默认: prompts/prompt_standardization.txt)",
     )
     run_parser.add_argument(
+        "--patch-generation-prompt",
+        type=str,
+        default="prompts/patch_generation.txt",
+        help="Patch 生成模板文件路径 (默认: prompts/patch_generation.txt)",
+    )
+    run_parser.add_argument(
         "--output-dir",
         type=str,
         help="输出目录 (覆盖配置文件中的设置)",
@@ -146,6 +152,7 @@ def run_command(args: argparse.Namespace) -> None:
     analysis_task_prompt_path = Path(args.analysis_task_prompt)
     analysis_reflection_prompt_path = Path(args.analysis_reflection_prompt)
     prompt_standardization_path = Path(args.prompt_standardization)
+    patch_generation_prompt_path = Path(args.patch_generation_prompt)
 
     if not extraction_prompt_path.exists():
         print(f"错误: Extraction prompt 文件不存在: {extraction_prompt_path}")
@@ -167,12 +174,17 @@ def run_command(args: argparse.Namespace) -> None:
         print(f"错误: Prompt standardization 文件不存在: {prompt_standardization_path}")
         return
 
+    if not patch_generation_prompt_path.exists():
+        print(f"错误: Patch generation prompt 文件不存在: {patch_generation_prompt_path}")
+        return
+
     # 更新配置中的 prompt 路径
     config.prompts.extraction = str(extraction_prompt_path)
     config.prompts.analysis = str(analysis_prompt_path)
     config.prompts.analysis_task = str(analysis_task_prompt_path)
     config.prompts.analysis_reflection = str(analysis_reflection_prompt_path)
     config.prompts.prompt_standardization = str(prompt_standardization_path)
+    config.prompts.patch_generation = str(patch_generation_prompt_path)
     config.prompt_structuring.standardization_prompt_path = str(prompt_standardization_path)
 
     print(f"Extraction prompt: {extraction_prompt_path}")
@@ -180,6 +192,7 @@ def run_command(args: argparse.Namespace) -> None:
     print(f"Analysis task prompt: {analysis_task_prompt_path}")
     print(f"Analysis reflection prompt: {analysis_reflection_prompt_path}")
     print(f"Prompt standardization: {prompt_standardization_path}")
+    print(f"Patch generation prompt: {patch_generation_prompt_path}")
     print(f"输出目录: {config.run.output_dir}")
 
     # PR4: 解析 use_mock 标志

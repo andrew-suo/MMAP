@@ -93,6 +93,7 @@ class PromptsConfig:
     analysis: str = "prompts/analysis.txt"
     analysis_task: str = "prompts/analysis_task.txt"
     analysis_reflection: str = "prompts/analysis_reflection.txt"
+    prompt_standardization: str = "prompts/prompt_standardization.txt"
 
 
 @dataclass
@@ -127,6 +128,7 @@ class RefactoredConfig:
                 "analysis": self.prompts.analysis,
                 "analysis_task": self.prompts.analysis_task,
                 "analysis_reflection": self.prompts.analysis_reflection,
+                "prompt_standardization": self.prompts.prompt_standardization,
             },
             "prompt_structuring": {
                 "enabled": self.prompt_structuring.enabled,
@@ -222,12 +224,14 @@ class RefactoredConfig:
             analysis=prompts_data.get("analysis", "prompts/analysis.txt"),
             analysis_task=prompts_data.get("analysis_task", "prompts/analysis_task.txt"),
             analysis_reflection=prompts_data.get("analysis_reflection", "prompts/analysis_reflection.txt"),
+            prompt_standardization=prompts_data.get("prompt_standardization", "prompts/prompt_standardization.txt"),
         )
 
         # 构建 PromptStructuringConfig
         prompt_structuring_config = PromptStructuringConfig(
             enabled=prompt_structuring_data.get("enabled", True),
             use_model_when_structure_poor=prompt_structuring_data.get("use_model_when_structure_poor", True),
+            standardization_prompt_path=prompts_config.prompt_standardization,
         )
 
         # 构建 SamplerConfig

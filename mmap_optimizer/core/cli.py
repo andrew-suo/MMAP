@@ -69,6 +69,12 @@ def main() -> None:
         help="Analysis reflection 消息模板文件路径 (默认: prompts/analysis_reflection.txt)",
     )
     run_parser.add_argument(
+        "--prompt-standardization",
+        type=str,
+        default="prompts/prompt_standardization.txt",
+        help="Prompt 标准化模板文件路径 (默认: prompts/prompt_standardization.txt)",
+    )
+    run_parser.add_argument(
         "--output-dir",
         type=str,
         help="输出目录 (覆盖配置文件中的设置)",
@@ -139,6 +145,7 @@ def run_command(args: argparse.Namespace) -> None:
     analysis_prompt_path = Path(args.analysis_prompt)
     analysis_task_prompt_path = Path(args.analysis_task_prompt)
     analysis_reflection_prompt_path = Path(args.analysis_reflection_prompt)
+    prompt_standardization_path = Path(args.prompt_standardization)
 
     if not extraction_prompt_path.exists():
         print(f"错误: Extraction prompt 文件不存在: {extraction_prompt_path}")
@@ -156,16 +163,23 @@ def run_command(args: argparse.Namespace) -> None:
         print(f"错误: Analysis reflection prompt 文件不存在: {analysis_reflection_prompt_path}")
         return
 
+    if not prompt_standardization_path.exists():
+        print(f"错误: Prompt standardization 文件不存在: {prompt_standardization_path}")
+        return
+
     # 更新配置中的 prompt 路径
     config.prompts.extraction = str(extraction_prompt_path)
     config.prompts.analysis = str(analysis_prompt_path)
     config.prompts.analysis_task = str(analysis_task_prompt_path)
     config.prompts.analysis_reflection = str(analysis_reflection_prompt_path)
+    config.prompts.prompt_standardization = str(prompt_standardization_path)
+    config.prompt_structuring.standardization_prompt_path = str(prompt_standardization_path)
 
     print(f"Extraction prompt: {extraction_prompt_path}")
     print(f"Analysis prompt: {analysis_prompt_path}")
     print(f"Analysis task prompt: {analysis_task_prompt_path}")
     print(f"Analysis reflection prompt: {analysis_reflection_prompt_path}")
+    print(f"Prompt standardization: {prompt_standardization_path}")
     print(f"输出目录: {config.run.output_dir}")
 
     # PR4: 解析 use_mock 标志

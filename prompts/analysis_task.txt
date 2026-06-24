@@ -1,0 +1,24 @@
+# Extraction Prompt (for reference)
+{extraction_prompt}
+
+# Extraction Result
+sample_id: {sample_id}
+status: {status}
+raw_output: {raw_output}
+parsed_output: {parsed_output}
+{error_details}
+
+# Sample Input
+{sample_input}
+
+{sample_metadata}
+
+# Ground Truth
+{ground_truth}
+
+# Task
+Analyze whether the extraction result is correct against the ground truth.
+Respond with a JSON object containing:
+- "is_correct": boolean indicating whether the extraction result is correct
+- "error_reason": string or null, the reason if the extraction is incorrect
+- "patch_suggestion": object or null, suggested patch with keys "target_section", "operation", "content"

@@ -1,0 +1,24 @@
+# Extraction Result
+sample_id: {sample_id}
+raw_output: {raw_output}
+parsed_output: {parsed_output}
+status: {status}
+
+# Analysis Result (to reflect on)
+judgement: {judgement}
+analysis_correct: {analysis_correct}
+error_reason: {error_reason}
+
+# Sample Input
+{sample_input}
+
+# Ground Truth
+{ground_truth}
+
+# Task
+The analysis above misjudged the extraction result. 
+Reflect on why the analysis was wrong and how to fix the analysis prompt.
+Respond with a JSON object containing:
+- "error_reason": why the analysis misjudged the extraction correctness
+- "patch_suggestion": suggested fix to the analysis prompt with keys "target_section", "operation", "content"
+- "notes": list of additional observations

@@ -15,6 +15,7 @@ from ..model.client import ModelClient
 from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionResult
 from ..data.sample import SampleSet, SampleSpec
 from ..prompt.structured_prompt import StructuredPrompt, StructuredPromptRenderer
+from ..prompt.prompt_manager import render_prompt
 from .evaluation_executor import normalize_label
 
 
@@ -27,12 +28,16 @@ class AnalysisExecutor:
         model_config: dict[str, Any] | None = None,
         primary_answer_fields: list[str] | None = None,
         label_mapping: dict[str, Any] | None = None,
+        analysis_task_template_path: str | None = None,
+        analysis_reflection_template_path: str | None = None,
     ):
         self.model_client = model_client
         self.model_config = model_config or {}
         self.primary_answer_fields = primary_answer_fields or ["result"]
         self.label_mapping = label_mapping
         self.renderer = StructuredPromptRenderer()
+        self.analysis_task_template_path = analysis_task_template_path
+        self.analysis_reflection_template_path = analysis_reflection_template_path
 
     def execute(
         self,
@@ -148,53 +153,80 @@ class AnalysisExecutor:
             else "null"
         )
 
-        user_parts: list[str] = []
-        user_parts.append("# Extraction Prompt (for reference)")
-        user_parts.append(extraction_prompt_text)
-        user_parts.append("")
-        user_parts.append("# Extraction Result")
-        user_parts.append(f"sample_id: {extraction_result.sample_id}")
-        user_parts.append(f"status: {extraction_result.status}")
-        user_parts.append(f"raw_output: {extraction_result.raw_output}")
-        user_parts.append(f"parsed_output: {parsed_output_text}")
-        if extraction_result.error_details:
-            user_parts.append(
-                f"error_details: {json.dumps(extraction_result.error_details, ensure_ascii=False)}"
+        error_details = (
+            f"error_details: {json.dumps(extraction_result.error_details, ensure_ascii=False)}"
+            if extraction_result.error_details
+            else ""
+        )
+
+        sample_metadata = (
+            f"# Sample Metadata\n{json.dumps(sample_spec.metadata, ensure_ascii=False, indent=2)}"
+            if sample_spec.metadata
+            else ""
+        )
+
+        if self.analysis_task_template_path:
+            user_content = render_prompt(
+                self.analysis_task_template_path,
+                extraction_prompt=extraction_prompt_text,
+                sample_id=extraction_result.sample_id,
+                status=extraction_result.status,
+                raw_output=extraction_result.raw_output,
+                parsed_output=parsed_output_text,
+                error_details=error_details,
+                sample_input=json.dumps(sample_spec.input, ensure_ascii=False, indent=2),
+                sample_metadata=sample_metadata,
+                ground_truth=json.dumps(sample_spec.ground_truth, ensure_ascii=False, indent=2),
             )
-        user_parts.append("")
-        user_parts.append("# Sample Input")
-        user_parts.append(json.dumps(sample_spec.input, ensure_ascii=False, indent=2))
-        if sample_spec.metadata:
+        else:
+            user_parts: list[str] = []
+            user_parts.append("# Extraction Prompt (for reference)")
+            user_parts.append(extraction_prompt_text)
             user_parts.append("")
-            user_parts.append("# Sample Metadata")
+            user_parts.append("# Extraction Result")
+            user_parts.append(f"sample_id: {extraction_result.sample_id}")
+            user_parts.append(f"status: {extraction_result.status}")
+            user_parts.append(f"raw_output: {extraction_result.raw_output}")
+            user_parts.append(f"parsed_output: {parsed_output_text}")
+            if extraction_result.error_details:
+                user_parts.append(
+                    f"error_details: {json.dumps(extraction_result.error_details, ensure_ascii=False)}"
+                )
+            user_parts.append("")
+            user_parts.append("# Sample Input")
+            user_parts.append(json.dumps(sample_spec.input, ensure_ascii=False, indent=2))
+            if sample_spec.metadata:
+                user_parts.append("")
+                user_parts.append("# Sample Metadata")
+                user_parts.append(
+                    json.dumps(sample_spec.metadata, ensure_ascii=False, indent=2)
+                )
+            user_parts.append("")
+            user_parts.append("# Ground Truth")
             user_parts.append(
-                json.dumps(sample_spec.metadata, ensure_ascii=False, indent=2)
+                json.dumps(sample_spec.ground_truth, ensure_ascii=False, indent=2)
             )
-        user_parts.append("")
-        user_parts.append("# Ground Truth")
-        user_parts.append(
-            json.dumps(sample_spec.ground_truth, ensure_ascii=False, indent=2)
-        )
-        user_parts.append("")
-        user_parts.append("# Task")
-        user_parts.append(
-            "Analyze whether the extraction result is correct against the ground truth."
-        )
-        user_parts.append("Respond with a JSON object containing:")
-        user_parts.append(
-            '- "is_correct": boolean indicating whether the extraction result is correct'
-        )
-        user_parts.append(
-            '- "error_reason": string or null, the reason if the extraction is incorrect'
-        )
-        user_parts.append(
-            '- "patch_suggestion": object or null, suggested patch with keys '
-            '"target_section", "operation", "content"'
-        )
+            user_parts.append("")
+            user_parts.append("# Task")
+            user_parts.append(
+                "Analyze whether the extraction result is correct against the ground truth."
+            )
+            user_parts.append("Respond with a JSON object containing:")
+            user_parts.append(
+                '- "is_correct": boolean indicating whether the extraction result is correct'
+            )
+            user_parts.append(
+                '- "error_reason": string or null, the reason if the extraction is incorrect'
+            )
+            user_parts.append(
+                '- "patch_suggestion": object or null, suggested patch with keys '
+                '"target_section", "operation", "content"'
+            )
+            user_content = "\n".join(user_parts)
 
         return [
             {"role": "system", "content": system_content},
-            {"role": "user", "content": "\n".join(user_parts)},
+            {"role": "user", "content": user_content},
         ]
 
     def _build_reflection_messages(
@@ -216,44 +248,59 @@ class AnalysisExecutor:
             analysis_result.judgement, ensure_ascii=False
         )
 
-        user_parts: list[str] = []
-        user_parts.append("# Extraction Result")
-        user_parts.append(f"sample_id: {extraction_result.sample_id}")
-        user_parts.append(f"raw_output: {extraction_result.raw_output}")
-        user_parts.append(f"parsed_output: {parsed_output_text}")
-        user_parts.append(f"status: {extraction_result.status}")
-        user_parts.append("")
-        user_parts.append("# Analysis Result (to reflect on)")
-        user_parts.append(f"judgement: {judgement_text}")
-        user_parts.append(f"analysis_correct: {analysis_result.analysis_correct}")
-        user_parts.append(f"error_reason: {analysis_result.error_reason}")
-        user_parts.append("")
-        user_parts.append("# Sample Input")
-        user_parts.append(json.dumps(sample_spec.input, ensure_ascii=False, indent=2))
-        user_parts.append("")
-        user_parts.append("# Ground Truth")
-        user_parts.append(
-            json.dumps(sample_spec.ground_truth, ensure_ascii=False, indent=2)
-        )
-        user_parts.append("")
-        user_parts.append("# Task")
-        user_parts.append(
-            "The analysis above misjudged the extraction result. "
-            "Reflect on why the analysis was wrong and how to fix the analysis prompt."
-        )
-        user_parts.append("Respond with a JSON object containing:")
-        user_parts.append(
-            '- "error_reason": why the analysis misjudged the extraction correctness'
-        )
-        user_parts.append(
-            '- "patch_suggestion": suggested fix to the analysis prompt with keys '
-            '"target_section", "operation", "content"'
-        )
-        user_parts.append('- "notes": list of additional observations')
+        if self.analysis_reflection_template_path:
+            user_content = render_prompt(
+                self.analysis_reflection_template_path,
+                sample_id=extraction_result.sample_id,
+                raw_output=extraction_result.raw_output,
+                parsed_output=parsed_output_text,
+                status=extraction_result.status,
+                judgement=judgement_text,
+                analysis_correct=analysis_result.analysis_correct,
+                error_reason=analysis_result.error_reason,
+                sample_input=json.dumps(sample_spec.input, ensure_ascii=False, indent=2),
+                ground_truth=json.dumps(sample_spec.ground_truth, ensure_ascii=False, indent=2),
+            )
+        else:
+            user_parts: list[str] = []
+            user_parts.append("# Extraction Result")
+            user_parts.append(f"sample_id: {extraction_result.sample_id}")
+            user_parts.append(f"raw_output: {extraction_result.raw_output}")
+            user_parts.append(f"parsed_output: {parsed_output_text}")
+            user_parts.append(f"status: {extraction_result.status}")
+            user_parts.append("")
+            user_parts.append("# Analysis Result (to reflect on)")
+            user_parts.append(f"judgement: {judgement_text}")
+            user_parts.append(f"analysis_correct: {analysis_result.analysis_correct}")
+            user_parts.append(f"error_reason: {analysis_result.error_reason}")
+            user_parts.append("")
+            user_parts.append("# Sample Input")
+            user_parts.append(json.dumps(sample_spec.input, ensure_ascii=False, indent=2))
+            user_parts.append("")
+            user_parts.append("# Ground Truth")
+            user_parts.append(
+                json.dumps(sample_spec.ground_truth, ensure_ascii=False, indent=2)
+            )
+            user_parts.append("")
+            user_parts.append("# Task")
+            user_parts.append(
+                "The analysis above misjudged the extraction result. "
+                "Reflect on why the analysis was wrong and how to fix the analysis prompt."
+            )
+            user_parts.append("Respond with a JSON object containing:")
+            user_parts.append(
+                '- "error_reason": why the analysis misjudged the extraction correctness'
+            )
+            user_parts.append(
+                '- "patch_suggestion": suggested fix to the analysis prompt with keys '
+                '"target_section", "operation", "content"'
+            )
+            user_parts.append('- "notes": list of additional observations')
+            user_content = "\n".join(user_parts)
 
         return [
             {"role": "system", "content": system_content},
-            {"role": "user", "content": "\n".join(user_parts)},
+            {"role": "user", "content": user_content},
         ]
 
     def _parse_judgement(self, raw_output: str | None) -> dict[str, Any]:

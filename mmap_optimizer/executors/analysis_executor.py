@@ -1,13 +1,16 @@
-"""Analysis Executor 真实实现。
+"""Analysis Executor 真实实现（盲评模式）。
 
 接入旧系统 ``ModelClient``，替换 mock 分析执行器。
-对 extraction result 执行 analysis，产出 ``AnalysisResult``，
+对 extraction result 执行盲评分析（多模态，不带 GT），产出 ``AnalysisResult``，
 并支持对分析错误样本进行反思，产出 ``ReflectionResult``。
 """
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
+from pathlib import Path
 from typing import Any
 
 from ..model.client import ModelClient
@@ -21,7 +24,13 @@ from .evaluation_executor import normalize_label
 
 
 class AnalysisExecutor:
-    """真实分析执行器，接入 ModelClient。"""
+    """真实分析执行器（盲评模式），接入 ModelClient。
+
+    盲评模式特点：
+    - 使用多模态调用（complete_multimodal），传入图片
+    - 不传入 ground truth，仅基于图片和抽取结果判断
+    - 不生成 patch_suggestion，patch 由 PatchGenerationExecutor 生成
+    """
 
     def __init__(
         self,
@@ -47,11 +56,13 @@ class AnalysisExecutor:
         extraction_result: ExtractionResult,
         sample_spec: SampleSpec,
     ) -> AnalysisResult:
-        """对单个样本执行 analysis。"""
-        messages = self._build_analysis_messages(
+        """对单个样本执行盲评分析。"""
+        messages, assets = self._build_analysis_messages(
             analysis_prompt, extraction_prompt, extraction_result, sample_spec
         )
-        response = self.model_client.complete(messages, model_config=self.model_config)
+        response = self.model_client.complete_multimodal(
+            messages, assets=assets, model_config=self.model_config
+        )
         judgement = self._parse_judgement(response.raw_output)
 
         actual_correct = self._compute_actual_correct(
@@ -63,17 +74,16 @@ class AnalysisExecutor:
         )
 
         error_reason = self._extract_error_reason(judgement)
-        patch_suggestion: dict[str, Any] | None = None
-        # extraction 错误且 analysis 正确识别时生成 patch_suggestion
-        if not actual_correct and analysis_correct:
-            patch_suggestion = self._build_patch_suggestion(judgement, error_reason)
+        confirmed_facts = self._extract_confirmed_facts(judgement)
+        hypothesized_error_causes = self._extract_hypothesized_error_causes(judgement)
 
         return AnalysisResult(
             sample_id=extraction_result.sample_id,
             judgement=judgement,
             analysis_correct=analysis_correct,
             error_reason=error_reason,
-            patch_suggestion=patch_suggestion,
+            confirmed_facts=confirmed_facts,
+            hypothesized_error_causes=hypothesized_error_causes,
         )
 
     def execute_batch(
@@ -83,7 +93,7 @@ class AnalysisExecutor:
         extraction_results: list[ExtractionResult],
         sample_set: SampleSet,
     ) -> list[AnalysisResult]:
-        """对 batch 中所有样本执行 analysis（不只错误样本）。"""
+        """对 batch 中所有样本执行盲评分析（不只错误样本）。"""
         results: list[AnalysisResult] = []
         for extraction_result in extraction_results:
             spec = sample_set.specs.get(extraction_result.sample_id)
@@ -101,14 +111,15 @@ class AnalysisExecutor:
         analysis_result: AnalysisResult,
         sample_spec: SampleSpec,
     ) -> "ReflectionResult":
-        """对分析错误的样本进行反思。"""
-        # 延迟导入以避免循环依赖
+        """对分析错误的样本进行反思（多模态，带 GT）。"""
         from ..stages.analysis_prompt_optimization import ReflectionResult
 
-        messages = self._build_reflection_messages(
+        messages, assets = self._build_reflection_messages(
             analysis_prompt, extraction_result, analysis_result, sample_spec
         )
-        response = self.model_client.complete(messages, model_config=self.model_config)
+        response = self.model_client.complete_multimodal(
+            messages, assets=assets, model_config=self.model_config
+        )
         parsed = self._parse_judgement(response.raw_output)
 
         error_reason = (
@@ -143,8 +154,8 @@ class AnalysisExecutor:
         extraction_prompt: StructuredPrompt,
         extraction_result: ExtractionResult,
         sample_spec: SampleSpec,
-    ) -> list[dict[str, Any]]:
-        """构建 analysis 消息。"""
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """构建盲评分析消息（多模态，不带 GT）。"""
         system_content = self.renderer.render_system_message(analysis_prompt)
         extraction_prompt_text = self.renderer.render(extraction_prompt)
 
@@ -177,7 +188,6 @@ class AnalysisExecutor:
                 error_details=error_details,
                 sample_input=json.dumps(sample_spec.input, ensure_ascii=False, indent=2),
                 sample_metadata=sample_metadata,
-                ground_truth=json.dumps(sample_spec.ground_truth, ensure_ascii=False, indent=2),
             )
         else:
             user_parts: list[str] = []
@@ -203,32 +213,38 @@ class AnalysisExecutor:
                     json.dumps(sample_spec.metadata, ensure_ascii=False, indent=2)
                 )
             user_parts.append("")
-            user_parts.append("# Ground Truth")
-            user_parts.append(
-                json.dumps(sample_spec.ground_truth, ensure_ascii=False, indent=2)
-            )
-            user_parts.append("")
             user_parts.append("# Task")
             user_parts.append(
-                "Analyze whether the extraction result is correct against the ground truth."
+                "Based on the image content and the extraction result, "
+                "determine whether the extraction result is correct."
+            )
+            user_parts.append(
+                "Do NOT rely on any ground truth - judge solely from the image and extraction output."
             )
             user_parts.append("Respond with a JSON object containing:")
             user_parts.append(
-                '- "is_correct": boolean indicating whether the extraction result is correct'
+                '- "judgement": object with at least "is_correct" boolean'
             )
             user_parts.append(
-                '- "error_reason": string or null, the reason if the extraction is incorrect'
+                '- "confirmed_facts": list of strings, facts you can confirm from the image'
             )
             user_parts.append(
-                '- "patch_suggestion": object or null, suggested patch with keys '
-                '"target_section", "operation", "content"'
+                '- "hypothesized_error_causes": list of strings, hypothesized error causes'
+            )
+            user_parts.append(
+                '- "prompt_section_attribution": list of objects, related prompt sections'
+            )
+            user_parts.append(
+                '- "error_reason": string or null, reason if the extraction is incorrect'
             )
             user_content = "\n".join(user_parts)
+
+        assets = self._build_assets(sample_spec)
 
         return [
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_content},
-        ]
+        ], assets
 
     def _build_reflection_messages(
         self,
@@ -236,8 +252,8 @@ class AnalysisExecutor:
         extraction_result: ExtractionResult,
         analysis_result: AnalysisResult,
         sample_spec: SampleSpec,
-    ) -> list[dict[str, Any]]:
-        """构建反思消息。"""
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """构建反思消息（多模态，带 GT）。"""
         system_content = self.renderer.render_system_message(analysis_prompt)
 
         parsed_output_text = (
@@ -299,10 +315,56 @@ class AnalysisExecutor:
             user_parts.append('- "notes": list of additional observations')
             user_content = "\n".join(user_parts)
 
+        assets = self._build_assets(sample_spec)
+
         return [
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_content},
-        ]
+        ], assets
+
+    def _build_assets(self, sample_spec: SampleSpec) -> list[dict[str, Any]]:
+        """构建图片资产列表（参考 ExtractionExecutor）。"""
+        assets: list[dict[str, Any]] = []
+        if not sample_spec.assets:
+            return assets
+        for asset in sample_spec.assets:
+            asset_dict = self._load_asset(asset)
+            if asset_dict is not None:
+                assets.append(asset_dict)
+        return assets
+
+    def _load_asset(self, asset: dict[str, Any]) -> dict[str, Any] | None:
+        """加载单个图片资产为 data URL 格式。"""
+        try:
+            local_path = asset.get("local_path")
+            uri = asset.get("uri", "")
+            mime_type = asset.get("mime_type")
+
+            if local_path:
+                path = Path(local_path)
+                if path.exists():
+                    if not mime_type:
+                        mime_type, _ = mimetypes.guess_type(str(path))
+                    with open(path, "rb") as f:
+                        b64 = base64.b64encode(f.read()).decode("utf-8")
+                    if not mime_type:
+                        mime_type = "image/png"
+                    return {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{b64}"},
+                    }
+
+            if uri:
+                if not mime_type:
+                    mime_type = "image/png"
+                return {
+                    "type": "image_url",
+                    "image_url": {"url": uri},
+                }
+
+            return None
+        except Exception:
+            return None
 
     def _parse_judgement(self, raw_output: str | None) -> dict[str, Any]:
         """解析模型输出为 judgement dict。
@@ -315,7 +377,6 @@ class AnalysisExecutor:
         if not raw_output:
             return {}
 
-        # 首先尝试直接 JSON 解析
         try:
             parsed = json.loads(raw_output)
         except (json.JSONDecodeError, TypeError):
@@ -324,13 +385,12 @@ class AnalysisExecutor:
         if parsed is not None and isinstance(parsed, dict):
             return parsed
 
-        # 解析失败，尝试使用模型修复
         if self.model_client is not None:
-            # analysis judgement 的预期 schema
             expected_schema = {
-                "is_correct": bool,
+                "judgement": dict,
+                "confirmed_facts": list,
+                "hypothesized_error_causes": list,
                 "error_reason": str | None,
-                "patch_suggestion": dict | None,
             }
             repaired, repair_status = repair_json_output(
                 raw_output=raw_output,
@@ -365,22 +425,16 @@ class AnalysisExecutor:
         """从 judgement 中提取 analysis 对 extraction result 是否正确的判断。"""
         if not isinstance(judgement, dict):
             return None
+        judgement_obj = judgement.get("judgement")
+        if isinstance(judgement_obj, dict):
+            if "is_correct" in judgement_obj and isinstance(judgement_obj["is_correct"], bool):
+                return judgement_obj["is_correct"]
         if "is_correct" in judgement and isinstance(judgement["is_correct"], bool):
             return judgement["is_correct"]
         if "extraction_correct" in judgement and isinstance(
             judgement["extraction_correct"], bool
         ):
             return judgement["extraction_correct"]
-        if "judgement" in judgement:
-            value = judgement["judgement"]
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                lower = value.lower()
-                if lower in ("correct", "true", "yes", "right"):
-                    return True
-                if lower in ("wrong", "false", "no", "incorrect", "error"):
-                    return False
         return None
 
     def _extract_error_reason(
@@ -395,10 +449,32 @@ class AnalysisExecutor:
                 return value
         return None
 
+    def _extract_confirmed_facts(
+        self, judgement: dict[str, Any]
+    ) -> list[str]:
+        """从 judgement 中提取 confirmed_facts。"""
+        if not isinstance(judgement, dict):
+            return []
+        value = judgement.get("confirmed_facts")
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        return []
+
+    def _extract_hypothesized_error_causes(
+        self, judgement: dict[str, Any]
+    ) -> list[str]:
+        """从 judgement 中提取 hypothesized_error_causes。"""
+        if not isinstance(judgement, dict):
+            return []
+        value = judgement.get("hypothesized_error_causes")
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        return []
+
     def _extract_patch_suggestion(
         self, judgement: dict[str, Any]
     ) -> dict[str, Any] | None:
-        """从 judgement 中提取 patch_suggestion。"""
+        """从 judgement 中提取 patch_suggestion（仅 reflection 使用）。"""
         if not isinstance(judgement, dict):
             return None
         suggestion = judgement.get("patch_suggestion")
@@ -407,7 +483,7 @@ class AnalysisExecutor:
         return None
 
     def _extract_notes(self, judgement: dict[str, Any]) -> list[str]:
-        """从 judgement 中提取 notes。"""
+        """从 judgement 中提取 notes（仅 reflection 使用）。"""
         if not isinstance(judgement, dict):
             return []
         value = judgement.get("notes")
@@ -416,23 +492,6 @@ class AnalysisExecutor:
         if isinstance(value, str) and value:
             return [value]
         return []
-
-    def _build_patch_suggestion(
-        self,
-        judgement: dict[str, Any],
-        error_reason: str | None,
-    ) -> dict[str, Any]:
-        """生成 patch_suggestion。优先取 judgement 中的，否则基于 error_reason 构造。"""
-        suggestion = self._extract_patch_suggestion(judgement)
-        if suggestion is not None:
-            return suggestion
-        content = error_reason or "extraction result is incorrect"
-        return {
-            "target_section": "section_1",
-            "operation": "replace",
-            "content": content,
-            "rationale": content,
-        }
 
 
 __all__ = ["AnalysisExecutor"]

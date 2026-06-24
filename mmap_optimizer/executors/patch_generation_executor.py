@@ -1,9 +1,11 @@
 """PatchGenerationExecutor - Patch 生成执行器。
 
-基于 AnalysisResult（extraction 阶段）或 ReflectionResult（analysis 阶段）
-中的 patch_suggestion 构建 ExtractionPatch / AnalysisPatch，
+基于 AnalysisResult 中的 error_reason、confirmed_facts、
+hypothesized_error_causes 构建 ExtractionPatch，
 并通过 PatchValidator 进行结构性校验，返回
 (draft_patches, validated_patches, rejected_patches)。
+
+Analysis 阶段的 patch 生成则基于 ReflectionResult 中的 patch_suggestion。
 """
 
 from __future__ import annotations
@@ -20,8 +22,12 @@ from .patch_validator import PatchValidator
 class PatchGenerationExecutor:
     """Patch 生成执行器。
 
-    根据 AnalysisResult / ReflectionResult 中的 patch_suggestion 构建 patch
-    对象，并使用 PatchValidator 进行校验，返回
+    Extraction patch：基于 AnalysisResult 中的 error_reason、
+    confirmed_facts、hypothesized_error_causes 构造 patch。
+
+    Analysis patch：基于 ReflectionResult 中的 patch_suggestion 构造。
+
+    生成后使用 PatchValidator 校验，返回
     (draft_patches, validated_patches, rejected_patches)。
     """
 
@@ -43,9 +49,9 @@ class PatchGenerationExecutor:
     ) -> tuple[list[ExtractionPatch], list[ExtractionPatch], list[ExtractionPatch]]:
         """生成 extraction patch。
 
-        只从 analysis_correct=true 的样本生成 patch。从 patch_suggestion 中
-        提取 patch 信息；如果 patch_suggestion 为 None，基于 error_reason
-        构造默认 patch。生成后用 PatchValidator 校验。
+        只从 analysis_correct=true 且 extraction 确实错误的样本生成 patch。
+        基于 error_reason + confirmed_facts + hypothesized_error_causes
+        构造 patch，不依赖模型直接生成的 patch_suggestion。
 
         Args:
             analysis_results: 分析结果列表。
@@ -57,20 +63,44 @@ class PatchGenerationExecutor:
             (draft_patches, validated_patches, rejected_patches) 元组。
         """
         draft_patches: list[ExtractionPatch] = []
+        mutable_section_ids = self._get_mutable_section_ids(extraction_prompt)
+        default_section_id = mutable_section_ids[0] if mutable_section_ids else "section_1"
+        extraction_result_map = {r.sample_id: r for r in extraction_results}
 
         for analysis_result in analysis_results:
             if not analysis_result.analysis_correct:
                 continue
 
             sample_id = analysis_result.sample_id
-            error_reason = analysis_result.error_reason or ""
-            suggestion: dict[str, Any] = dict(analysis_result.patch_suggestion or {})
+            extraction_result = extraction_result_map.get(sample_id)
+            if extraction_result is None:
+                continue
 
-            # content / rationale 缺失时回退到 error_reason
-            if not suggestion.get("content"):
-                suggestion["content"] = error_reason
-            if not suggestion.get("rationale"):
-                suggestion["rationale"] = error_reason
+            extraction_correct = analysis_result.judgement.get("judgement", {}).get(
+                "is_correct", False
+            )
+            if extraction_correct:
+                continue
+
+            error_reason = analysis_result.error_reason or ""
+            confirmed_facts = analysis_result.confirmed_facts
+            hypothesized_error_causes = analysis_result.hypothesized_error_causes
+
+            content, rationale = self._compose_extraction_patch_content(
+                error_reason=error_reason,
+                confirmed_facts=confirmed_facts,
+                hypothesized_error_causes=hypothesized_error_causes,
+            )
+
+            if not content:
+                continue
+
+            suggestion = {
+                "target_section": default_section_id,
+                "operation": "append",
+                "content": content,
+                "rationale": rationale,
+            }
 
             patch = self._build_patch_from_suggestion(
                 sample_id=sample_id,
@@ -138,6 +168,44 @@ class PatchGenerationExecutor:
             draft_patches, analysis_prompt, sample_set
         )
         return draft_patches, validated, rejected
+
+    def _compose_extraction_patch_content(
+        self,
+        error_reason: str,
+        confirmed_facts: list[str],
+        hypothesized_error_causes: list[str],
+    ) -> tuple[str, str]:
+        """基于分析结果构造 extraction patch 的 content 和 rationale。
+
+        Args:
+            error_reason: 错误原因。
+            confirmed_facts: 确认的事实列表。
+            hypothesized_error_causes: 假设的错误原因列表。
+
+        Returns:
+            (content, rationale) 元组。
+        """
+        content_parts: list[str] = []
+        rationale_parts: list[str] = []
+
+        if error_reason:
+            content_parts.append(error_reason)
+            rationale_parts.append(f"Error reason: {error_reason}")
+
+        if hypothesized_error_causes:
+            causes_text = "; ".join(hypothesized_error_causes[:3])
+            if not content_parts:
+                content_parts.append(causes_text)
+            rationale_parts.append(f"Hypothesized causes: {causes_text}")
+
+        if confirmed_facts:
+            facts_text = "; ".join(confirmed_facts[:3])
+            rationale_parts.append(f"Confirmed facts: {facts_text}")
+
+        content = "\n".join(content_parts) if content_parts else ""
+        rationale = " | ".join(rationale_parts) if rationale_parts else ""
+
+        return content, rationale
 
     def _build_patch_from_suggestion(
         self,

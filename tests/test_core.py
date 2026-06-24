@@ -252,7 +252,7 @@ def test_run_plan():
 
 
 def test_analysis_executor():
-    """测试 AnalysisExecutor 真实实现。"""
+    """测试 AnalysisExecutor 真实实现（盲评模式）。"""
     print("\n测试 AnalysisExecutor...")
 
     import json as _json
@@ -286,25 +286,32 @@ def test_analysis_executor():
         return SampleSpec(id=sid, input={"text": "hello"}, ground_truth=gt)
 
     # 正常 analysis 输出能正确解析 + analysis_correct 判定正确（extraction 正确，分析也判正确）
-    executor_ok = AnalysisExecutor(MockModelClient(_json.dumps({"is_correct": True, "error_reason": None})))
+    executor_ok = AnalysisExecutor(MockModelClient(_json.dumps({
+        "judgement": {"is_correct": True},
+        "error_reason": None,
+        "confirmed_facts": ["fact1"],
+        "hypothesized_error_causes": [],
+    })))
     spec_ok = _spec("s1", {"result": "OK"})
     er_ok = ExtractionResult(
         sample_id="s1", raw_output='{"result":"OK"}', parsed_output={"result": "OK"}, status="correct"
     )
     r_ok = executor_ok.execute(analysis_prompt, extraction_prompt, er_ok, spec_ok)
     assert r_ok.analysis_correct is True, "extraction 正确且分析判正确时 analysis_correct 应为 True"
-    assert r_ok.patch_suggestion is None, "extraction 正确时不应生成 patch_suggestion"
-    assert r_ok.judgement == {"is_correct": True, "error_reason": None}
+    assert r_ok.judgement["judgement"]["is_correct"] is True
+    assert isinstance(r_ok.confirmed_facts, list)
+    assert isinstance(r_ok.hypothesized_error_causes, list)
     print(f"✓ 正确样本分析: analysis_correct={r_ok.analysis_correct}")
 
-    # 错误样本生成 patch_suggestion（extraction 错误，分析正确识别）
+    # 错误样本（extraction 错误，分析正确识别）
     executor_wrong = AnalysisExecutor(
         MockModelClient(
             _json.dumps(
                 {
-                    "is_correct": False,
+                    "judgement": {"is_correct": False},
                     "error_reason": "wrong label",
-                    "patch_suggestion": {"target_section": "sec1", "operation": "replace", "content": "fix"},
+                    "confirmed_facts": ["image shows OK stamp"],
+                    "hypothesized_error_causes": ["prompt missed OK stamp rule"],
                 }
             )
         )
@@ -315,24 +322,20 @@ def test_analysis_executor():
     )
     r_wrong = executor_wrong.execute(analysis_prompt, extraction_prompt, er_wrong, spec_wrong)
     assert r_wrong.analysis_correct is True, "extraction 错误且分析判错误时 analysis_correct 应为 True"
-    assert r_wrong.patch_suggestion is not None, "错误样本应生成 patch_suggestion"
-    assert r_wrong.patch_suggestion["content"] == "fix"
-    print(f"✓ 错误样本 patch_suggestion: {r_wrong.patch_suggestion}")
+    assert r_wrong.error_reason == "wrong label"
+    assert r_wrong.confirmed_facts == ["image shows OK stamp"]
+    assert r_wrong.hypothesized_error_causes == ["prompt missed OK stamp rule"]
+    print(f"✓ 错误样本分析: error_reason={r_wrong.error_reason}")
 
     # 分析误判：extraction 错误但分析判正确 -> analysis_correct=False
-    executor_misjudge = AnalysisExecutor(MockModelClient(_json.dumps({"is_correct": True})))
+    executor_misjudge = AnalysisExecutor(MockModelClient(_json.dumps({"judgement": {"is_correct": True}})))
     r_misjudge = executor_misjudge.execute(analysis_prompt, extraction_prompt, er_wrong, spec_wrong)
     assert r_misjudge.analysis_correct is False, "分析误判时 analysis_correct 应为 False"
     print(f"✓ 分析误判: analysis_correct={r_misjudge.analysis_correct}")
 
-    # judgement 中无 patch_suggestion 时基于 error_reason 构造
-    executor_fallback = AnalysisExecutor(
-        MockModelClient(_json.dumps({"is_correct": False, "error_reason": "mismatched value"}))
-    )
-    r_fallback = executor_fallback.execute(analysis_prompt, extraction_prompt, er_wrong, spec_wrong)
-    assert r_fallback.patch_suggestion is not None
-    assert r_fallback.patch_suggestion["content"] == "mismatched value"
-    print(f"✓ patch_suggestion fallback: {r_fallback.patch_suggestion}")
+    # 盲评模式：AnalysisResult 不包含 patch_suggestion（patch 由 PatchGenerationExecutor 生成）
+    assert not hasattr(r_ok, "patch_suggestion") or r_ok.__dict__.get("patch_suggestion") is None
+    print("✓ 盲评模式: AnalysisResult 不含 patch_suggestion")
 
     # reflect 方法能产出 ReflectionResult
     executor_reflect = AnalysisExecutor(
@@ -357,7 +360,7 @@ def test_analysis_executor():
     print(f"✓ reflect 产出 ReflectionResult: success={rr.reflection_success}")
 
     # execute_batch 分析所有样本（不只错误样本）
-    executor_batch = AnalysisExecutor(MockModelClient(_json.dumps({"is_correct": True})))
+    executor_batch = AnalysisExecutor(MockModelClient(_json.dumps({"judgement": {"is_correct": True}})))
     sample_set = SampleSet()
     sample_set.add_spec(spec_ok)
     sample_set.add_spec(spec_wrong)

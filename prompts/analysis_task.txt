@@ -10,15 +10,15 @@ parsed_output: {parsed_output}
 
 # Sample Input
 {sample_input}
-
 {sample_metadata}
 
-# Ground Truth
-{ground_truth}
-
 # Task
-Analyze whether the extraction result is correct against the ground truth.
+Based on the image content and the extraction result above, determine whether the extraction result is correct.
+Do NOT rely on any ground truth or external reference - make your judgement solely from the image and extraction output.
+
 Respond with a JSON object containing:
-- "is_correct": boolean indicating whether the extraction result is correct
-- "error_reason": string or null, the reason if the extraction is incorrect
-- "patch_suggestion": object or null, suggested patch with keys "target_section", "operation", "content"
+- "judgement": object with at least "is_correct" boolean
+- "confirmed_facts": list of strings, facts you can confirm from the image
+- "hypothesized_error_causes": list of strings, hypothesized error causes
+- "prompt_section_attribution": list of objects, related prompt sections
+- "error_reason": string or null, reason if the extraction is incorrect

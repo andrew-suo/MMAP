@@ -402,8 +402,14 @@ class MMAPRunner:
         step.status = "running"
         self._save_run_plan()
 
+        # 获取 model_client（用于结构质量较差时进行标准化）
+        model_client = self.executors.get("model_client")
+
         # 创建 Prompt Structuring Phase
-        phase = PromptStructuringPhase(self.config.prompt_structuring)
+        phase = PromptStructuringPhase(
+            self.config.prompt_structuring,
+            model_client=model_client,
+        )
 
         # 执行
         self.structured_extraction_prompt, self.structured_analysis_prompt = phase.run(

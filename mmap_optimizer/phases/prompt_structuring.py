@@ -2,6 +2,8 @@
 
 根据设计文档，Prompt Structuring Phase 负责将初始 Markdown prompt
 转换为结构化 prompt。该阶段只在 Run 开始时执行一次。
+
+当 prompt 结构质量较差时，会调用模型进行标准化，标准化后重新解析。
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ class PromptStructuringConfig:
     """Prompt Structuring 配置。"""
     enabled: bool = True
     use_model_when_structure_poor: bool = True
+    standardization_prompt_path: str | Path | None = None
+    max_standardization_iterations: int = 1
 
 
 class MarkdownParser:
@@ -149,9 +153,20 @@ class MarkdownParser:
 class PromptStructuringPhase:
     """Prompt Structuring Phase。"""
 
-    def __init__(self, config: PromptStructuringConfig):
+    def __init__(
+        self,
+        config: PromptStructuringConfig,
+        model_client: Any | None = None,
+    ):
+        """初始化 Prompt Structuring Phase。
+
+        Args:
+            config: 配置对象
+            model_client: 可选的模型客户端，用于结构质量较差时进行标准化
+        """
         self.config = config
         self.parser = MarkdownParser()
+        self.model_client = model_client
 
     def run(
         self,
@@ -171,30 +186,99 @@ class PromptStructuringPhase:
         extraction_markdown = Path(extraction_prompt_path).read_text(encoding="utf-8")
         analysis_markdown = Path(analysis_prompt_path).read_text(encoding="utf-8")
 
-        # 解析为结构化 prompt
-        structured_extraction = self.parser.parse(
+        # 解析并可能标准化
+        structured_extraction = self._parse_and_standardize(
             extraction_markdown,
             prompt_type="extraction",
             prompt_id="structured_extraction_prompt",
         )
 
-        structured_analysis = self.parser.parse(
+        structured_analysis = self._parse_and_standardize(
             analysis_markdown,
             prompt_type="analysis",
             prompt_id="structured_analysis_prompt",
         )
 
-        # 检查结构质量
-        if self.config.use_model_when_structure_poor:
-            extraction_quality = self._evaluate_structure_quality(structured_extraction)
-            analysis_quality = self._evaluate_structure_quality(structured_analysis)
-
-            # 如果结构质量较差，可以使用模型进行预处理（第一版暂不实现）
-            # 这里只是记录质量评估结果
-            structured_extraction.metadata["structure_quality"] = extraction_quality
-            structured_analysis.metadata["structure_quality"] = analysis_quality
-
         return structured_extraction, structured_analysis
+
+    def _parse_and_standardize(
+        self,
+        markdown: str,
+        prompt_type: str,
+        prompt_id: str,
+    ) -> StructuredPrompt:
+        """解析 Markdown 并在结构质量较差时进行标准化。
+
+        Args:
+            markdown: 原始 Markdown 文本
+            prompt_type: prompt 类型（extraction/analysis）
+            prompt_id: prompt 唯一 ID
+
+        Returns:
+            结构化后的 Prompt
+        """
+        # 初步解析
+        structured = self.parser.parse(markdown, prompt_type, prompt_id)
+
+        # 检查结构质量
+        quality = self._evaluate_structure_quality(structured)
+        structured.metadata["structure_quality"] = quality
+        structured.metadata["standardized"] = False
+
+        # 如果结构质量较差且配置允许，使用模型进行标准化
+        if (
+            self.config.use_model_when_structure_poor
+            and quality != "good"
+            and self.model_client is not None
+            and self.config.standardization_prompt_path is not None
+        ):
+            standardized_markdown = self._standardize_with_model(markdown)
+            if standardized_markdown:
+                # 重新解析标准化后的文本
+                structured = self.parser.parse(
+                    standardized_markdown,
+                    prompt_type,
+                    f"{prompt_id}_standardized",
+                )
+                quality = self._evaluate_structure_quality(structured)
+                structured.metadata["structure_quality"] = quality
+                structured.metadata["standardized"] = True
+                structured.metadata["original_markdown"] = markdown
+
+        return structured
+
+    def _standardize_with_model(self, markdown: str) -> str | None:
+        """使用模型对 prompt 进行标准化。
+
+        Args:
+            markdown: 原始 Markdown 文本
+
+        Returns:
+            标准化后的 Markdown 文本，失败返回 None
+        """
+        try:
+            # 读取标准化 prompt
+            standardization_prompt = Path(
+                self.config.standardization_prompt_path
+            ).read_text(encoding="utf-8")
+
+            # 构建消息
+            messages = [
+                {"role": "system", "content": standardization_prompt},
+                {"role": "user", "content": f"# Input Prompt\n\n{markdown}"},
+            ]
+
+            # 调用模型
+            response = self.model_client.complete(
+                messages=messages,
+                model_config=None,
+            )
+
+            return response.raw_output.strip()
+
+        except Exception as exc:
+            # 标准化失败，返回 None，使用原始解析结果
+            return None
 
     def _evaluate_structure_quality(self, prompt: StructuredPrompt) -> str:
         """评估结构质量。"""

@@ -383,6 +383,7 @@ def create_executors(
     prompts_config = config.get("prompts", {}) if isinstance(config, dict) else {}
     analysis_task_template_path = prompts_config.get("analysis_task")
     analysis_reflection_template_path = prompts_config.get("analysis_reflection")
+    patch_generation_prompt_path = prompts_config.get("patch_generation")
 
     # 当 model_client 可用且未强制 mock 时，使用真实 executor
     use_real = model_client is not None and use_mock is not True
@@ -402,11 +403,17 @@ def create_executors(
         analysis_executor = _MockAnalysisExecutor()
         fewshot_executor = _MockFewshotExecutor()
 
+    patch_generation_executor: Any = PatchGenerationExecutor(
+        model_client=model_client,
+        model_config=optimizer_model_config,
+        patch_generation_prompt_path=patch_generation_prompt_path,
+    )
+
     return {
         "extraction": extraction_executor,
         "evaluation": evaluation_executor,
         "analysis": analysis_executor,
-        "patch_generation": PatchGenerationExecutor(),
+        "patch_generation": patch_generation_executor,
         "patch_apply": PatchApplyExecutor(),
         "patch_validator": PatchValidator(),
         "merge": MergeExecutor(),

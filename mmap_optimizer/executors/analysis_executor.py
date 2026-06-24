@@ -16,6 +16,7 @@ from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionRe
 from ..data.sample import SampleSet, SampleSpec
 from ..prompt.structured_prompt import StructuredPrompt, StructuredPromptRenderer
 from ..prompt.prompt_manager import render_prompt
+from ..prompt.output_repair import repair_json_output
 from .evaluation_executor import normalize_label
 
 
@@ -304,16 +305,43 @@ class AnalysisExecutor:
         ]
 
     def _parse_judgement(self, raw_output: str | None) -> dict[str, Any]:
-        """解析模型输出为 judgement dict。"""
+        """解析模型输出为 judgement dict。
+
+        尝试 JSON 解析：
+        - 解析成功且为 dict，直接返回
+        - 解析失败，尝试使用模型修复
+        - 修复也失败，返回空 dict
+        """
         if not raw_output:
             return {}
+
+        # 首先尝试直接 JSON 解析
         try:
             parsed = json.loads(raw_output)
         except (json.JSONDecodeError, TypeError):
-            return {}
-        if not isinstance(parsed, dict):
-            return {}
-        return parsed
+            parsed = None
+
+        if parsed is not None and isinstance(parsed, dict):
+            return parsed
+
+        # 解析失败，尝试使用模型修复
+        if self.model_client is not None:
+            # analysis judgement 的预期 schema
+            expected_schema = {
+                "is_correct": bool,
+                "error_reason": str | None,
+                "patch_suggestion": dict | None,
+            }
+            repaired, repair_status = repair_json_output(
+                raw_output=raw_output,
+                expected_schema=expected_schema,
+                model_client=self.model_client,
+                model_config=self.model_config,
+            )
+            if repair_status == "repaired" and repaired is not None:
+                return repaired
+
+        return {}
 
     def _compute_actual_correct(
         self,

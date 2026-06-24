@@ -17,6 +17,7 @@ from ..stages.extraction_prompt_optimization import ExtractionResult
 from ..phases.fewshot_optimization import FewshotExample
 from ..data.sample import SampleBatch, SampleSet, SampleSpec
 from ..prompt.structured_prompt import StructuredPrompt, StructuredPromptRenderer
+from ..prompt.output_repair import repair_json_output
 
 
 class ExtractionExecutor:
@@ -150,14 +151,29 @@ class ExtractionExecutor:
 
         尝试 JSON 解析：
         - 解析成功且为 dict，返回 (parsed_dict, "correct")
-        - 解析失败，返回 (None, "invalid")
+        - 解析失败，尝试使用模型修复，修复成功返回 (parsed_dict, "repaired")
+        - 修复也失败，返回 (None, "invalid")
 
         注意：status 只反映解析成功/失败，不判断业务对错。
         """
+        # 首先尝试直接 JSON 解析
         try:
             parsed = json.loads(raw_output)
         except (json.JSONDecodeError, TypeError):
-            return None, "invalid"
-        if not isinstance(parsed, dict):
-            return None, "invalid"
-        return parsed, "correct"
+            parsed = None
+
+        if parsed is not None and isinstance(parsed, dict):
+            return parsed, "correct"
+
+        # 解析失败，尝试使用模型修复
+        if self.model_client is not None:
+            repaired, repair_status = repair_json_output(
+                raw_output=raw_output,
+                expected_schema=None,  # extraction 没有固定 schema
+                model_client=self.model_client,
+                model_config=self.model_config,
+            )
+            if repair_status == "repaired" and repaired is not None:
+                return repaired, "repaired"
+
+        return None, "invalid"

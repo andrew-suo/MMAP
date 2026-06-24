@@ -1,6 +1,6 @@
 """Prompt 模块。
 
-包含结构化 Prompt 定义、渲染器和 Prompt 管理器。
+包含结构化 Prompt 定义、渲染器、Prompt 管理器和输出修复功能。
 """
 
 from .structured_prompt import (
@@ -14,6 +14,7 @@ from .prompt_manager import (
     load_prompt,
     render_prompt,
 )
+from .output_repair import repair_json_output
 
 __all__ = [
     "PromptSection",
@@ -23,4 +24,5 @@ __all__ = [
     "get_prompt_manager",
     "load_prompt",
     "render_prompt",
+    "repair_json_output",
 ]

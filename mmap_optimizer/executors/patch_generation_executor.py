@@ -557,9 +557,13 @@ class PatchGenerationExecutor:
         new_text = suggestion.get("new_text")
         new_header = suggestion.get("new_header")
 
-        metadata: dict[str, Any] = {}
+        metadata: dict[str, Any] = {
+            "source_phase": f"{patch_id_prefix.replace('patch_', '')}_patch_generation",
+        }
         if cited_sections:
             metadata["cited_sections"] = cited_sections
+        if rationale:
+            metadata["source_reason"] = rationale
 
         return patch_class(
             id=f"{patch_id_prefix}_{sample_id}",

@@ -14,81 +14,74 @@ def test_imports():
     """测试所有模块导入。"""
     print("测试模块导入...")
 
-    try:
-        from mmap_optimizer import (
-            # Sample
-            SampleAsset,
-            SampleSpec,
-            SampleState,
-            SampleTrace,
-            SampleSet,
-            SampleBatch,
-            # Dataset
-            DatasetLoader,
-            load_sample_specs,
-            create_sample_set,
-            # Sampler
-            SamplerConfig,
-            BaseSampler,
-            RandomSampler,
-            DifficultySampler,
-            FrequencySampler,
-            DifficultyFrequencySampler,
-            create_sampler,
-            # Batch Size Controller
-            BatchSizeControllerConfig,
-            BatchSizeControllerState,
-            BatchSizeController,
-            # Structured Prompt
-            PromptSection,
-            StructuredPrompt,
-            # Prompt Structuring Phase
-            PromptStructuringConfig,
-            MarkdownParser,
-            PromptStructuringPhase,
-            # Patch
-            ExtractionPatch,
-            AnalysisPatch,
-            PatchMergeReport,
-            ToxicityReport,
-            # Extraction Prompt Optimization Stage
-            ExtractionResult,
-            AnalysisResult,
-            EvalRecord,
-            ExtractionMetrics,
-            ExtractionPromptOptimizationStage,
-            # Analysis Prompt Optimization Stage
-            ReflectionResult,
-            AnalysisMetrics,
-            AnalysisPromptOptimizationStage,
-            # Prompt Optimization Phase
-            PromptOptimizationConfig,
-            PromptOptimizationIterationResult,
-            PromptOptimizationPhase,
-            # Few-shot Optimization Phase
-            FewshotExample,
-            FewshotConfig,
-            FewshotMetrics,
-            FewshotOptimizationIterationResult,
-            FewshotOptimizationPhase,
-            # Config
-            RunConfig,
-            DatasetConfig,
-            RefactoredConfig,
-            load_config,
-            # Runner
-            RunPlanStep,
-            RunPlan,
-            RunSummary,
-            MMAPRunner,
-        )
-        print("✓ 所有模块导入成功")
-        return True
-    except Exception as e:
-        print(f"✗ 导入失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+    from mmap_optimizer import (
+        # Sample
+        SampleAsset,
+        SampleSpec,
+        SampleState,
+        SampleTrace,
+        SampleSet,
+        SampleBatch,
+        # Dataset
+        DatasetLoader,
+        load_sample_specs,
+        create_sample_set,
+        # Sampler
+        SamplerConfig,
+        BaseSampler,
+        RandomSampler,
+        DifficultySampler,
+        FrequencySampler,
+        DifficultyFrequencySampler,
+        create_sampler,
+        # Batch Size Controller
+        BatchSizeControllerConfig,
+        BatchSizeControllerState,
+        BatchSizeController,
+        # Structured Prompt
+        PromptSection,
+        StructuredPrompt,
+        # Prompt Structuring Phase
+        PromptStructuringConfig,
+        MarkdownParser,
+        PromptStructuringPhase,
+        # Patch
+        ExtractionPatch,
+        AnalysisPatch,
+        PatchMergeReport,
+        ToxicityReport,
+        # Extraction Prompt Optimization Stage
+        ExtractionResult,
+        AnalysisResult,
+        EvalRecord,
+        ExtractionMetrics,
+        ExtractionPromptOptimizationStage,
+        # Analysis Prompt Optimization Stage
+        ReflectionResult,
+        AnalysisMetrics,
+        AnalysisPromptOptimizationStage,
+        # Prompt Optimization Phase
+        PromptOptimizationConfig,
+        PromptOptimizationIterationResult,
+        PromptOptimizationPhase,
+        # Few-shot Optimization Phase
+        FewshotExample,
+        FewshotConfig,
+        FewshotMetrics,
+        FewshotOptimizationIterationResult,
+        FewshotOptimizationPhase,
+        # Config
+        RunConfig,
+        DatasetConfig,
+        RefactoredConfig,
+        load_config,
+        # Runner
+        RunPlanStep,
+        RunPlan,
+        RunSummary,
+        MMAPRunner,
+    )
+    print("✓ 所有模块导入成功")
 
 
 def test_sample_models():
@@ -115,8 +108,6 @@ def test_sample_models():
     sample_set = SampleSet()
     sample_set.add_spec(spec)
     print(f"✓ SampleSet 创建成功: {len(sample_set.specs)} specs")
-
-    return True
 
 
 def test_sampler():
@@ -151,8 +142,6 @@ def test_sampler():
         batch = sampler.sample(sample_set, batch_size=5, iteration=1, seed=42)
         print(f"✓ {sampler_type} sampler: {len(batch.sample_ids)} samples selected")
 
-    return True
-
 
 def test_batch_size_controller():
     """测试 Batch Size Controller。"""
@@ -176,8 +165,6 @@ def test_batch_size_controller():
     # 测试指标下降
     next_size = controller.update(base_accuracy=0.7, final_accuracy=0.6)
     print(f"✓ 指标下降后 batch size: {next_size}")
-
-    return True
 
 
 def test_structured_prompt():
@@ -206,8 +193,6 @@ def test_structured_prompt():
     markdown = prompt.to_markdown()
     print(f"✓ Markdown 转换成功")
 
-    return True
-
 
 def test_config():
     """测试配置加载。"""
@@ -222,8 +207,6 @@ def test_config():
 
     config_dict = config.to_dict()
     print(f"✓ 配置转换为字典成功")
-
-    return True
 
 
 def test_run_plan():
@@ -247,8 +230,6 @@ def test_run_plan():
     run_plan.advance()
     current = run_plan.get_current_step()
     print(f"✓ 推进后当前步骤: {current.id}")
-
-    return True
 
 
 def test_analysis_executor():
@@ -370,8 +351,6 @@ def test_analysis_executor():
     assert len(batch_results) == 2, "execute_batch 应分析所有样本"
     print(f"✓ execute_batch 分析 {len(batch_results)} 个样本")
 
-    return True
-
 
 def main():
     """运行所有测试。"""
@@ -395,10 +374,8 @@ def main():
 
     for test in tests:
         try:
-            if test():
-                passed += 1
-            else:
-                failed += 1
+            test()
+            passed += 1
         except Exception as e:
             print(f"✗ 测试失败: {e}")
             import traceback

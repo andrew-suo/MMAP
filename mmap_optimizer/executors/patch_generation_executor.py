@@ -277,6 +277,15 @@ class PatchGenerationExecutor:
         if parsed_output is None:
             return [], []
 
+        # 兼容两种输出格式：
+        # - dict: {"patches": [...], "cited_sections": [...]}（标准格式）
+        # - list: [...]（模型直接返回 patch 数组，视为 patches）
+        if isinstance(parsed_output, list):
+            return parsed_output, []
+
+        if not isinstance(parsed_output, dict):
+            return [], []
+
         patches = parsed_output.get("patches", [])
         if not isinstance(patches, list):
             patches = []

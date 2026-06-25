@@ -19,10 +19,11 @@ def repair_json_output(
     model_client: ModelClient,
     model_config: dict[str, Any] | None = None,
     repair_prompt_path: str = "prompts/output_repair.txt",
-) -> tuple[dict[str, Any] | None, str]:
+) -> tuple[dict[str, Any] | list[Any] | None, str]:
     """修复模型输出的 JSON 格式问题。
 
     当模型输出不能正常解析时（如 JSON 格式错误），调用模型进行结果修复。
+    支持 JSON 对象（dict）和 JSON 数组（list）两种输出格式。
 
     Args:
         raw_output: 模型原始输出（格式可能有问题）
@@ -32,7 +33,7 @@ def repair_json_output(
         repair_prompt_path: 修复 prompt 文件路径
 
     Returns:
-        (修复后的 dict 或 None, 状态字符串)
+        (修复后的 dict/list 或 None, 状态字符串)
         状态说明:
         - "repaired": 成功修复并解析
         - "reparse_failed": 模型输出仍无法解析
@@ -91,14 +92,16 @@ def _build_repair_message(
     return "\n".join(lines)
 
 
-def _parse_repaired_output(repaired_output: str) -> tuple[dict[str, Any] | None, str]:
+def _parse_repaired_output(repaired_output: str) -> tuple[dict[str, Any] | list[Any] | None, str]:
     """解析修复后的输出。
+
+    支持 JSON 对象（dict）和 JSON 数组（list）两种格式。
 
     Args:
         repaired_output: 修复后的原始输出字符串
 
     Returns:
-        (解析后的 dict 或 None, 状态字符串)
+        (解析后的 dict/list 或 None, 状态字符串)
     """
     # 移除可能的 markdown 代码块标记
     cleaned = _clean_markdown(repaired_output)
@@ -108,9 +111,9 @@ def _parse_repaired_output(repaired_output: str) -> tuple[dict[str, Any] | None,
         parsed = json.loads(cleaned)
         if parsed is None:
             return None, "unrepairable"
-        if isinstance(parsed, dict):
+        if isinstance(parsed, (dict, list)):
             return parsed, "repaired"
-        # 解析成功但不是 dict
+        # 解析成功但不是 dict 或 list
         return None, "reparse_failed"
     except (json.JSONDecodeError, TypeError):
         pass
@@ -119,21 +122,54 @@ def _parse_repaired_output(repaired_output: str) -> tuple[dict[str, Any] | None,
     fixed = _fix_common_json_issues(cleaned)
     try:
         parsed = json.loads(fixed)
-        if isinstance(parsed, dict):
+        if isinstance(parsed, (dict, list)):
             return parsed, "repaired"
         return None, "reparse_failed"
     except (json.JSONDecodeError, TypeError):
         pass
 
-    # 尝试提取 JSON 对象（处理前后有额外文本的情况）
-    extracted = _extract_json_object(cleaned)
-    if extracted is not None:
-        try:
-            parsed = json.loads(extracted)
-            if isinstance(parsed, dict):
-                return parsed, "repaired"
-        except (json.JSONDecodeError, TypeError):
-            pass
+    # 根据文本中 [ 和 { 的先后顺序决定先尝试哪种提取
+    bracket_pos = cleaned.find("[")
+    brace_pos = cleaned.find("{")
+
+    if brace_pos == -1 or (bracket_pos != -1 and bracket_pos < brace_pos):
+        # [ 出现在 { 之前（或没有 {），优先提取 JSON 数组
+        extracted_array = _extract_json_array(cleaned)
+        if extracted_array is not None:
+            try:
+                parsed = json.loads(extracted_array)
+                if isinstance(parsed, list):
+                    return parsed, "repaired"
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # 数组提取失败，回退到对象提取
+        extracted = _extract_json_object(cleaned)
+        if extracted is not None:
+            try:
+                parsed = json.loads(extracted)
+                if isinstance(parsed, dict):
+                    return parsed, "repaired"
+            except (json.JSONDecodeError, TypeError):
+                pass
+    else:
+        # { 出现在 [ 之前（或没有 [），优先提取 JSON 对象
+        extracted = _extract_json_object(cleaned)
+        if extracted is not None:
+            try:
+                parsed = json.loads(extracted)
+                if isinstance(parsed, dict):
+                    return parsed, "repaired"
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # 对象提取失败，回退到数组提取
+        extracted_array = _extract_json_array(cleaned)
+        if extracted_array is not None:
+            try:
+                parsed = json.loads(extracted_array)
+                if isinstance(parsed, list):
+                    return parsed, "repaired"
+            except (json.JSONDecodeError, TypeError):
+                pass
 
     return None, "reparse_failed"
 
@@ -197,6 +233,25 @@ def _extract_json_object(text: str) -> str | None:
     # 查找第一个 { 和最后一个 }
     start = text.find("{")
     end = text.rfind("}")
+
+    if start == -1 or end == -1 or start >= end:
+        return None
+
+    return text[start : end + 1]
+
+
+def _extract_json_array(text: str) -> str | None:
+    """从文本中提取 JSON 数组。
+
+    Args:
+        text: 可能包含 JSON 数组的文本
+
+    Returns:
+        提取的 JSON 数组字符串，或 None
+    """
+    # 查找第一个 [ 和最后一个 ]
+    start = text.find("[")
+    end = text.rfind("]")
 
     if start == -1 or end == -1 or start >= end:
         return None

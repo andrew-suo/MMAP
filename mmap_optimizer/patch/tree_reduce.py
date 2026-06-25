@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from ..prompt.output_repair import parse_model_json_output
 from .clusterer import categorize_by_section
 from .conflict import deterministic_guardrail
 
@@ -343,38 +344,21 @@ class ParallelPatchMerger:
         3. 从文本中提取 JSON 数组后解析
         4. 从 dict 中提取 list 字段
         """
-        # 1. 移除 markdown 标记
-        cleaned = self._clean_markdown(response)
-
-        # 直接解析
-        parsed = self._try_parse_list(cleaned)
-        if parsed is not None:
-            return parsed
-
-        # 2. 修复常见 JSON 问题
-        fixed = self._fix_common_json_issues(cleaned)
-        parsed = self._try_parse_list(fixed)
-        if parsed is not None:
-            return parsed
-
-        # 3. 提取 JSON 数组
-        extracted = self._extract_json_array(cleaned)
-        if extracted is not None:
-            parsed = self._try_parse_list(extracted)
-            if parsed is not None:
-                return parsed
-
-        # 4. 尝试从 dict 中提取 list 字段（如 {"patches": [...]}）
-        extracted_obj = self._extract_json_object(cleaned)
-        if extracted_obj is not None:
-            try:
-                obj = json.loads(extracted_obj)
-                if isinstance(obj, dict):
-                    for value in obj.values():
-                        if isinstance(value, list):
-                            return value
-            except (json.JSONDecodeError, TypeError):
-                pass
+        parse_result = parse_model_json_output(
+            response,
+            expected_schema={"patches": []},
+            model_client=self.model_client,
+            model_config=self.model_config,
+        )
+        parsed = parse_result.parsed
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("patches"), list):
+                return [item for item in parsed["patches"] if isinstance(item, dict)]
+            for value in parsed.values():
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
 
         return None
 

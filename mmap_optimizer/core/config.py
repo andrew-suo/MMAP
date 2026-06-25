@@ -94,6 +94,8 @@ class PromptsConfig:
     analysis_reflection: str = "prompts/analysis_reflection.txt"
     prompt_standardization: str = "prompts/prompt_standardization.txt"
     patch_generation: str = "prompts/patch_generation.txt"
+    semantic_patch_generation: str = "prompts/semantic_patch_generation.txt"
+    semantic_patch_translation: str = "prompts/semantic_patch_translation.txt"
     patch_calibration: str = "prompts/patch_calibration.txt"
     patch_merge: str = "prompts/patch_merge.txt"
     patch_root_merge: str = "prompts/patch_root_merge.txt"
@@ -135,6 +137,8 @@ class RefactoredConfig:
                 "analysis_reflection": self.prompts.analysis_reflection,
                 "prompt_standardization": self.prompts.prompt_standardization,
                 "patch_generation": self.prompts.patch_generation,
+                "semantic_patch_generation": self.prompts.semantic_patch_generation,
+                "semantic_patch_translation": self.prompts.semantic_patch_translation,
                 "patch_calibration": self.prompts.patch_calibration,
                 "patch_merge": self.prompts.patch_merge,
                 "patch_root_merge": self.prompts.patch_root_merge,
@@ -181,6 +185,14 @@ class RefactoredConfig:
                 "ema_alpha": self.prompt_optimization.ema_alpha,
                 "patch": {
                     "merge_strategy": self.prompt_optimization.patch_merge_strategy,
+                    "generation_mode": self.prompt_optimization.patch_generation_mode,
+                    "candidate_selection": {
+                        "enabled": self.prompt_optimization.candidate_selection_enabled,
+                        "candidate_count": self.prompt_optimization.candidate_count,
+                        "validation_split_ratio": self.prompt_optimization.candidate_validation_split_ratio,
+                        "min_gain": self.prompt_optimization.candidate_min_gain,
+                        "reject_on_any_broken": self.prompt_optimization.candidate_reject_on_any_broken,
+                    },
                     "toxicity_test": {
                         "enabled": self.prompt_optimization.toxicity_test_enabled,
                         "early_stop": self.prompt_optimization.toxicity_test_early_stop,
@@ -238,6 +250,8 @@ class RefactoredConfig:
             analysis_reflection=prompts_data.get("analysis_reflection", "prompts/analysis_reflection.txt"),
             prompt_standardization=prompts_data.get("prompt_standardization", "prompts/prompt_standardization.txt"),
             patch_generation=prompts_data.get("patch_generation", "prompts/patch_generation.txt"),
+            semantic_patch_generation=prompts_data.get("semantic_patch_generation", "prompts/semantic_patch_generation.txt"),
+            semantic_patch_translation=prompts_data.get("semantic_patch_translation", "prompts/semantic_patch_translation.txt"),
             patch_calibration=prompts_data.get("patch_calibration", "prompts/patch_calibration.txt"),
             patch_merge=prompts_data.get("patch_merge", "prompts/patch_merge.txt"),
             patch_root_merge=prompts_data.get("patch_root_merge", "prompts/patch_root_merge.txt"),
@@ -268,6 +282,7 @@ class RefactoredConfig:
         po_analysis_prompt_data = prompt_optimization_data.get("analysis_prompt", {})
         po_patch_data = prompt_optimization_data.get("patch", {})
         po_toxicity_test_data = po_patch_data.get("toxicity_test", {})
+        po_candidate_selection_data = po_patch_data.get("candidate_selection", {})
 
         prompt_optimization_config = PromptOptimizationConfig(
             enabled=prompt_optimization_data.get("enabled", True),
@@ -302,6 +317,12 @@ class RefactoredConfig:
             toxicity_test_enabled=po_toxicity_test_data.get("enabled", True),
             toxicity_test_early_stop=po_toxicity_test_data.get("early_stop", True),
             toxicity_test_sort_by_source_difficulty=po_toxicity_test_data.get("sort_by_source_difficulty", True),
+            patch_generation_mode=po_patch_data.get("generation_mode", "semantic_then_translate"),
+            candidate_selection_enabled=po_candidate_selection_data.get("enabled", False),
+            candidate_count=po_candidate_selection_data.get("candidate_count", 3),
+            candidate_validation_split_ratio=po_candidate_selection_data.get("validation_split_ratio", 0.3),
+            candidate_min_gain=po_candidate_selection_data.get("min_gain", 0.0),
+            candidate_reject_on_any_broken=po_candidate_selection_data.get("reject_on_any_broken", True),
         )
 
         # 构建 FewshotConfig

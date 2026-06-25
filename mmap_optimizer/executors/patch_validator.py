@@ -13,6 +13,7 @@ from typing import Any
 
 from ..patch.types import AnalysisPatch, ExtractionPatch
 from ..data.sample import SampleSet
+from ..prompt.output_repair import parse_model_json_output
 from ..prompt.structured_prompt import PromptSection, StructuredPrompt
 
 
@@ -371,34 +372,17 @@ class PatchValidator:
         Returns:
             校准后的 patch 字典列表，或 None（解析失败）。
         """
-        import re
-
-        # 移除 markdown 代码块标记
-        cleaned = re.sub(r"^```json\s*\n?", "", raw_output, flags=re.MULTILINE)
-        cleaned = re.sub(r"\n?```\s*$", "", cleaned, flags=re.MULTILINE)
-        cleaned = re.sub(r"^```\s*\n?", "", cleaned, flags=re.MULTILINE)
-        cleaned = cleaned.strip()
-
-        # 尝试直接解析
-        try:
-            parsed = json.loads(cleaned)
-            if isinstance(parsed, list):
-                return parsed
-            if isinstance(parsed, dict) and "patches" in parsed:
-                return parsed["patches"]
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-        # 尝试提取 JSON 数组
-        start = cleaned.find("[")
-        end = cleaned.rfind("]")
-        if start != -1 and end != -1 and start < end:
-            try:
-                parsed = json.loads(cleaned[start : end + 1])
-                if isinstance(parsed, list):
-                    return parsed
-            except (json.JSONDecodeError, TypeError):
-                pass
+        parse_result = parse_model_json_output(
+            raw_output,
+            expected_schema={"patches": []},
+            model_client=self.model_client,
+            model_config=self.model_config,
+        )
+        parsed = parse_result.parsed
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+        if isinstance(parsed, dict) and isinstance(parsed.get("patches"), list):
+            return [item for item in parsed["patches"] if isinstance(item, dict)]
 
         return None
 

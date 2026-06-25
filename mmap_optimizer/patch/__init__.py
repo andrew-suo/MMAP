@@ -4,19 +4,23 @@
 """
 
 from .types import (
+    CandidateValidationReport,
     ExtractionPatch,
     AnalysisPatch,
     PatchMergeReport,
     PatchTestRecord,
+    SemanticPatchDraft,
     ToxicityReport,
     CompressionReport,
 )
 
 __all__ = [
+    "CandidateValidationReport",
     "ExtractionPatch",
     "AnalysisPatch",
     "PatchMergeReport",
     "PatchTestRecord",
+    "SemanticPatchDraft",
     "ToxicityReport",
     "CompressionReport",
 ]

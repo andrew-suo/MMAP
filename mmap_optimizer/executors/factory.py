@@ -257,6 +257,8 @@ def create_executors(
     prompts_config = config.get("prompts", {}) if isinstance(config, dict) else {}
     analysis_reflection_template_path = prompts_config.get("analysis_reflection")
     patch_generation_prompt_path = prompts_config.get("patch_generation")
+    semantic_patch_generation_prompt_path = prompts_config.get("semantic_patch_generation")
+    semantic_patch_translation_prompt_path = prompts_config.get("semantic_patch_translation")
     patch_calibration_prompt_path = prompts_config.get("patch_calibration")
     patch_merge_prompt_path = prompts_config.get("patch_merge")
     patch_root_merge_prompt_path = prompts_config.get("patch_root_merge")
@@ -266,6 +268,8 @@ def create_executors(
         "prompt_compression_validation", "prompts/prompt_compression_validation.txt"
     )
     ema_alpha = config.get("prompt_optimization", {}).get("ema_alpha", 0.3) if isinstance(config, dict) else 0.3
+    patch_config = config.get("prompt_optimization", {}).get("patch", {}) if isinstance(config, dict) else {}
+    patch_generation_mode = patch_config.get("generation_mode", "semantic_then_translate")
 
     # 当 model_client 可用且未强制 mock 时，使用真实 executor
     use_real = model_client is not None and use_mock is not True
@@ -294,6 +298,9 @@ def create_executors(
         model_client=model_client,
         model_config=optimizer_model_config,
         patch_generation_prompt_path=patch_generation_prompt_path,
+        semantic_patch_generation_prompt_path=semantic_patch_generation_prompt_path or "prompts/semantic_patch_generation.txt",
+        patch_translation_prompt_path=semantic_patch_translation_prompt_path or "prompts/semantic_patch_translation.txt",
+        patch_generation_mode=patch_generation_mode,
         patch_validator=shared_patch_validator,
     )
 

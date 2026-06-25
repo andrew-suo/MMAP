@@ -17,7 +17,7 @@ from ..stages.extraction_prompt_optimization import ExtractionResult
 from ..phases.fewshot_optimization import FewshotExample
 from ..data.sample import SampleBatch, SampleSet, SampleSpec
 from ..prompt.structured_prompt import StructuredPrompt, StructuredPromptRenderer
-from ..prompt.output_repair import repair_json_output
+from ..prompt.output_repair import parse_model_json_output
 
 
 class ExtractionExecutor:
@@ -27,6 +27,8 @@ class ExtractionExecutor:
         self.model_client = model_client
         self.model_config = model_config or {}
         self.renderer = StructuredPromptRenderer()
+        self.model_output_repairs: list[dict[str, Any]] = []
+        self._last_parse_record: dict[str, Any] | None = None
 
     def execute(
         self,
@@ -70,6 +72,10 @@ class ExtractionExecutor:
         )
         # 5. parse output
         parsed_output, status = self._parse_output(response.raw_output)
+        if self._last_parse_record is not None:
+            record = dict(self._last_parse_record)
+            record["sample_id"] = spec.id
+            self.model_output_repairs.append(record)
         # 6. return ExtractionResult
         return ExtractionResult(
             sample_id=spec.id,
@@ -146,24 +152,19 @@ class ExtractionExecutor:
 
         注意：status 只反映解析成功/失败，不判断业务对错。
         """
-        # 首先尝试直接 JSON 解析
-        try:
-            parsed = json.loads(raw_output)
-        except (json.JSONDecodeError, TypeError):
-            parsed = None
-
-        if parsed is not None and isinstance(parsed, dict):
-            return parsed, "correct"
-
-        # 解析失败，尝试使用模型修复
-        if self.model_client is not None:
-            repaired, repair_status = repair_json_output(
-                raw_output=raw_output,
-                expected_schema=None,  # extraction 没有固定 schema
-                model_client=self.model_client,
-                model_config=self.model_config,
-            )
-            if repair_status == "repaired" and isinstance(repaired, dict):
-                return repaired, "repaired"
-
+        parse_result = parse_model_json_output(
+            raw_output=raw_output,
+            expected_schema=None,
+            model_client=self.model_client,
+            model_config=self.model_config,
+        )
+        self._last_parse_record = {
+            "executor": "extraction",
+            "status": parse_result.status,
+            "failure_reason": parse_result.failure_reason,
+            "raw_output_preview": raw_output[:500],
+        }
+        if isinstance(parse_result.parsed, dict):
+            status = "correct" if parse_result.status == "parsed" else "repaired"
+            return parse_result.parsed, status
         return None, "invalid"

@@ -14,6 +14,66 @@ from typing import Any, Literal
 
 
 @dataclass
+class SemanticPatchDraft:
+    """LLM-friendly semantic patch before strict patch translation."""
+
+    id: str
+    prompt_type: str
+    source_sample_ids: list[str] = field(default_factory=list)
+    target_section_hint: str = ""
+    change_intent: str = ""
+    location_hint: str = ""
+    proposed_text: str = ""
+    rationale: str = ""
+    risk_notes: list[str] = field(default_factory=list)
+    status: str = "draft"
+    rejection_reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "prompt_type": self.prompt_type,
+            "source_sample_ids": list(self.source_sample_ids),
+            "target_section_hint": self.target_section_hint,
+            "change_intent": self.change_intent,
+            "location_hint": self.location_hint,
+            "proposed_text": self.proposed_text,
+            "rationale": self.rationale,
+            "risk_notes": list(self.risk_notes),
+            "status": self.status,
+            "rejection_reason": self.rejection_reason,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass
+class CandidateValidationReport:
+    """Validation summary for one candidate patch-set selection step."""
+
+    id: str
+    prompt_type: str
+    selected_candidate_id: str | None = None
+    baseline_correct_count: int = 0
+    candidate_count: int = 0
+    min_gain: float = 0.0
+    reject_on_any_broken: bool = True
+    candidates: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "prompt_type": self.prompt_type,
+            "selected_candidate_id": self.selected_candidate_id,
+            "baseline_correct_count": self.baseline_correct_count,
+            "candidate_count": self.candidate_count,
+            "min_gain": self.min_gain,
+            "reject_on_any_broken": self.reject_on_any_broken,
+            "candidates": list(self.candidates),
+        }
+
+
+@dataclass
 class ExtractionPatch:
     """Extraction Prompt Patch。"""
     id: str

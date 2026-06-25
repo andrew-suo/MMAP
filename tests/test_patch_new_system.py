@@ -431,6 +431,8 @@ def test_prompts_config_defaults():
     assert config.analysis_reflection == "prompts/analysis_reflection.txt"
     assert config.prompt_standardization == "prompts/prompt_standardization.txt"
     assert config.patch_generation == "prompts/patch_generation.txt"
+    assert config.semantic_patch_generation == "prompts/semantic_patch_generation.txt"
+    assert config.semantic_patch_translation == "prompts/semantic_patch_translation.txt"
     assert config.patch_calibration == "prompts/patch_calibration.txt"
     assert config.patch_merge == "prompts/patch_merge.txt"
     assert config.patch_root_merge == "prompts/patch_root_merge.txt"
@@ -447,6 +449,8 @@ def test_prompts_config_to_dict():
         "analysis_reflection",
         "prompt_standardization",
         "patch_generation",
+        "semantic_patch_generation",
+        "semantic_patch_translation",
         "patch_calibration",
         "patch_merge",
         "patch_root_merge",

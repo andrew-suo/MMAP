@@ -1,23 +1,72 @@
-# MMAP 重构版配置示例 v1.0
-# 根据设计文档创建的配置结构
+# MMAP 默认配置 v1.1
+# 本文件展示所有可用配置项，可作为真实运行的起点。
+# - 若不配置 models，将自动使用 mock executor（用于本地开发/调试）
+# - 若配置了 models，将使用真实模型执行优化
+# - 可通过 `use_mock: true/false` 强制指定模式
 
+# ============================================================
+# Run: 运行配置
+# ============================================================
 run:
   seed: 42
   output_dir: runs/exp_001
+  # use_mock: 三种模式
+  #   null  - 自动判断（有 models 配置则真实，否则 mock）
+  #   true  - 强制 mock（用于测试/无模型环境）
+  #   false - 强制真实（缺 model_client 时报错，不静默降级）
+  use_mock: null
 
+# ============================================================
+# Dataset: 数据集配置
+# ============================================================
 dataset:
   path: data/smoke_samples.jsonl
   format: jsonl
-  image_root: null
-  ground_truth_path: null
+  image_root: null        # 多模态图片根目录，无图片则 null
+  ground_truth_path: null # 外部 ground_truth 文件，内嵌在 samples 中则 null
 
+# ============================================================
+# Prompts: Prompt 文件路径
+# ============================================================
+prompts:
+  extraction: prompts/extraction.txt
+  analysis: prompts/analysis.txt
+  analysis_reflection: prompts/analysis_reflection.txt
+  prompt_standardization: prompts/prompt_standardization.txt
+  patch_generation: prompts/patch_generation.txt
+  semantic_patch_generation: prompts/semantic_patch_generation.txt
+  semantic_patch_translation: prompts/semantic_patch_translation.txt
+  patch_calibration: prompts/patch_calibration.txt
+  patch_merge: prompts/patch_merge.txt
+  patch_root_merge: prompts/patch_root_merge.txt
+  patch_text_match: prompts/patch_text_match.txt
+  prompt_compression: prompts/prompt_compression.txt
+  prompt_compression_validation: prompts/prompt_compression_validation.txt
+
+# ============================================================
+# Prompt Structuring: Prompt 结构化阶段
+# ============================================================
 prompt_structuring:
   enabled: true
+  # 当 Markdown 结构质量较差时，调用模型进行标准化
   use_model_when_structure_poor: true
 
+# ============================================================
+# Sampling: 抽样配置（顶层用于 Phase 级别）
+# ============================================================
 sampling:
-  ema_alpha: 0.3
+  type: difficulty_frequency  # 可选: random / difficulty / frequency / difficulty_frequency
+  difficulty_weight: 0.7
+  frequency_weight: 0.3
+  ema_alpha: 0.01             # EMA 平滑系数（用于贡献度追踪）
+  error_ratio: 0.6            # 错误样本占比
+  success_ratio: 0.25         # 成功样本占比
+  low_frequency_ratio: 0.15   # 低频样本占比
+  fallback_to_difficulty_frequency: true
 
+# ============================================================
+# Prompt Optimization: Prompt 优化阶段
+# ============================================================
 prompt_optimization:
   enabled: true
   rounds: 3
@@ -25,41 +74,110 @@ prompt_optimization:
   min_batch_size: 8
   max_batch_size: 99
 
+  # Batch Size 自适应控制器
   batch_size_controller:
     enabled: true
-    growth_factor: 2.0
-    decrease_factor: 0.8
-    improvement_epsilon: 0.0
-    shrink_on_rollback: true
-    shrink_on_no_progress: true
+    growth_factor: 2.0        # 准确率提升时批量扩大倍数
+    decrease_factor: 0.8      # 准确率下降/回滚时批量缩小倍数
+    improvement_epsilon: 0.0  # 视为"提升"的最小阈值
+    shrink_on_rollback: true  # 回滚时缩小批量
+    shrink_on_no_progress: true # 无进展时缩小批量
 
+  # 阶段内抽样器
   sampler:
     type: difficulty_frequency
     difficulty_weight: 0.7
     frequency_weight: 0.3
+    error_ratio: 0.6
+    success_ratio: 0.25
+    low_frequency_ratio: 0.15
+    fallback_to_difficulty_frequency: true
 
+  # Extraction Prompt 压缩配置
   extraction_prompt:
     line_limit: 300
     char_limit: 20000
     compression_enabled: true
 
+  # Analysis Prompt 压缩配置
   analysis_prompt:
     line_limit: 250
     char_limit: 16000
     compression_enabled: true
 
+  # Section 贡献度 EMA 系数（用于压缩优先级排序）
+  ema_alpha: 0.3
+
+  # Patch 生成与合并
   patch:
-    merge_strategy: tree_merge
+    merge_strategy: tree_merge  # 可选: tree_merge / sequential_merge
+    generation_mode: semantic_then_translate  # 可选: direct / semantic_then_translate
+
+    # Candidate Selection: 多候选 patch 选优
+    candidate_selection:
+      enabled: false
+      candidate_count: 3
+      validation_split_ratio: 0.3
+      min_gain: 0.0
+      reject_on_any_broken: true
+      validation_pool_enabled: true
+      validation_batch_size: null          # null 表示使用当前批量大小
+      validation_exclude_optimization_batch: true
+
+    # Toxicity Test: 测毒测试
     toxicity_test:
       enabled: true
       early_stop: true
       sort_by_source_difficulty: true
 
+  # Multi-seed: 多种子候选采样（实验性）
+  multi_seed:
+    enabled: false
+    seed_count: 3
+    candidate_batch_size: null             # null 表示使用当前批量大小
+    merge_candidates_before_selection: true
+
+# ============================================================
+# Few-shot Optimization: Few-shot 优化阶段
+# ============================================================
 fewshot_optimization:
   enabled: true
   rounds: 2
   batch_size: 99
   slot_count: 5
-
   sampler:
     type: frequency
+
+# ============================================================
+# Models: 真实模型配置
+# ============================================================
+# 不配置 models（或为 {}）则使用 mock executor。
+# 配置后，use_mock=null 会自动启用真实模型。
+#
+# 支持的 provider:
+#   - mock              : 本地 mock（无需 base_url/api_key）
+#   - openai_compatible : OpenAI 兼容接口（vLLM/SGLang/Ollama/LiteLLM 等）
+#
+# 示例: 真实 OpenAI-compatible 模型
+# models:
+#   extraction:
+#     provider: openai_compatible
+#     model: qwen2-vl-72b-instruct
+#     base_url: http://localhost:8000/v1
+#     api_key_env: OPENAI_API_KEY   # 从环境变量读取
+#     temperature: 0.0
+#     max_tokens: 4096
+#     timeout: 120
+#     verify_ssl: true
+#     chat_template_kwargs: null
+#   optimizer:
+#     provider: openai_compatible
+#     model: qwen2-72b-instruct
+#     base_url: http://localhost:8001/v1
+#     api_key_env: OPENAI_API_KEY
+#     temperature: 0.7
+#     max_tokens: 4096
+#     timeout: 120
+#     verify_ssl: true
+#     chat_template_kwargs: null
+models: {}

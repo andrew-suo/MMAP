@@ -421,8 +421,9 @@ class MMAPRunner:
         step.status = "running"
         self._save_run_plan()
 
-        # 获取 model_client（用于结构质量较差时进行标准化）
-        model_client = self.executors.get("model_client")
+        # 获取 optimizer_model_client（用于结构质量较差时进行标准化）
+        # 标准化属于优化任务，应使用 optimizer 模型而非 extraction 模型
+        model_client = self.executors.get("optimizer_model_client") or self.executors.get("model_client")
 
         # 创建 Prompt Structuring Phase
         phase = PromptStructuringPhase(

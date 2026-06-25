@@ -7,16 +7,13 @@
 
 from __future__ import annotations
 
-import base64
 import json
-import mimetypes
-from pathlib import Path
 from typing import Any
 
 from ..model.client import ModelClient
 
 from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionResult
-from ..data.sample import SampleSet, SampleSpec
+from ..data.sample import SampleAsset, SampleSet, SampleSpec
 from ..prompt.structured_prompt import StructuredPrompt, StructuredPromptRenderer
 from ..prompt.prompt_manager import render_prompt
 from ..prompt.output_repair import repair_json_output
@@ -72,6 +69,7 @@ class AnalysisExecutor:
         )
 
         error_reason = self._extract_error_reason(judgement)
+        patch_suggestion = self._extract_patch_suggestion(judgement)
         confirmed_facts = self._extract_confirmed_facts(judgement)
         hypothesized_error_causes = self._extract_hypothesized_error_causes(judgement)
 
@@ -80,6 +78,7 @@ class AnalysisExecutor:
             judgement=judgement,
             analysis_correct=analysis_correct,
             error_reason=error_reason,
+            patch_suggestion=patch_suggestion,
             confirmed_facts=confirmed_facts,
             hypothesized_error_causes=hypothesized_error_causes,
         )
@@ -270,49 +269,9 @@ class AnalysisExecutor:
             {"role": "user", "content": user_content},
         ], assets
 
-    def _build_assets(self, sample_spec: SampleSpec) -> list[dict[str, Any]]:
-        """构建图片资产列表（参考 ExtractionExecutor）。"""
-        assets: list[dict[str, Any]] = []
-        if not sample_spec.assets:
-            return assets
-        for asset in sample_spec.assets:
-            asset_dict = self._load_asset(asset)
-            if asset_dict is not None:
-                assets.append(asset_dict)
-        return assets
-
-    def _load_asset(self, asset: Any) -> dict[str, Any] | None:
-        """加载单个图片资产为 data URL 格式。"""
-        try:
-            local_path = getattr(asset, "local_path", None)
-            uri = getattr(asset, "uri", None)
-            mime_type = getattr(asset, "mime_type", None)
-
-            if local_path:
-                path = Path(local_path)
-                if path.exists():
-                    if not mime_type:
-                        mime_type, _ = mimetypes.guess_type(str(path))
-                    with open(path, "rb") as f:
-                        b64 = base64.b64encode(f.read()).decode("utf-8")
-                    if not mime_type:
-                        mime_type = "image/png"
-                    return {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime_type};base64,{b64}"},
-                    }
-
-            if uri:
-                if not mime_type:
-                    mime_type = "image/png"
-                return {
-                    "type": "image_url",
-                    "image_url": {"url": uri},
-                }
-
-            return None
-        except Exception:
-            return None
+    def _build_assets(self, sample_spec: SampleSpec) -> list[SampleAsset]:
+        """构建模型客户端可消费的图片资产列表。"""
+        return [asset for asset in sample_spec.assets if asset.type == "image"]
 
     def _parse_judgement(self, raw_output: str | None) -> dict[str, Any]:
         """解析模型输出为 judgement dict。

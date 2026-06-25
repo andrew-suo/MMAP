@@ -223,28 +223,48 @@ def create_executors(
 
     Returns:
         包含所有 executor 实例的字典，键为 executor 名称：
-        - ``extraction``: 抽取执行器
+        - ``extraction``: 抽取执行器（使用 extraction_client）
         - ``evaluation``: 评估执行器
-        - ``analysis``: 分析执行器
-        - ``patch_generation``: patch 生成执行器
-        - ``patch_apply``: patch 应用执行器
-        - ``merge``: patch 合并执行器
+        - ``analysis``: 分析执行器（使用 optimizer_client）
+        - ``patch_generation``: patch 生成执行器（使用 optimizer_client）
+        - ``patch_apply``: patch 应用执行器（使用 optimizer_client）
+        - ``merge``: patch 合并执行器（使用 optimizer_client）
         - ``toxicity_test``: 测毒执行器
-        - ``compression``: 压缩执行器
-        - ``fewshot``: few-shot 执行器
-        - ``model_client``: 模型客户端（可能为 None）
+        - ``compression``: 压缩执行器（使用 optimizer_client）
+        - ``fewshot``: few-shot 执行器（使用 extraction_client）
+        - ``model_client``: 任意可用模型客户端（向后兼容，可能为 None）
+        - ``extraction_model_client``: 抽取模型客户端（用于 extraction/fewshot）
+        - ``optimizer_model_client``: 优化模型客户端（用于其他所有任务）
     """
     models_config = config.get("models", {}) if isinstance(config, dict) else {}
     extraction_model_config = models_config.get("extraction") if isinstance(models_config, dict) else None
     optimizer_model_config = models_config.get("optimizer") if isinstance(models_config, dict) else None
 
-    selected_model_config = extraction_model_config or optimizer_model_config
-    model_client = None
-    if use_mock is not True and selected_model_config:
-        try:
-            model_client = _build_model_client(selected_model_config)
-        except Exception as e:
-            raise RuntimeError(f"model_client 构建失败: {e}") from e
+    # 构建两个独立的 model_client：
+    # - extraction_client: 用于抽取和 few-shot 验证
+    # - optimizer_client: 用于其他所有任务（分析、patch 生成、压缩、标准化等）
+    extraction_client = None
+    optimizer_client = None
+    if use_mock is not True:
+        if extraction_model_config:
+            try:
+                extraction_client = _build_model_client(extraction_model_config)
+            except Exception as e:
+                raise RuntimeError(f"extraction model_client 构建失败: {e}") from e
+        if optimizer_model_config:
+            try:
+                optimizer_client = _build_model_client(optimizer_model_config)
+            except Exception as e:
+                raise RuntimeError(f"optimizer model_client 构建失败: {e}") from e
+
+    # 兜底：只配置了一个模型时两者共用
+    if extraction_client is None and optimizer_client is not None:
+        extraction_client = optimizer_client
+    if optimizer_client is None and extraction_client is not None:
+        optimizer_client = extraction_client
+
+    # 向后兼容：model_client 指向任意可用 client（用于校验和旧代码）
+    model_client = extraction_client or optimizer_client
 
     # PR4: 根据 use_mock 决定是否使用真实 executor
     # use_mock=False 且 model_client 不可用时，直接报错（不允许 fallback 到 mock）
@@ -272,16 +292,18 @@ def create_executors(
     patch_generation_mode = patch_config.get("generation_mode", "semantic_then_translate")
 
     # 当 model_client 可用且未强制 mock 时，使用真实 executor
+    # - extraction/fewshot 用 extraction_client
+    # - analysis/patch/merge/compression 用 optimizer_client
     use_real = model_client is not None and use_mock is not True
     if use_real:
-        extraction_executor: Any = ExtractionExecutor(model_client, extraction_model_config)
+        extraction_executor: Any = ExtractionExecutor(extraction_client, extraction_model_config)
         evaluation_executor: Any = EvaluationExecutor()
         analysis_executor: Any = AnalysisExecutor(
-            model_client,
+            optimizer_client,
             optimizer_model_config,
             analysis_reflection_template_path=analysis_reflection_template_path,
         )
-        fewshot_executor: Any = FewshotExecutor(model_client, extraction_model_config)
+        fewshot_executor: Any = FewshotExecutor(extraction_client, extraction_model_config)
     else:
         extraction_executor = _MockExtractionExecutor()
         evaluation_executor = _MockEvaluationExecutor()
@@ -289,13 +311,13 @@ def create_executors(
         fewshot_executor = _MockFewshotExecutor()
 
     shared_patch_validator = PatchValidator(
-        model_client=model_client,
+        model_client=optimizer_client,
         model_config=optimizer_model_config,
         calibration_prompt_path=patch_calibration_prompt_path,
     )
 
     patch_generation_executor: Any = PatchGenerationExecutor(
-        model_client=model_client,
+        model_client=optimizer_client,
         model_config=optimizer_model_config,
         patch_generation_prompt_path=patch_generation_prompt_path,
         semantic_patch_generation_prompt_path=semantic_patch_generation_prompt_path or "prompts/semantic_patch_generation.txt",
@@ -310,21 +332,21 @@ def create_executors(
         "analysis": analysis_executor,
         "patch_generation": patch_generation_executor,
         "patch_apply": PatchApplyExecutor(
-            model_client=model_client,
+            model_client=optimizer_client,
             model_config=optimizer_model_config,
             text_match_prompt_path=patch_text_match_prompt_path,
         ),
         "patch_validator": shared_patch_validator,
         "merge": MergeExecutor(
             patch_validator=shared_patch_validator,
-            model_client=model_client,
+            model_client=optimizer_client,
             model_config=optimizer_model_config,
             merge_prompt_path=patch_merge_prompt_path,
             root_merge_prompt_path=patch_root_merge_prompt_path,
         ),
         "toxicity_test": ToxicityTestExecutor(),
         "compression": CompressionExecutor(
-            model_client=model_client,
+            model_client=optimizer_client,
             model_config=optimizer_model_config,
             compression_prompt_path=prompt_compression_path,
             validation_prompt_path=prompt_compression_validation_path,
@@ -332,6 +354,8 @@ def create_executors(
         ),
         "fewshot": fewshot_executor,
         "model_client": model_client,
+        "extraction_model_client": extraction_client,
+        "optimizer_model_client": optimizer_client,
     }
 
 

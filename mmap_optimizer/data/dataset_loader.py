@@ -82,12 +82,15 @@ class DatasetLoader:
         else:
             raise ValueError(f"Unsupported dataset format: {self.format}")
 
-        # 如果有 image_root，更新资产的 local_path
+        # 如果有 image_root，补全资产的 local_path
         if self.image_root:
             for spec in specs:
                 for asset in spec.assets:
-                    if asset.uri and not asset.local_path:
-                        # 尝试从 URI 推断本地路径
+                    if asset.local_path and not Path(asset.local_path).is_absolute():
+                        # local_path 是相对路径，拼接 image_root
+                        asset.local_path = str(self.image_root / asset.local_path)
+                    elif asset.uri and not asset.local_path:
+                        # 只有 uri 没有 local_path，从 URI 推断文件名
                         asset.local_path = str(self.image_root / Path(asset.uri).name)
 
         return create_sample_set(specs)

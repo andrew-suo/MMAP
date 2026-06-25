@@ -8,6 +8,7 @@ from typing import Any, Literal
 from ..patch.types import AnalysisPatch, CompressionReport, PatchMergeReport, ToxicityReport
 from ..data.sample import SampleBatch, SampleSet, SampleTrace
 from ..prompt.structured_prompt import StructuredPrompt
+from ..prompt.section_contribution import SectionContributionTracker
 from .extraction_prompt_optimization import AnalysisResult, ExtractionResult
 
 
@@ -121,12 +122,18 @@ class AnalysisPromptOptimizationStage:
         self.compression_report: CompressionReport | None = None
         self.transition_report: dict[str, Any] | None = None
 
+        # Section 贡献度追踪（EMA）
+        self.contribution_tracker = SectionContributionTracker(alpha=0.3)
+
     def run(self) -> AnalysisMetrics:
         """执行完整的 Analysis Prompt Optimization Stage。"""
         print("  [Step 1/8] 统计基础分析准确率...")
         self._step1_compute_base_metrics()
         if self.metrics.base_accuracy is not None:
             print(f"  [Step 1/8] 基础评估完成，准确率: {self.metrics.base_accuracy:.2%}")
+
+        # 更新 section 贡献度追踪
+        self._update_contribution_tracker()
 
         print("  [Step 2/8] 反思分析错误...")
         self._step2_reflect_on_errors()
@@ -160,6 +167,21 @@ class AnalysisPromptOptimizationStage:
         self.metrics.base_correct_count = correct_count
         self.metrics.base_wrong_count = wrong_count
         self.metrics.base_accuracy = correct_count / total if total > 0 else 0.0
+
+    def _update_contribution_tracker(self) -> None:
+        """从分析结果更新 section 贡献度追踪器。"""
+        batch_attribution: dict[str, list[dict]] = {}
+        batch_results: dict[str, bool] = {}
+
+        for result in self.base_analysis_results:
+            judgement = result.judgement if isinstance(result.judgement, dict) else {}
+            attribution = judgement.get("prompt_section_attribution", [])
+            if isinstance(attribution, list):
+                batch_attribution[result.sample_id] = attribution
+            batch_results[result.sample_id] = result.analysis_correct
+
+        if batch_results:
+            self.contribution_tracker.update(batch_attribution, batch_results)
 
     def _step2_reflect_on_errors(self) -> None:
         """Step 2: 对分析错误样本反思。"""
@@ -624,8 +646,6 @@ class AnalysisPromptOptimizationStage:
         line_limit = getattr(self, "line_limit", 250)
         char_limit = getattr(self, "char_limit", 16000)
 
-        pre_analysis = self.final_analysis_results or self.patched_analysis_results or self.base_analysis_results
-
         compressed_prompt, report = self.compression_executor.compress_if_needed(
             prompt=prompt_to_compress,
             line_limit=line_limit,
@@ -633,10 +653,7 @@ class AnalysisPromptOptimizationStage:
             batch=self.batch,
             sample_set=self.sample_set,
             mode="analysis",
-            analysis_executor=self.analysis_executor,
-            extraction_prompt=self.extraction_prompt,
-            extraction_results=self.extraction_results,
-            pre_compression_analysis_results=pre_analysis,
+            contribution_tracker=self.contribution_tracker,
         )
 
         self.compression_report = report

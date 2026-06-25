@@ -98,6 +98,8 @@ class PromptsConfig:
     patch_merge: str = "prompts/patch_merge.txt"
     patch_root_merge: str = "prompts/patch_root_merge.txt"
     patch_text_match: str = "prompts/patch_text_match.txt"
+    prompt_compression: str = "prompts/prompt_compression.txt"
+    prompt_compression_validation: str = "prompts/prompt_compression_validation.txt"
 
 
 @dataclass
@@ -137,6 +139,8 @@ class RefactoredConfig:
                 "patch_merge": self.prompts.patch_merge,
                 "patch_root_merge": self.prompts.patch_root_merge,
                 "patch_text_match": self.prompts.patch_text_match,
+                "prompt_compression": self.prompts.prompt_compression,
+                "prompt_compression_validation": self.prompts.prompt_compression_validation,
             },
             "prompt_structuring": {
                 "enabled": self.prompt_structuring.enabled,
@@ -174,6 +178,7 @@ class RefactoredConfig:
                     "char_limit": self.prompt_optimization.analysis_prompt_char_limit,
                     "compression_enabled": self.prompt_optimization.analysis_prompt_compression_enabled,
                 },
+                "ema_alpha": self.prompt_optimization.ema_alpha,
                 "patch": {
                     "merge_strategy": self.prompt_optimization.patch_merge_strategy,
                     "toxicity_test": {
@@ -237,6 +242,8 @@ class RefactoredConfig:
             patch_merge=prompts_data.get("patch_merge", "prompts/patch_merge.txt"),
             patch_root_merge=prompts_data.get("patch_root_merge", "prompts/patch_root_merge.txt"),
             patch_text_match=prompts_data.get("patch_text_match", "prompts/patch_text_match.txt"),
+            prompt_compression=prompts_data.get("prompt_compression", "prompts/prompt_compression.txt"),
+            prompt_compression_validation=prompts_data.get("prompt_compression_validation", "prompts/prompt_compression_validation.txt"),
         )
 
         # 构建 PromptStructuringConfig
@@ -290,6 +297,7 @@ class RefactoredConfig:
             analysis_prompt_line_limit=po_analysis_prompt_data.get("line_limit", 250),
             analysis_prompt_char_limit=po_analysis_prompt_data.get("char_limit", 16000),
             analysis_prompt_compression_enabled=po_analysis_prompt_data.get("compression_enabled", True),
+            ema_alpha=prompt_optimization_data.get("ema_alpha", 0.3),
             patch_merge_strategy=po_patch_data.get("merge_strategy", "tree_merge"),
             toxicity_test_enabled=po_toxicity_test_data.get("enabled", True),
             toxicity_test_early_stop=po_toxicity_test_data.get("early_stop", True),

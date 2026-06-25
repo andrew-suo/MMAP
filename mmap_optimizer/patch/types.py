@@ -319,11 +319,9 @@ class CompressionReport:
     line_count_after: int = 0
     char_count_before: int = 0
     char_count_after: int = 0
-    base_accuracy: float | None = None
-    pre_compression_accuracy: float | None = None
-    post_compression_accuracy: float | None = None
-    broken_sample_ids: list[str] = field(default_factory=list)
-    fixed_sample_ids: list[str] = field(default_factory=list)
+    validation_passed: bool = False
+    validation_reasons: list[str] = field(default_factory=list)
+    compressed_sections: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     still_over_limit: bool = False
 
@@ -341,11 +339,9 @@ class CompressionReport:
             "line_count_after": self.line_count_after,
             "char_count_before": self.char_count_before,
             "char_count_after": self.char_count_after,
-            "base_accuracy": self.base_accuracy,
-            "pre_compression_accuracy": self.pre_compression_accuracy,
-            "post_compression_accuracy": self.post_compression_accuracy,
-            "broken_sample_ids": list(self.broken_sample_ids),
-            "fixed_sample_ids": list(self.fixed_sample_ids),
+            "validation_passed": self.validation_passed,
+            "validation_reasons": list(self.validation_reasons),
+            "compressed_sections": list(self.compressed_sections),
             "warnings": list(self.warnings),
             "still_over_limit": self.still_over_limit,
         }
@@ -365,11 +361,9 @@ class CompressionReport:
             line_count_after=data.get("line_count_after", 0),
             char_count_before=data.get("char_count_before", 0),
             char_count_after=data.get("char_count_after", 0),
-            base_accuracy=data.get("base_accuracy"),
-            pre_compression_accuracy=data.get("pre_compression_accuracy"),
-            post_compression_accuracy=data.get("post_compression_accuracy"),
-            broken_sample_ids=data.get("broken_sample_ids", []),
-            fixed_sample_ids=data.get("fixed_sample_ids", []),
+            validation_passed=data.get("validation_passed", False),
+            validation_reasons=data.get("validation_reasons", []),
+            compressed_sections=data.get("compressed_sections", []),
             warnings=data.get("warnings", []),
             still_over_limit=data.get("still_over_limit", False),
         )

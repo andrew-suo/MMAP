@@ -451,6 +451,8 @@ def test_prompts_config_to_dict():
         "patch_merge",
         "patch_root_merge",
         "patch_text_match",
+        "prompt_compression",
+        "prompt_compression_validation",
     }
     assert set(d.keys()) == expected_keys
     # 抽查几个默认值

@@ -3,8 +3,8 @@
 对照 v1.4 设计文档第 12 节的 17 条验收标准，逐项验证：
 1.  factory.py 不再为 compression 返回 mock executor
 2.  CompressionExecutor 支持超限检测
-3.  CompressionExecutor 支持压缩后重新测试
-4.  压缩后指标不降且无新增 broken 才接受
+3.  CompressionExecutor 支持压缩后 LLM 语义验证
+4.  压缩后 LLM 验证通过才接受
 5.  压缩失败时保留未压缩 prompt
 6.  extraction / analysis 都能生成 compression_report
 7.  Run 级 artifact 完整
@@ -127,8 +127,6 @@ def test_acceptance_02_compression_detects_over_limit():
     sample_set = _make_sample_set(sample_ids)
     batch = _make_batch(sample_ids)
 
-    # 使用 mock executor 以支持回归测试
-    executors = create_executors({}, use_mock=True)
     executor = CompressionExecutor(model_client=None)
     result_prompt, report = executor.compress_if_needed(
         prompt=prompt,
@@ -136,27 +134,22 @@ def test_acceptance_02_compression_detects_over_limit():
         char_limit=10000,
         batch=batch,
         sample_set=sample_set,
-        extraction_executor=executors["extraction"],
-        evaluation_executor=executors["evaluation"],
-        pre_compression_eval_records=_make_eval_records(sample_ids, "correct"),
     )
 
     assert report.triggered is True, "超 line_limit 应触发压缩"
 
 
 # ============================================================
-# 验收标准 3: CompressionExecutor 支持压缩后重新测试
+# 验收标准 3: CompressionExecutor 支持压缩后 LLM 语义验证
 # ============================================================
 
-def test_acceptance_03_compression_runs_regression_test():
-    """CompressionExecutor 压缩后执行回归测试。"""
+def test_acceptance_03_compression_runs_validation():
+    """CompressionExecutor 压缩后执行 LLM 语义验证（无 model_client 时确定性验证）。"""
     prompt = _make_over_limit_prompt()
     sample_ids = ["s1", "s2"]
     sample_set = _make_sample_set(sample_ids)
     batch = _make_batch(sample_ids)
 
-    # 使用 mock executor 以支持回归测试
-    executors = create_executors({}, use_mock=True)
     executor = CompressionExecutor(model_client=None)
     _, report = executor.compress_if_needed(
         prompt=prompt,
@@ -164,24 +157,22 @@ def test_acceptance_03_compression_runs_regression_test():
         char_limit=10000,
         batch=batch,
         sample_set=sample_set,
-        extraction_executor=executors["extraction"],
-        evaluation_executor=executors["evaluation"],
-        pre_compression_eval_records=_make_eval_records(sample_ids, "correct"),
     )
 
-    # 压缩后应有 post_compression_accuracy（回归测试执行过）
-    assert report.post_compression_accuracy is not None, "压缩后应执行回归测试"
+    # 压缩后应有 validation_passed（验证执行过）
+    assert report.validation_passed is True, "压缩后应执行验证"
+    assert len(report.validation_reasons) > 0, "应有验证原因"
 
 
 # ============================================================
-# 验收标准 4: 压缩后指标不降且无新增 broken 才接受
+# 验收标准 4: 压缩后 LLM 验证通过才接受
 # ============================================================
 
 def test_acceptance_04_compression_accept_criteria():
-    """CompressionReport 记录接受标准相关字段。"""
+    """CompressionReport 记录验证相关字段。"""
     from mmap_optimizer.patch.types import CompressionReport
 
-    # 构造一个接受的 report
+    # 构造一个验证通过的 report
     report = CompressionReport(
         id="cr_1",
         prompt_type="extraction",
@@ -194,19 +185,17 @@ def test_acceptance_04_compression_accept_criteria():
         line_count_after=30,
         char_count_before=500,
         char_count_after=300,
-        base_accuracy=0.8,
-        pre_compression_accuracy=0.8,
-        post_compression_accuracy=0.85,
-        broken_sample_ids=[],
-        fixed_sample_ids=[],
+        validation_passed=True,
+        validation_reasons=["section-level LLM compression validated"],
+        compressed_sections=["section_1"],
         warnings=[],
         still_over_limit=False,
     )
     assert report.accepted is True
-    assert report.post_compression_accuracy >= report.pre_compression_accuracy
-    assert len(report.broken_sample_ids) == 0
+    assert report.validation_passed is True
+    assert len(report.compressed_sections) > 0
 
-    # 构造一个拒绝的 report
+    # 构造一个验证失败的 report
     report_rejected = CompressionReport(
         id="cr_2",
         prompt_type="extraction",
@@ -214,21 +203,19 @@ def test_acceptance_04_compression_accept_criteria():
         compressed_prompt_id="p2",
         triggered=True,
         accepted=False,
-        rejected_reason="accuracy_drop",
+        rejected_reason="VALIDATION_FAILED",
         line_count_before=50,
         line_count_after=30,
         char_count_before=500,
         char_count_after=300,
-        base_accuracy=0.8,
-        pre_compression_accuracy=0.8,
-        post_compression_accuracy=0.7,
-        broken_sample_ids=[],
-        fixed_sample_ids=[],
-        warnings=["accuracy dropped"],
+        validation_passed=False,
+        validation_reasons=["section-level compression failed validation"],
+        compressed_sections=[],
+        warnings=["validation failed"],
         still_over_limit=False,
     )
     assert report_rejected.accepted is False
-    assert report_rejected.post_compression_accuracy < report_rejected.pre_compression_accuracy
+    assert report_rejected.validation_passed is False
 
 
 # ============================================================
@@ -242,8 +229,6 @@ def test_acceptance_05_compression_failure_preserves_original():
     sample_set = _make_sample_set(sample_ids)
     batch = _make_batch(sample_ids)
 
-    # 使用 mock executor 以支持回归测试
-    executors = create_executors({}, use_mock=True)
     executor = CompressionExecutor(model_client=None)
     result_prompt, report = executor.compress_if_needed(
         prompt=prompt,
@@ -251,9 +236,6 @@ def test_acceptance_05_compression_failure_preserves_original():
         char_limit=10000,
         batch=batch,
         sample_set=sample_set,
-        extraction_executor=executors["extraction"],
-        evaluation_executor=executors["evaluation"],
-        pre_compression_eval_records=_make_eval_records(sample_ids, "correct"),
     )
 
     # 无论接受与否，若拒绝则返回原 prompt

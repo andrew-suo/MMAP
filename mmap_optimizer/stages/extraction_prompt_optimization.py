@@ -8,6 +8,7 @@ from typing import Any, Literal
 from ..patch.types import CompressionReport, ExtractionPatch, PatchMergeReport, ToxicityReport
 from ..data.sample import SampleBatch, SampleSet, SampleState, SampleTrace
 from ..prompt.structured_prompt import StructuredPrompt
+from ..prompt.section_contribution import SectionContributionTracker
 
 
 @dataclass
@@ -175,6 +176,9 @@ class ExtractionPromptOptimizationStage:
         self.transition_report: dict[str, Any] | None = None
         self.patch_apply_report = None
 
+        # Section 贡献度追踪（EMA）
+        self.contribution_tracker = SectionContributionTracker(alpha=0.3)
+
     def run(self) -> ExtractionMetrics:
         """执行完整的 Extraction Prompt Optimization Stage。"""
         print("  [Step 1/9] 抽取样本...")
@@ -185,6 +189,9 @@ class ExtractionPromptOptimizationStage:
             print(f"  [Step 2/9] 基础评估完成，准确率: {self.metrics.base_accuracy:.2%}")
         else:
             print("  [Step 2/9] 基础评估完成")
+
+        # 更新 section 贡献度追踪
+        self._update_contribution_tracker()
 
         print("  [Step 3/9] 分析抽取结果...")
         self._step3_analyze_results()
@@ -292,6 +299,29 @@ class ExtractionPromptOptimizationStage:
                 has_error = result.status in ["wrong", "invalid"]
                 state.update_error(has_error)
                 state.last_extraction_status = result.status
+
+    def _update_contribution_tracker(self) -> None:
+        """从抽取结果和评估记录更新 section 贡献度追踪器。"""
+        # 构建 sample_id → attribution 映射
+        batch_attribution: dict[str, list[dict]] = {}
+        for result in self.base_extraction_results:
+            parsed = result.parsed_output if isinstance(result.parsed_output, dict) else {}
+            used_sections = parsed.get("used_prompt_sections", [])
+            if isinstance(used_sections, list):
+                batch_attribution[result.sample_id] = used_sections
+
+        # 构建 sample_id → is_correct 映射
+        batch_results: dict[str, bool] = {}
+        if self.base_eval_records:
+            for record in self.base_eval_records:
+                batch_results[record.sample_id] = record.correct
+        else:
+            # 无评估记录时，用 extraction status 近似
+            for result in self.base_extraction_results:
+                batch_results[result.sample_id] = result.status == "correct"
+
+        if batch_results:
+            self.contribution_tracker.update(batch_attribution, batch_results)
 
     def _step3_analyze_results(self) -> None:
         """Step 3: 分析所有抽取结果。"""
@@ -776,8 +806,6 @@ class ExtractionPromptOptimizationStage:
         line_limit = getattr(self, "line_limit", 300)
         char_limit = getattr(self, "char_limit", 20000)
 
-        pre_eval = self.final_eval_records or self.patched_eval_records or self.base_eval_records
-
         compressed_prompt, report = self.compression_executor.compress_if_needed(
             prompt=prompt_to_compress,
             line_limit=line_limit,
@@ -785,9 +813,7 @@ class ExtractionPromptOptimizationStage:
             batch=self.batch,
             sample_set=self.sample_set,
             mode="extraction",
-            extraction_executor=self.extraction_executor,
-            evaluation_executor=self.evaluation_executor,
-            pre_compression_eval_records=pre_eval,
+            contribution_tracker=self.contribution_tracker,
         )
 
         self.compression_report = report

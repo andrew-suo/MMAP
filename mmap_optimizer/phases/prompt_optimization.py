@@ -45,6 +45,9 @@ class PromptOptimizationConfig:
     analysis_prompt_char_limit: int = 16000
     analysis_prompt_compression_enabled: bool = True
 
+    # Compression
+    ema_alpha: float = 0.3
+
     # Patch
     patch_merge_strategy: str = "tree_merge"
     toxicity_test_enabled: bool = True

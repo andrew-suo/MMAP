@@ -260,6 +260,11 @@ def create_executors(
     patch_merge_prompt_path = prompts_config.get("patch_merge")
     patch_root_merge_prompt_path = prompts_config.get("patch_root_merge")
     patch_text_match_prompt_path = prompts_config.get("patch_text_match")
+    prompt_compression_path = prompts_config.get("prompt_compression", "prompts/prompt_compression.txt")
+    prompt_compression_validation_path = prompts_config.get(
+        "prompt_compression_validation", "prompts/prompt_compression_validation.txt"
+    )
+    ema_alpha = config.get("prompt_optimization", {}).get("ema_alpha", 0.3) if isinstance(config, dict) else 0.3
 
     # 当 model_client 可用且未强制 mock 时，使用真实 executor
     use_real = model_client is not None and use_mock is not True
@@ -306,7 +311,13 @@ def create_executors(
             root_merge_prompt_path=patch_root_merge_prompt_path,
         ),
         "toxicity_test": ToxicityTestExecutor(),
-        "compression": CompressionExecutor(model_client=model_client),
+        "compression": CompressionExecutor(
+            model_client=model_client,
+            model_config=optimizer_model_config,
+            compression_prompt_path=prompt_compression_path,
+            validation_prompt_path=prompt_compression_validation_path,
+            ema_alpha=ema_alpha,
+        ),
         "fewshot": fewshot_executor,
         "model_client": model_client,
     }

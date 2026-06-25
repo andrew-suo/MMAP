@@ -1,24 +1,27 @@
-"""PR4 单元测试：CompressionExecutor。
+"""PR4 单元测试：CompressionExecutor + SectionContributionTracker。
 
-覆盖以下场景：
+覆盖场景：
 1. 未超限时不压缩：triggered=False, rejected_reason="NOT_NEEDED"。
-2. 超行数限制触发压缩：triggered=True。
-3. 超字符限制触发压缩：triggered=True。
-4. 压缩后准确率未下降时接受：accepted=True。
-5. 压缩后准确率下降时拒绝：accepted=False，返回原 prompt。
-6. immutable section 不被修改。
-7. 压缩后 prompt 可正常渲染 to_markdown()。
-8. CompressionReport 字段完整填充。
+2. 超行数限制触发确定性压缩：triggered=True。
+3. 超字符限制触发确定性压缩：triggered=True。
+4. immutable section 不被修改。
+5. 压缩后 prompt 可正常渲染 to_markdown()。
+6. CompressionReport 新字段完整填充。
+7. analysis 模式确定性压缩。
+8. 无 model_client 时仅确定性压缩（still_over_limit 正确）。
+9. LLM section 级压缩 + 贡献度优先排序。
+10. LLM 验证通过 → accepted。
+11. LLM 验证失败 → rejected。
+12. SectionContributionTracker EMA 更新。
+13. SectionContributionTracker 优先级排序。
+14. SectionContributionTracker 序列化往返。
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from mmap_optimizer.executors.compression_executor import CompressionExecutor
-from mmap_optimizer.stages.extraction_prompt_optimization import (
-    AnalysisResult,
-    EvalRecord,
-    ExtractionResult,
-)
 from mmap_optimizer.patch.types import CompressionReport
 from mmap_optimizer.data.sample import (
     SampleBatch,
@@ -26,91 +29,64 @@ from mmap_optimizer.data.sample import (
     SampleSpec,
     SampleState,
 )
+from mmap_optimizer.prompt.section_contribution import SectionContributionTracker
 from mmap_optimizer.prompt.structured_prompt import (
     PromptSection,
     StructuredPrompt,
 )
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+COMPRESSION_PROMPT_PATH = str(REPO_ROOT / "prompts" / "prompt_compression.txt")
+VALIDATION_PROMPT_PATH = str(REPO_ROOT / "prompts" / "prompt_compression_validation.txt")
+
 
 # ---------------------------------------------------------------------------
-# Mock executors
+# Mock model client
 # ---------------------------------------------------------------------------
 
 
-class PromptAwareExtractionExecutor:
-    """Mock extraction executor，根据 prompt 是否为压缩版返回不同 status。
+class _MockModelResponse:
+    """Mock 模型响应。"""
 
-    通过 prompt.id 是否以 ``_compressed`` 结尾来区分压缩前后。
+    def __init__(self, raw_output: str) -> None:
+        self.raw_output = raw_output
+
+
+class MockModelClient:
+    """Mock model client，根据 user message 区分压缩/验证调用。
+
+    - 压缩调用（user message 含"压缩"）：返回 compression_output
+    - 验证调用（user message 含"验证"）：返回 {"valid": ..., "reason": ...}
+      可通过 validation_fail_after 控制第 N 次验证后开始返回 false。
     """
 
-    def __init__(self, compressed_status: str = "correct", default_status: str = "correct") -> None:
-        self.compressed_status = compressed_status
-        self.default_status = default_status
-        self.call_log: list[str] = []
+    def __init__(
+        self,
+        compression_output: str = "Compressed content",
+        validation_valid: bool = True,
+        validation_fail_after: int | None = None,
+    ) -> None:
+        self.compression_output = compression_output
+        self.validation_valid = validation_valid
+        self.validation_fail_after = validation_fail_after
+        self.compression_calls = 0
+        self.validation_calls = 0
 
-    def execute(self, prompt, batch, sample_set, fewshot_examples=None):
-        results = []
-        status = (
-            self.compressed_status
-            if prompt.id.endswith("_compressed")
-            else self.default_status
-        )
-        for sample_id in batch.sample_ids:
-            self.call_log.append(sample_id)
-            results.append(
-                ExtractionResult(
-                    sample_id=sample_id,
-                    raw_output=f'{{"result":"{status}"}}',
-                    parsed_output={"result": status},
-                    status=status,
+    def complete(self, messages, model_config=None):
+        user_msg = messages[-1]["content"] if messages else ""
+        if "验证" in user_msg:
+            self.validation_calls += 1
+            if self.validation_fail_after is not None and self.validation_calls > self.validation_fail_after:
+                return _MockModelResponse(
+                    '{"valid": false, "reason": "mock validation fail"}'
                 )
+            valid_str = "true" if self.validation_valid else "false"
+            return _MockModelResponse(
+                f'{{"valid": {valid_str}, "reason": "mock validation"}}'
             )
-        return results
-
-
-class MockEvaluationExecutor:
-    """Mock evaluation executor，根据 extraction_result.status 判断 correct。"""
-
-    def evaluate(self, extraction_result, ground_truth, sample_state=None):
-        correct = extraction_result.status == "correct"
-        return EvalRecord(
-            sample_id=extraction_result.sample_id,
-            extraction_result_id=extraction_result.sample_id,
-            status=extraction_result.status,
-            correct=correct,
-        )
-
-    def evaluate_batch(self, extraction_results, sample_set):
-        return [self.evaluate(r, {}) for r in extraction_results]
-
-
-class PromptAwareAnalysisExecutor:
-    """Mock analysis executor，根据 prompt 是否为压缩版返回不同 analysis_correct。"""
-
-    def __init__(self, compressed_correct: bool = True, default_correct: bool = True) -> None:
-        self.compressed_correct = compressed_correct
-        self.default_correct = default_correct
-
-    def execute(self, analysis_prompt, extraction_prompt, extraction_result, sample_spec):
-        analysis_correct = (
-            self.compressed_correct
-            if analysis_prompt.id.endswith("_compressed")
-            else self.default_correct
-        )
-        return AnalysisResult(
-            sample_id=extraction_result.sample_id,
-            judgement={"correct": analysis_correct},
-            analysis_correct=analysis_correct,
-        )
-
-    def execute_batch(self, analysis_prompt, extraction_prompt, extraction_results, sample_set):
-        return [
-            self.execute(analysis_prompt, extraction_prompt, r, None)
-            for r in extraction_results
-        ]
-
-    def reflect(self, analysis_prompt, extraction_result, analysis_result, sample_spec):
-        return None
+        else:
+            self.compression_calls += 1
+            return _MockModelResponse(self.compression_output)
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +126,57 @@ def make_long_char_prompt() -> StructuredPrompt:
     """构造超字符限制但未超行数限制的 prompt（含重复长行）。"""
     long_line = "x" * 100
     content = long_line + "\n" + long_line  # 重复长行
+    section = PromptSection(
+        id="section_1",
+        title="Task",
+        level=1,
+        content=content,
+        mutable=True,
+    )
+    return StructuredPrompt(
+        id="p1",
+        prompt_type="extraction",
+        sections=[section],
+        raw_markdown="",
+        version=1,
+    )
+
+
+def make_large_unique_prompt() -> StructuredPrompt:
+    """构造含多行唯一内容的 prompt（确定性压缩无法大幅缩减）。"""
+    lines = [f"Unique rule number {i} for testing purposes" for i in range(20)]
+    content = "\n".join(lines)
+    section = PromptSection(
+        id="section_1",
+        title="Task",
+        level=1,
+        content=content,
+        mutable=True,
+    )
+    return StructuredPrompt(
+        id="p1",
+        prompt_type="extraction",
+        sections=[section],
+        raw_markdown="",
+        version=1,
+    )
+
+
+def make_prompt_with_duplicates_and_unique() -> StructuredPrompt:
+    """构造含重复行和唯一行的 prompt（确定性压缩可去重但仍超限）。"""
+    content = (
+        "Duplicate line\n"
+        "Duplicate line\n"
+        "\n"
+        "Unique rule one for testing\n"
+        "Unique rule two for testing\n"
+        "Unique rule three for testing\n"
+        "Unique rule four for testing\n"
+        "Unique rule five for testing\n"
+        "Unique rule six for testing\n"
+        "Unique rule seven for testing\n"
+        "Unique rule eight for testing\n"
+    )
     section = PromptSection(
         id="section_1",
         title="Task",
@@ -212,21 +239,8 @@ def make_batch(sample_ids: list[str]) -> SampleBatch:
     )
 
 
-def make_eval_records(sample_ids: list[str], status: str = "correct") -> list[EvalRecord]:
-    """构造 EvalRecord 列表。"""
-    return [
-        EvalRecord(
-            sample_id=sid,
-            extraction_result_id=sid,
-            status=status,
-            correct=(status == "correct"),
-        )
-        for sid in sample_ids
-    ]
-
-
 # ---------------------------------------------------------------------------
-# Test 1: 未超限时不压缩
+# Tests 1-8: 确定性压缩（无 model_client）
 # ---------------------------------------------------------------------------
 
 
@@ -238,7 +252,6 @@ def test_not_over_limit_no_compression():
     batch = make_batch(sample_ids)
 
     executor = CompressionExecutor()
-    # 设置足够大的限制
     result_prompt, report = executor.compress_if_needed(
         prompt=prompt,
         line_limit=1000,
@@ -246,34 +259,24 @@ def test_not_over_limit_no_compression():
         batch=batch,
         sample_set=sample_set,
         mode="extraction",
-        extraction_executor=PromptAwareExtractionExecutor(),
-        evaluation_executor=MockEvaluationExecutor(),
     )
 
     assert report.triggered is False
     assert report.rejected_reason == "NOT_NEEDED"
     assert report.accepted is False
-    # 返回原 prompt
     assert result_prompt.id == prompt.id
-    # before == after
     assert report.line_count_before == report.line_count_after
     assert report.char_count_before == report.char_count_after
 
 
-# ---------------------------------------------------------------------------
-# Test 2: 超行数限制触发压缩
-# ---------------------------------------------------------------------------
-
-
 def test_over_line_limit_triggers_compression():
-    """prompt 超行数限制时，triggered=True。"""
+    """prompt 超行数限制时，triggered=True，确定性压缩减少行数。"""
     prompt = make_large_prompt()
     sample_ids = ["s1", "s2"]
     sample_set = make_sample_set(sample_ids)
     batch = make_batch(sample_ids)
 
     executor = CompressionExecutor()
-    # line_limit 设小，char_limit 设大，只触发行数限制
     result_prompt, report = executor.compress_if_needed(
         prompt=prompt,
         line_limit=5,
@@ -281,34 +284,27 @@ def test_over_line_limit_triggers_compression():
         batch=batch,
         sample_set=sample_set,
         mode="extraction",
-        extraction_executor=PromptAwareExtractionExecutor(compressed_status="correct"),
-        evaluation_executor=MockEvaluationExecutor(),
-        pre_compression_eval_records=make_eval_records(sample_ids, "correct"),
     )
 
     assert report.triggered is True
-    # 压缩后行数应减少
     assert report.line_count_after < report.line_count_before
-
-
-# ---------------------------------------------------------------------------
-# Test 3: 超字符限制触发压缩
-# ---------------------------------------------------------------------------
+    # 无 model_client → 确定性压缩后自动接受
+    assert report.accepted is True
+    assert report.validation_passed is True
+    assert report.validation_reasons == ["deterministic only (no model_client)"]
 
 
 def test_over_char_limit_triggers_compression():
-    """prompt 超字符限制时，triggered=True。"""
+    """prompt 超字符限制时，triggered=True，确定性压缩减少字符数。"""
     prompt = make_long_char_prompt()
     sample_ids = ["s1", "s2"]
     sample_set = make_sample_set(sample_ids)
     batch = make_batch(sample_ids)
 
-    # 验证未超行数限制
     md = prompt.to_markdown()
-    assert len(md.splitlines()) <= 10
+    assert len(md.splitlines()) <= 10  # 未超行数限制
 
     executor = CompressionExecutor()
-    # line_limit 设大，char_limit 设小，只触发字符限制
     result_prompt, report = executor.compress_if_needed(
         prompt=prompt,
         line_limit=1000,
@@ -316,123 +312,22 @@ def test_over_char_limit_triggers_compression():
         batch=batch,
         sample_set=sample_set,
         mode="extraction",
-        extraction_executor=PromptAwareExtractionExecutor(compressed_status="correct"),
-        evaluation_executor=MockEvaluationExecutor(),
-        pre_compression_eval_records=make_eval_records(sample_ids, "correct"),
     )
 
     assert report.triggered is True
-    # 压缩后字符数应减少
     assert report.char_count_after < report.char_count_before
-
-
-# ---------------------------------------------------------------------------
-# Test 4: 压缩后准确率未下降时接受
-# ---------------------------------------------------------------------------
-
-
-def test_compression_accepted_when_accuracy_not_drop():
-    """压缩后准确率未下降时，accepted=True，返回压缩后的 prompt。"""
-    prompt = make_large_prompt()
-    sample_ids = ["s1", "s2", "s3"]
-    sample_set = make_sample_set(sample_ids)
-    batch = make_batch(sample_ids)
-
-    # 压缩前全部 correct（pre_acc = 1.0）
-    pre_eval_records = make_eval_records(sample_ids, "correct")
-
-    # 压缩后也全部 correct（post_acc = 1.0），不下降
-    extraction_executor = PromptAwareExtractionExecutor(compressed_status="correct")
-    evaluation_executor = MockEvaluationExecutor()
-
-    executor = CompressionExecutor()
-    result_prompt, report = executor.compress_if_needed(
-        prompt=prompt,
-        line_limit=10,
-        char_limit=10000,
-        batch=batch,
-        sample_set=sample_set,
-        mode="extraction",
-        extraction_executor=extraction_executor,
-        evaluation_executor=evaluation_executor,
-        pre_compression_eval_records=pre_eval_records,
-    )
-
-    assert report.triggered is True
     assert report.accepted is True
-    assert report.rejected_reason is None
-    # 返回压缩后的 prompt
-    assert result_prompt.id == "p1_compressed"
-    assert report.compressed_prompt_id == "p1_compressed"
-    # 准确率未下降
-    assert report.pre_compression_accuracy == 1.0
-    assert report.post_compression_accuracy == 1.0
-    # 无 broken 样本
-    assert report.broken_sample_ids == []
-    # 压缩后未超限（原 13 行 > 10，压缩后 7 行 <= 10）
-    assert report.still_over_limit is False
-
-
-# ---------------------------------------------------------------------------
-# Test 5: 压缩后准确率下降时拒绝
-# ---------------------------------------------------------------------------
-
-
-def test_compression_rejected_when_accuracy_drops():
-    """压缩后准确率下降时，accepted=False，返回原 prompt，rejected_reason='ACCURACY_DROP'。"""
-    prompt = make_large_prompt()
-    sample_ids = ["s1", "s2", "s3"]
-    sample_set = make_sample_set(sample_ids)
-    batch = make_batch(sample_ids)
-
-    # 压缩前全部 correct（pre_acc = 1.0）
-    pre_eval_records = make_eval_records(sample_ids, "correct")
-
-    # 压缩后全部 wrong（post_acc = 0.0），下降
-    extraction_executor = PromptAwareExtractionExecutor(compressed_status="wrong")
-    evaluation_executor = MockEvaluationExecutor()
-
-    executor = CompressionExecutor()
-    result_prompt, report = executor.compress_if_needed(
-        prompt=prompt,
-        line_limit=5,
-        char_limit=10000,
-        batch=batch,
-        sample_set=sample_set,
-        mode="extraction",
-        extraction_executor=extraction_executor,
-        evaluation_executor=evaluation_executor,
-        pre_compression_eval_records=pre_eval_records,
-    )
-
-    assert report.triggered is True
-    assert report.accepted is False
-    assert report.rejected_reason == "ACCURACY_DROP"
-    # 返回原 prompt
-    assert result_prompt.id == prompt.id
-    # 准确率下降
-    assert report.pre_compression_accuracy == 1.0
-    assert report.post_compression_accuracy == 0.0
-
-
-# ---------------------------------------------------------------------------
-# Test 6: immutable section 不被修改
-# ---------------------------------------------------------------------------
 
 
 def test_immutable_section_not_modified():
-    """压缩后 immutable section 内容不变。"""
+    """压缩后 immutable section 内容不变，mutable section 被压缩。"""
     prompt = make_prompt_with_immutable()
     sample_ids = ["s1", "s2"]
     sample_set = make_sample_set(sample_ids)
     batch = make_batch(sample_ids)
 
-    # 记录原始 immutable section 内容
     orig_immutable = prompt.get_section_by_id("section_immutable")
     orig_immutable_content = orig_immutable.content
-
-    extraction_executor = PromptAwareExtractionExecutor(compressed_status="correct")
-    evaluation_executor = MockEvaluationExecutor()
 
     executor = CompressionExecutor()
     result_prompt, report = executor.compress_if_needed(
@@ -442,28 +337,17 @@ def test_immutable_section_not_modified():
         batch=batch,
         sample_set=sample_set,
         mode="extraction",
-        extraction_executor=extraction_executor,
-        evaluation_executor=evaluation_executor,
-        pre_compression_eval_records=make_eval_records(sample_ids, "correct"),
     )
 
-    # 压缩被接受
     assert report.accepted is True
     assert report.warnings == []
 
-    # immutable section 内容未变
     comp_immutable = result_prompt.get_section_by_id("section_immutable")
     assert comp_immutable.content == orig_immutable_content
 
-    # mutable section 内容应被压缩（行数减少）
     orig_mutable = prompt.get_section_by_id("section_mutable")
     comp_mutable = result_prompt.get_section_by_id("section_mutable")
     assert len(comp_mutable.content.splitlines()) < len(orig_mutable.content.splitlines())
-
-
-# ---------------------------------------------------------------------------
-# Test 7: 压缩后 prompt 可正常渲染
-# ---------------------------------------------------------------------------
 
 
 def test_compressed_prompt_can_render():
@@ -473,9 +357,6 @@ def test_compressed_prompt_can_render():
     sample_set = make_sample_set(sample_ids)
     batch = make_batch(sample_ids)
 
-    extraction_executor = PromptAwareExtractionExecutor(compressed_status="correct")
-    evaluation_executor = MockEvaluationExecutor()
-
     executor = CompressionExecutor()
     result_prompt, report = executor.compress_if_needed(
         prompt=prompt,
@@ -484,40 +365,24 @@ def test_compressed_prompt_can_render():
         batch=batch,
         sample_set=sample_set,
         mode="extraction",
-        extraction_executor=extraction_executor,
-        evaluation_executor=evaluation_executor,
-        pre_compression_eval_records=make_eval_records(sample_ids, "correct"),
     )
 
     assert report.accepted is True
 
-    # 压缩后的 prompt 可正常渲染
     markdown = result_prompt.to_markdown()
     assert isinstance(markdown, str)
     assert len(markdown) > 0
-    # raw_markdown 也应已设置
     assert result_prompt.raw_markdown == markdown
-    # 渲染后行数应小于原 prompt
     orig_md = prompt.to_markdown()
     assert len(markdown.splitlines()) < len(orig_md.splitlines())
 
 
-# ---------------------------------------------------------------------------
-# Test 8: CompressionReport 字段完整填充
-# ---------------------------------------------------------------------------
-
-
 def test_compression_report_fields_complete():
-    """接受的 CompressionReport 所有字段被正确填充。"""
+    """接受的 CompressionReport 所有新字段被正确填充。"""
     prompt = make_large_prompt()
     sample_ids = ["s1", "s2", "s3"]
     sample_set = make_sample_set(sample_ids)
     batch = make_batch(sample_ids)
-
-    pre_eval_records = make_eval_records(sample_ids, "correct")
-
-    extraction_executor = PromptAwareExtractionExecutor(compressed_status="correct")
-    evaluation_executor = MockEvaluationExecutor()
 
     executor = CompressionExecutor()
     result_prompt, report = executor.compress_if_needed(
@@ -527,12 +392,8 @@ def test_compression_report_fields_complete():
         batch=batch,
         sample_set=sample_set,
         mode="extraction",
-        extraction_executor=extraction_executor,
-        evaluation_executor=evaluation_executor,
-        pre_compression_eval_records=pre_eval_records,
     )
 
-    # 验证所有字段
     assert isinstance(report, CompressionReport)
     assert report.id == "compression_extraction_p1"
     assert report.prompt_type == "extraction"
@@ -547,13 +408,11 @@ def test_compression_report_fields_complete():
     assert report.char_count_before > 0
     assert report.char_count_after > 0
     assert report.char_count_after < report.char_count_before
-    assert report.base_accuracy is None  # 未传入 base_accuracy
-    assert report.pre_compression_accuracy == 1.0
-    assert report.post_compression_accuracy == 1.0
-    assert isinstance(report.broken_sample_ids, list)
-    assert report.broken_sample_ids == []
-    assert isinstance(report.fixed_sample_ids, list)
-    assert report.fixed_sample_ids == []
+    # 新字段
+    assert report.validation_passed is True
+    assert isinstance(report.validation_reasons, list)
+    assert len(report.validation_reasons) > 0
+    assert isinstance(report.compressed_sections, list)
     assert isinstance(report.warnings, list)
     assert report.warnings == []
     assert report.still_over_limit is False
@@ -563,26 +422,23 @@ def test_compression_report_fields_complete():
     assert d["id"] == "compression_extraction_p1"
     assert d["triggered"] is True
     assert d["accepted"] is True
-    assert d["pre_compression_accuracy"] == 1.0
+    assert d["validation_passed"] is True
+    assert "validation_reasons" in d
+    assert "compressed_sections" in d
 
     restored = CompressionReport.from_dict(d)
     assert restored.id == report.id
     assert restored.triggered is True
     assert restored.accepted is True
-    assert restored.pre_compression_accuracy == 1.0
-    assert restored.post_compression_accuracy == 1.0
+    assert restored.validation_passed is True
+    assert restored.validation_reasons == report.validation_reasons
+    assert restored.compressed_sections == report.compressed_sections
     assert restored.compressed_prompt_id == "p1_compressed"
     assert restored.still_over_limit is False
 
 
-# ---------------------------------------------------------------------------
-# Test 9: analysis 模式压缩接受
-# ---------------------------------------------------------------------------
-
-
-def test_analysis_mode_compression_accepted():
-    """analysis 模式下压缩后准确率未下降时接受。"""
-    # 构造 analysis prompt
+def test_analysis_mode_compression():
+    """analysis 模式下确定性压缩正常工作。"""
     content = (
         "Analyze step one\n"
         "Analyze step one\n"
@@ -609,30 +465,6 @@ def test_analysis_mode_compression_accepted():
     sample_set = make_sample_set(sample_ids)
     batch = make_batch(sample_ids)
 
-    # 构造 extraction_results（analysis 模式必需）
-    extraction_results = [
-        ExtractionResult(
-            sample_id=sid,
-            raw_output='{"result":"A"}',
-            parsed_output={"result": "A"},
-            status="correct",
-        )
-        for sid in sample_ids
-    ]
-
-    # 压缩前 analysis 全部 correct
-    pre_analysis_results = [
-        AnalysisResult(
-            sample_id=sid,
-            judgement={"correct": True},
-            analysis_correct=True,
-        )
-        for sid in sample_ids
-    ]
-
-    # 压缩后 analysis 也全部 correct
-    analysis_executor = PromptAwareAnalysisExecutor(compressed_correct=True)
-
     executor = CompressionExecutor()
     result_prompt, report = executor.compress_if_needed(
         prompt=analysis_prompt,
@@ -641,29 +473,18 @@ def test_analysis_mode_compression_accepted():
         batch=batch,
         sample_set=sample_set,
         mode="analysis",
-        analysis_executor=analysis_executor,
-        extraction_results=extraction_results,
-        extraction_prompt=None,
-        pre_compression_analysis_results=pre_analysis_results,
     )
 
     assert report.triggered is True
     assert report.accepted is True
     assert report.prompt_type == "analysis"
     assert result_prompt.id == "pa1_compressed"
-    assert report.pre_compression_accuracy == 1.0
-    assert report.post_compression_accuracy == 1.0
-    assert report.broken_sample_ids == []
+    assert report.validation_passed is True
 
 
-# ---------------------------------------------------------------------------
-# Test 10: 缺少 executor 时拒绝
-# ---------------------------------------------------------------------------
-
-
-def test_no_executors_rejected():
-    """extraction 模式下未提供 executor 时，rejected_reason='NO_EXECUTORS'。"""
-    prompt = make_large_prompt()
+def test_no_model_client_deterministic_only_still_over_limit():
+    """无 model_client + 确定性压缩无法降至限内 → accepted=True, still_over_limit=True。"""
+    prompt = make_large_unique_prompt()  # 20 行唯一内容，确定性压缩无法缩减
     sample_ids = ["s1", "s2"]
     sample_set = make_sample_set(sample_ids)
     batch = make_batch(sample_ids)
@@ -672,16 +493,233 @@ def test_no_executors_rejected():
     result_prompt, report = executor.compress_if_needed(
         prompt=prompt,
         line_limit=5,
-        char_limit=10000,
+        char_limit=100000,
         batch=batch,
         sample_set=sample_set,
         mode="extraction",
-        extraction_executor=None,
-        evaluation_executor=None,
-        pre_compression_eval_records=make_eval_records(sample_ids, "correct"),
+    )
+
+    assert report.triggered is True
+    assert report.accepted is True  # 无 model_client 自动接受
+    assert report.validation_passed is True
+    assert report.validation_reasons == ["deterministic only (no model_client)"]
+    assert report.still_over_limit is True  # 仍超限
+
+
+# ---------------------------------------------------------------------------
+# Tests 9-11: LLM 压缩路径（mock model_client）
+# ---------------------------------------------------------------------------
+
+
+def test_llm_section_compression_with_tracker():
+    """mock model_client + 贡献度追踪：section 级 LLM 压缩成功。"""
+    prompt = make_large_unique_prompt()  # 20 行唯一内容
+    sample_ids = ["s1", "s2"]
+    sample_set = make_sample_set(sample_ids)
+    batch = make_batch(sample_ids)
+
+    # 贡献度追踪器：section_1 贡献度为负（低贡献，优先压缩）
+    tracker = SectionContributionTracker(alpha=0.3)
+    tracker._ema = {"section_1": -0.5}
+
+    mock_client = MockModelClient(
+        compression_output="Compressed: all rules combined into one.",
+        validation_valid=True,
+    )
+
+    executor = CompressionExecutor(
+        model_client=mock_client,
+        compression_prompt_path=COMPRESSION_PROMPT_PATH,
+        validation_prompt_path=VALIDATION_PROMPT_PATH,
+    )
+    result_prompt, report = executor.compress_if_needed(
+        prompt=prompt,
+        line_limit=5,
+        char_limit=100000,
+        batch=batch,
+        sample_set=sample_set,
+        mode="extraction",
+        contribution_tracker=tracker,
+    )
+
+    assert report.triggered is True
+    assert mock_client.compression_calls > 0  # LLM 压缩被调用
+    assert mock_client.validation_calls > 0  # LLM 验证被调用
+    assert "section_1" in report.compressed_sections
+    assert report.line_count_after < report.line_count_before
+    # 压缩后应降至限内
+    assert report.line_count_after <= 5
+    assert report.accepted is True
+    assert report.validation_passed is True
+
+
+def test_llm_validation_pass():
+    """mock model_client 验证通过 → accepted=True。"""
+    prompt = make_large_unique_prompt()
+    sample_ids = ["s1", "s2"]
+    sample_set = make_sample_set(sample_ids)
+    batch = make_batch(sample_ids)
+
+    mock_client = MockModelClient(
+        compression_output="Short compressed content.",
+        validation_valid=True,
+    )
+
+    executor = CompressionExecutor(
+        model_client=mock_client,
+        compression_prompt_path=COMPRESSION_PROMPT_PATH,
+        validation_prompt_path=VALIDATION_PROMPT_PATH,
+    )
+    result_prompt, report = executor.compress_if_needed(
+        prompt=prompt,
+        line_limit=5,
+        char_limit=100000,
+        batch=batch,
+        sample_set=sample_set,
+        mode="extraction",
+    )
+
+    assert report.triggered is True
+    assert report.accepted is True
+    assert report.validation_passed is True
+    assert report.rejected_reason is None
+
+
+def test_llm_validation_fail():
+    """mock model_client 验证失败 → accepted=False, rejected_reason='VALIDATION_FAILED'。
+
+    策略：validation_fail_after=1 使第 1 次验证（section 级）通过、第 2 次（prompt 级）失败。
+    section 压缩成功降至限内后，_llm_validate_prompt 验证失败 → 拒绝。
+    """
+    prompt = make_large_unique_prompt()  # 20 行唯一内容
+    sample_ids = ["s1", "s2"]
+    sample_set = make_sample_set(sample_ids)
+    batch = make_batch(sample_ids)
+
+    mock_client = MockModelClient(
+        compression_output="Short compressed content.",
+        validation_valid=True,
+        validation_fail_after=1,  # 第 1 次验证通过，第 2 次失败
+    )
+
+    executor = CompressionExecutor(
+        model_client=mock_client,
+        compression_prompt_path=COMPRESSION_PROMPT_PATH,
+        validation_prompt_path=VALIDATION_PROMPT_PATH,
+    )
+    result_prompt, report = executor.compress_if_needed(
+        prompt=prompt,
+        line_limit=5,
+        char_limit=100000,
+        batch=batch,
+        sample_set=sample_set,
+        mode="extraction",
     )
 
     assert report.triggered is True
     assert report.accepted is False
-    assert report.rejected_reason == "NO_EXECUTORS"
-    assert result_prompt.id == prompt.id
+    assert report.rejected_reason == "VALIDATION_FAILED"
+    assert result_prompt.id == prompt.id  # 返回原 prompt
+    assert mock_client.validation_calls >= 2  # 至少 2 次验证调用
+
+
+# ---------------------------------------------------------------------------
+# Tests 12-14: SectionContributionTracker
+# ---------------------------------------------------------------------------
+
+
+def test_section_contribution_tracker_update():
+    """EMA 更新：correct 样本引用的 section 贡献度为正，incorrect 为负。"""
+    tracker = SectionContributionTracker(alpha=0.3)
+
+    batch_attribution = {
+        "s1": [{"section_id": "sec_a", "reason": "used"}],
+        "s2": [{"section_id": "sec_a", "reason": "used"}, {"section_id": "sec_b", "reason": "used"}],
+        "s3": [{"section_id": "sec_b", "reason": "used"}],
+    }
+    batch_results = {
+        "s1": True,   # correct → sec_a +1
+        "s2": True,   # correct → sec_a +1, sec_b +1
+        "s3": False,  # incorrect → sec_b -1
+    }
+
+    tracker.update(batch_attribution, batch_results)
+
+    # sec_a: 2 correct, 0 incorrect → frequency = (2-0)/3 = 0.667
+    # ema = 0.3 * 0.667 + 0.7 * 0 = 0.2
+    assert tracker.get_contribution("sec_a") > 0
+    assert abs(tracker.get_contribution("sec_a") - (0.3 * (2 / 3))) < 0.01
+
+    # sec_b: 1 correct, 1 incorrect → frequency = (1-1)/3 = 0
+    # ema = 0.3 * 0 + 0.7 * 0 = 0
+    assert abs(tracker.get_contribution("sec_b")) < 0.01
+
+    # 未引用的 section 贡献度为 0
+    assert tracker.get_contribution("sec_unknown") == 0.0
+
+
+def test_section_contribution_tracker_priority_order():
+    """低贡献 section 排在前面，优先压缩。"""
+    tracker = SectionContributionTracker(alpha=0.3)
+    tracker._ema = {
+        "sec_high": 0.8,
+        "sec_low": -0.5,
+        "sec_mid": 0.1,
+        "sec_zero": 0.0,
+    }
+
+    ordered = tracker.get_priority_order(["sec_high", "sec_low", "sec_mid", "sec_zero"])
+
+    # 升序排列：sec_low(-0.5) < sec_zero(0.0) < sec_mid(0.1) < sec_high(0.8)
+    assert ordered == ["sec_low", "sec_zero", "sec_mid", "sec_high"]
+
+    # 部分排序
+    ordered_partial = tracker.get_priority_order(["sec_high", "sec_low"])
+    assert ordered_partial == ["sec_low", "sec_high"]
+
+    # 空列表
+    assert tracker.get_priority_order([]) == []
+
+
+def test_section_contribution_tracker_serialization():
+    """to_dict / from_dict 往返一致。"""
+    tracker = SectionContributionTracker(alpha=0.3)
+    tracker._ema = {"sec_a": 0.5, "sec_b": -0.3, "sec_c": 0.0}
+
+    d = tracker.to_dict()
+    assert d == {"sec_a": 0.5, "sec_b": -0.3, "sec_c": 0.0}
+
+    restored = SectionContributionTracker.from_dict(d, alpha=0.3)
+    assert restored.alpha == 0.3
+    assert restored._ema == {"sec_a": 0.5, "sec_b": -0.3, "sec_c": 0.0}
+    assert restored.get_contribution("sec_a") == 0.5
+    assert restored.get_contribution("sec_b") == -0.3
+
+    # 空字典
+    empty = SectionContributionTracker()
+    assert empty.to_dict() == {}
+    restored_empty = SectionContributionTracker.from_dict({})
+    assert restored_empty.get_contribution("anything") == 0.0
+
+
+def test_section_contribution_tracker_ema_smoothing():
+    """多轮 EMA 平滑：alpha 越大越看重近期数据。"""
+    tracker = SectionContributionTracker(alpha=0.3)
+
+    # 第一轮：全 correct，sec_a 频率 = 1.0
+    tracker.update(
+        {"s1": [{"section_id": "sec_a"}]},
+        {"s1": True},
+    )
+    first = tracker.get_contribution("sec_a")
+    assert abs(first - (0.3 * 1.0)) < 0.01  # 0.3
+
+    # 第二轮：全 incorrect，sec_a 频率 = -1.0
+    tracker.update(
+        {"s1": [{"section_id": "sec_a"}]},
+        {"s1": False},
+    )
+    second = tracker.get_contribution("sec_a")
+    # ema = 0.3 * (-1) + 0.7 * 0.3 = -0.3 + 0.21 = -0.09
+    assert abs(second - (-0.09)) < 0.01
+    assert second < first  # 贡献度下降

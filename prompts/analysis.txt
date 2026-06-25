@@ -21,15 +21,11 @@
 - 不臆测图片中不可见的内容。
 - 如果图片中信息不足，应判定为 UNCERTAIN。
 
-# 归因分析（仅当 INCORRECT 时）
-将错误归入一个或多个类别：
-- 指令歧义：prompt 对某些情况的说明不够明确。
-- 约束缺失：prompt 缺少必要的约束条件。
-- 示例误导：few-shot 示例可能导致错误的泛化。
-- 输出格式弱约束：格式要求不够严格导致输出混乱。
-- 边界情况未覆盖：prompt 未覆盖当前图片的特殊情况。
-- 过度泛化：模型过度应用了某些规则。
-- 安全防线不足：缺少防止幻觉或错误的机制。
+# 归因分析（所有情况）
+将判定结果归因到一个或多个 prompt section：
+- CORRECT：归因到促成正确判断的关键 section。
+- INCORRECT：将错误归入类别（指令歧义、约束缺失、示例误导、输出格式弱约束、边界情况未覆盖、过度泛化、安全防线不足），并指出相关的 prompt section。
+- UNCERTAIN：归因到与信息不足相关的 section。
 
 # 输出约束
 - 必须严格且仅输出合法的 JSON 格式。不要包含任何 Markdown 标记（如 ```json）、前言或后记。
@@ -49,7 +45,7 @@
     {
       "section_id": "相关prompt section的id",
       "section_name": "相关prompt section的名称",
-      "reason": "该section导致问题的原因"
+      "reason": "该section对当前判定的影响（CORRECT时说明促成正确的原因，INCORRECT时说明导致错误的原因，UNCERTAIN时说明相关信息不足的原因）"
     }
   ]
 }

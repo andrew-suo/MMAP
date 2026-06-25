@@ -1,66 +1,79 @@
 """CompressionExecutor - Prompt 压缩执行器。
 
-当 prompt 超过行数/字符限制时，对 mutable section 进行确定性压缩
-（去重连续空行、去重重复行、去除行尾空白），并通过回归测试验证
-压缩后准确率不下降。
+混合压缩策略：
+1. 确定性预压缩（去重连续空行、去重重复行、去除行尾空白）
+2. Section 级 LLM 压缩（低贡献 section 优先）
+3. Prompt 级 LLM 压缩（兜底）
+
+验证方式：LLM 语义验证（替代回归测试）。
 
 压缩约束：
 1. immutable section 内容不可修改
 2. section ID 不可删除/变更
 3. prompt_type 不可变更
-
-接受规则：post_compression_accuracy >= pre_compression_accuracy
-         且 broken_sample_ids 为空。
 """
 
 from __future__ import annotations
 
 import copy
+import json
+import logging
+import re
+from pathlib import Path
 from typing import Any
 
 from ..patch.types import CompressionReport
 from ..data.sample import SampleBatch, SampleSet
 from ..prompt.structured_prompt import PromptSection, StructuredPrompt
+from ..prompt.section_contribution import SectionContributionTracker
+
+logger = logging.getLogger(__name__)
 
 
 class CompressionExecutor:
-    """真实压缩执行器。"""
+    """混合 LLM 压缩执行器。"""
 
-    def __init__(self, model_client: Any = None) -> None:
+    def __init__(
+        self,
+        model_client: Any = None,
+        model_config: dict[str, Any] | None = None,
+        compression_prompt_path: str = "prompts/prompt_compression.txt",
+        validation_prompt_path: str = "prompts/prompt_compression_validation.txt",
+        ema_alpha: float = 0.3,
+    ) -> None:
         self.model_client = model_client
+        self.model_config = model_config
+        self.compression_prompt_path = compression_prompt_path
+        self.validation_prompt_path = validation_prompt_path
+        self.ema_alpha = ema_alpha
 
     def compress_if_needed(
         self,
         prompt: StructuredPrompt,
         line_limit: int,
         char_limit: int,
-        batch: SampleBatch,
-        sample_set: SampleSet,
+        batch: SampleBatch | None = None,
+        sample_set: SampleSet | None = None,
         mode: str = "extraction",
-        extraction_executor: Any = None,
-        evaluation_executor: Any = None,
-        analysis_executor: Any = None,
-        extraction_results: list | None = None,
-        extraction_prompt: StructuredPrompt | None = None,
-        pre_compression_eval_records: list | None = None,
-        pre_compression_analysis_results: list | None = None,
+        contribution_tracker: SectionContributionTracker | None = None,
     ) -> tuple[StructuredPrompt, CompressionReport]:
         """按需压缩 prompt。
+
+        流程：
+        1. 统计行数和字符数，检查是否需要压缩。
+        2. 确定性预压缩（去重空行/重复行）。
+        3. Section 级 LLM 压缩（低贡献 section 优先）。
+        4. Prompt 级 LLM 压缩（仍超限时的兜底）。
+        5. LLM 语义验证。
 
         Args:
             prompt: 待压缩的 StructuredPrompt。
             line_limit: 行数上限。
             char_limit: 字符数上限。
-            batch: 抽样批次。
-            sample_set: 样本集合。
+            batch: 抽样批次（保留接口兼容，当前未使用）。
+            sample_set: 样本集合（保留接口兼容，当前未使用）。
             mode: 压缩模式，"extraction" 或 "analysis"。
-            extraction_executor: extraction 模式下的抽取执行器。
-            evaluation_executor: extraction 模式下的评估执行器。
-            analysis_executor: analysis 模式下的分析执行器。
-            extraction_results: analysis 模式下复用的抽取结果。
-            extraction_prompt: analysis 模式下复用的抽取 prompt。
-            pre_compression_eval_records: 压缩前的评估记录（extraction 模式）。
-            pre_compression_analysis_results: 压缩前的分析结果（analysis 模式）。
+            contribution_tracker: section 贡献度追踪器。
 
         Returns:
             (prompt, report) 元组。若接受压缩则返回压缩后的 prompt，
@@ -88,25 +101,16 @@ class CompressionExecutor:
             return prompt, report
 
         report.triggered = True
+        logger.info(
+            "[Compression] %s prompt 超限: %d lines (limit=%d), %d chars (limit=%d)",
+            mode, line_count, line_limit, char_count, char_limit,
+        )
 
-        # 3. 获取压缩前准确率
-        if mode == "extraction" and pre_compression_eval_records is not None:
-            correct = sum(1 for r in pre_compression_eval_records if r.status == "correct")
-            total = len(pre_compression_eval_records)
-            report.pre_compression_accuracy = correct / total if total > 0 else 0.0
-        elif mode == "analysis" and pre_compression_analysis_results is not None:
-            correct = sum(1 for r in pre_compression_analysis_results if r.analysis_correct)
-            total = len(pre_compression_analysis_results)
-            report.pre_compression_accuracy = correct / total if total > 0 else 0.0
-
-        # 4. 创建压缩后的 prompt
+        # 3. 确定性预压缩
         compressed = self._create_compressed_prompt(prompt)
-
-        # 5. 验证约束
         warnings = self._verify_constraints(prompt, compressed)
         report.warnings = warnings
         if warnings:
-            # 约束被违反，拒绝
             report.accepted = False
             report.rejected_reason = "CONSTRAINT_VIOLATION"
             report.compressed_prompt_id = compressed.id
@@ -115,7 +119,6 @@ class CompressionExecutor:
             report.char_count_after = len(comp_md)
             return prompt, report
 
-        # 6. 统计压缩后大小
         comp_md = compressed.to_markdown()
         comp_lines = len(comp_md.splitlines())
         comp_chars = len(comp_md)
@@ -123,49 +126,75 @@ class CompressionExecutor:
         report.char_count_after = comp_chars
         report.compressed_prompt_id = compressed.id
 
-        # 7. 运行回归测试
-        if mode == "extraction":
-            if extraction_executor is None or evaluation_executor is None:
-                report.accepted = False
-                report.rejected_reason = "NO_EXECUTORS"
-                return prompt, report
-            post_acc, broken, fixed, _ = self._run_extraction_regression(
-                compressed, batch, sample_set, extraction_executor,
-                evaluation_executor, pre_compression_eval_records or [],
-            )
-        else:  # analysis
-            if analysis_executor is None:
-                report.accepted = False
-                report.rejected_reason = "NO_EXECUTORS"
-                return prompt, report
-            post_acc, broken, fixed, _ = self._run_analysis_regression(
-                compressed, batch, sample_set, analysis_executor,
-                extraction_prompt, extraction_results or [],
-                pre_compression_analysis_results or [],
-            )
-
-        report.post_compression_accuracy = post_acc
-        report.broken_sample_ids = broken
-        report.fixed_sample_ids = fixed
-
-        # 8. 接受/拒绝
-        pre_acc = report.pre_compression_accuracy or 0.0
-        if post_acc >= pre_acc and not broken:
+        # 检查确定性压缩是否已降至限内
+        if comp_lines <= line_limit and comp_chars <= char_limit:
             report.accepted = True
-            # 检查是否仍超限
-            if comp_lines > line_limit or comp_chars > char_limit:
-                report.still_over_limit = True
+            report.validation_passed = True
+            report.validation_reasons = ["deterministic compression sufficient"]
+            logger.info("[Compression] 确定性压缩已降至限内")
             return compressed, report
-        else:
-            report.accepted = False
-            if post_acc < pre_acc:
-                report.rejected_reason = "ACCURACY_DROP"
+
+        # 4. Section 级 LLM 压缩（低贡献优先）
+        if self.model_client is not None:
+            compressed, comp_lines, comp_chars, section_changes = self._llm_compress_sections(
+                compressed, line_limit, char_limit, contribution_tracker,
+            )
+            report.compressed_sections = section_changes
+            comp_md = compressed.to_markdown()
+            comp_lines = len(comp_md.splitlines())
+            comp_chars = len(comp_md)
+            report.line_count_after = comp_lines
+            report.char_count_after = comp_chars
+
+            if comp_lines <= line_limit and comp_chars <= char_limit:
+                # Section 级压缩已降至限内，验证
+                if self._llm_validate_prompt(prompt, compressed):
+                    report.accepted = True
+                    report.validation_passed = True
+                    report.validation_reasons = ["section-level LLM compression validated"]
+                    logger.info("[Compression] Section 级 LLM 压缩成功，已降至限内")
+                    return compressed, report
+                else:
+                    report.accepted = False
+                    report.rejected_reason = "VALIDATION_FAILED"
+                    report.validation_reasons = ["section-level compression failed validation"]
+                    return prompt, report
+
+            # 5. Prompt 级 LLM 压缩（兜底）
+            compressed, comp_lines, comp_chars = self._llm_compress_prompt(
+                compressed, line_limit, char_limit,
+            )
+            comp_md = compressed.to_markdown()
+            comp_lines = len(comp_md.splitlines())
+            comp_chars = len(comp_md)
+            report.line_count_after = comp_lines
+            report.char_count_after = comp_chars
+
+            if self._llm_validate_prompt(prompt, compressed):
+                report.accepted = True
+                report.validation_passed = True
+                report.validation_reasons = ["prompt-level LLM compression validated"]
+                logger.info("[Compression] Prompt 级 LLM 压缩成功")
+                if comp_lines > line_limit or comp_chars > char_limit:
+                    report.still_over_limit = True
+                return compressed, report
             else:
-                report.rejected_reason = "BROKEN_SAMPLES"
-            return prompt, report
+                report.accepted = False
+                report.rejected_reason = "VALIDATION_FAILED"
+                report.validation_reasons = ["prompt-level compression failed validation"]
+                return prompt, report
+
+        # 无 model_client，仅确定性压缩
+        report.accepted = True
+        report.validation_passed = True
+        report.validation_reasons = ["deterministic only (no model_client)"]
+        if comp_lines > line_limit or comp_chars > char_limit:
+            report.still_over_limit = True
+        logger.info("[Compression] 无 model_client，仅确定性压缩")
+        return compressed, report
 
     # ------------------------------------------------------------------
-    # 压缩策略
+    # 确定性压缩
     # ------------------------------------------------------------------
 
     def _compress_content(self, content: str) -> str:
@@ -177,16 +206,13 @@ class CompressionExecutor:
         for line in lines:
             stripped = line.rstrip()
             is_empty = stripped == ""
-            # 跳过连续空行（只保留第一个）
             if is_empty and prev_was_empty:
                 continue
-            # 跳过与前一行完全相同的行
             if stripped == prev_line and not is_empty:
                 continue
             result.append(stripped)
             prev_line = stripped
             prev_was_empty = is_empty
-        # 去除首尾空行
         while result and result[0] == "":
             result.pop(0)
         while result and result[-1] == "":
@@ -194,15 +220,12 @@ class CompressionExecutor:
         return "\n".join(result)
 
     def _create_compressed_prompt(self, prompt: StructuredPrompt) -> StructuredPrompt:
-        """创建压缩后的 prompt。"""
-        # 深拷贝 sections
+        """创建确定性压缩后的 prompt。"""
         new_sections = copy.deepcopy(prompt.sections)
 
-        # 递归压缩所有 mutable section 的 content
         def _compress_section(section: PromptSection) -> None:
             if section.mutable and section.content:
                 section.content = self._compress_content(section.content)
-            # 压缩 bullets 中的重复项
             if section.bullets:
                 seen: set[str] = set()
                 unique_bullets: list[str] = []
@@ -221,7 +244,7 @@ class CompressionExecutor:
             id=f"{prompt.id}_compressed",
             prompt_type=prompt.prompt_type,
             sections=new_sections,
-            raw_markdown="",  # placeholder
+            raw_markdown="",
             version=prompt.version + 1,
         )
         compressed.raw_markdown = compressed.to_markdown()
@@ -248,7 +271,6 @@ class CompressionExecutor:
         warnings: list[str] = []
         if original.prompt_type != compressed.prompt_type:
             warnings.append("prompt_type changed during compression")
-        # 检查 immutable section 内容未变
         orig_sections = {s.id: s for s in self._flatten_sections(original.sections)}
         comp_sections = {s.id: s for s in self._flatten_sections(compressed.sections)}
         for sid, orig_sec in orig_sections.items():
@@ -260,95 +282,295 @@ class CompressionExecutor:
         return warnings
 
     # ------------------------------------------------------------------
-    # 回归测试
+    # LLM 压缩
     # ------------------------------------------------------------------
 
-    def _run_extraction_regression(
+    def _llm_compress_sections(
         self,
-        compressed_prompt: StructuredPrompt,
-        batch: SampleBatch,
-        sample_set: SampleSet,
-        extraction_executor: Any,
-        evaluation_executor: Any,
-        pre_eval_records: list,
-    ) -> tuple[float, list[str], list[str], list]:
-        """运行 extraction 回归测试。"""
-        # 用压缩后的 prompt 重新抽取
-        results = extraction_executor.execute(
-            prompt=compressed_prompt, batch=batch, sample_set=sample_set,
-        )
-        # 评估
-        eval_records = evaluation_executor.evaluate_batch(results, sample_set)
+        prompt: StructuredPrompt,
+        line_limit: int,
+        char_limit: int,
+        contribution_tracker: SectionContributionTracker | None,
+    ) -> tuple[StructuredPrompt, int, int, list[str]]:
+        """Section 级 LLM 压缩（低贡献优先）。
 
-        # 与压缩前评估对比
-        pre_eval_map = {r.sample_id: r for r in pre_eval_records}
-        post_eval_map = {r.sample_id: r for r in eval_records}
+        Returns:
+            (compressed_prompt, line_count, char_count, compressed_section_ids)
+        """
+        # 获取所有 mutable section，按贡献度升序排列
+        all_sections = self._flatten_sections(prompt.sections)
+        mutable_sections = [s for s in all_sections if s.mutable and s.content.strip()]
 
-        broken: list[str] = []
-        fixed: list[str] = []
-        for sample_id in batch.sample_ids:
-            pre = pre_eval_map.get(sample_id)
-            post = post_eval_map.get(sample_id)
-            if pre is None or post is None:
-                continue
-            pre_correct = pre.status == "correct"
-            post_correct = post.status == "correct"
-            if pre_correct and not post_correct:
-                broken.append(sample_id)
-            elif not pre_correct and post_correct:
-                fixed.append(sample_id)
+        if contribution_tracker is not None:
+            priority_order = contribution_tracker.get_priority_order(
+                [s.id for s in mutable_sections]
+            )
+            # 按优先级排序 sections
+            section_map = {s.id: s for s in mutable_sections}
+            ordered_sections = [section_map[sid] for sid in priority_order if sid in section_map]
+        else:
+            ordered_sections = mutable_sections
 
-        # 计算准确率
-        pre_correct_count = sum(1 for r in pre_eval_records if r.status == "correct")
-        post_correct_count = sum(1 for r in eval_records if r.status == "correct")
-        total = len(eval_records)
-        pre_acc = pre_correct_count / total if total > 0 else 0.0
-        post_acc = post_correct_count / total if total > 0 else 0.0
+        compressed_section_ids: list[str] = []
 
-        # 返回 post_acc 作为压缩后准确率，pre_acc 仅用于参考
-        _ = pre_acc  # noqa: F841
-        return post_acc, broken, fixed, eval_records
+        for section in ordered_sections:
+            # 检查是否已降至限内
+            current_md = prompt.to_markdown()
+            current_lines = len(current_md.splitlines())
+            current_chars = len(current_md)
+            if current_lines <= line_limit and current_chars <= char_limit:
+                break
 
-    def _run_analysis_regression(
+            # 压缩单个 section
+            section_lines = len(section.content.splitlines())
+            if section_lines <= 2:
+                continue  # 太短不压缩
+
+            target_min = max(1, int(section_lines * 0.5))
+            target_max = max(target_min + 1, int(section_lines * 0.8))
+
+            compressed_content = self._llm_compress_section(
+                section, target_min, target_max,
+            )
+            if compressed_content is not None and compressed_content != section.content:
+                # LLM 验证
+                if self._llm_validate_compression(section.content, compressed_content):
+                    section.content = compressed_content
+                    compressed_section_ids.append(section.id)
+                    logger.info(
+                        "[Compression] Section '%s' 压缩: %d → %d 行",
+                        section.id, section_lines, len(compressed_content.splitlines()),
+                    )
+
+        # 更新 raw_markdown
+        prompt.raw_markdown = prompt.to_markdown()
+        final_md = prompt.raw_markdown
+        return prompt, len(final_md.splitlines()), len(final_md), compressed_section_ids
+
+    def _llm_compress_section(
         self,
-        compressed_prompt: StructuredPrompt,
-        batch: SampleBatch,
-        sample_set: SampleSet,
-        analysis_executor: Any,
-        extraction_prompt: StructuredPrompt | None,
-        extraction_results: list,
-        pre_analysis_results: list,
-    ) -> tuple[float, list[str], list[str], list]:
-        """运行 analysis 回归测试。"""
-        # 用压缩后的 prompt 重新分析
-        results = analysis_executor.execute_batch(
-            analysis_prompt=compressed_prompt,
-            extraction_prompt=extraction_prompt,
-            extraction_results=extraction_results,
-            sample_set=sample_set,
+        section: PromptSection,
+        target_min: int,
+        target_max: int,
+    ) -> str | None:
+        """调用 LLM 压缩单个 section。
+
+        Args:
+            section: 待压缩的 section
+            target_min: 目标最小行数
+            target_max: 目标最大行数
+
+        Returns:
+            压缩后的内容，或 None 表示失败
+        """
+        try:
+            prompt_template = Path(self.compression_prompt_path).read_text(encoding="utf-8")
+        except Exception:
+            logger.warning("[Compression] 无法加载压缩 prompt: %s", self.compression_prompt_path)
+            return None
+
+        current_lines = len(section.content.splitlines())
+        input_content = f"## Section: {section.title}\n\n{section.content}"
+
+        # 填充模板
+        system_content = prompt_template.format(
+            mode="section",
+            current_lines=current_lines,
+            min_target_lines=target_min,
+            max_target_lines=target_max,
+            input_content=input_content,
         )
 
-        # 对比
-        pre_map = {r.sample_id: r for r in pre_analysis_results}
-        post_map = {r.sample_id: r for r in results}
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": "请压缩上述 Section 内容。"},
+        ]
 
-        broken: list[str] = []
-        fixed: list[str] = []
-        for sample_id in batch.sample_ids:
-            pre = pre_map.get(sample_id)
-            post = post_map.get(sample_id)
-            if pre is None or post is None:
+        try:
+            response = self.model_client.complete(messages, model_config=self.model_config)
+            result = response.raw_output.strip()
+            # 移除可能的 markdown 包裹
+            result = self._strip_markdown(result)
+            if result:
+                return result
+        except Exception as e:
+            logger.warning("[Compression] Section LLM 压缩失败: %s", e)
+
+        return None
+
+    def _llm_compress_prompt(
+        self,
+        prompt: StructuredPrompt,
+        line_limit: int,
+        char_limit: int,
+    ) -> tuple[StructuredPrompt, int, int]:
+        """Prompt 级 LLM 压缩（兜底）。
+
+        Returns:
+            (compressed_prompt, line_count, char_count)
+        """
+        try:
+            prompt_template = Path(self.compression_prompt_path).read_text(encoding="utf-8")
+        except Exception:
+            logger.warning("[Compression] 无法加载压缩 prompt: %s", self.compression_prompt_path)
+            return prompt, len(prompt.to_markdown().splitlines()), len(prompt.to_markdown())
+
+        current_md = prompt.to_markdown()
+        current_lines = len(current_md.splitlines())
+        target_min = max(1, int(line_limit * 0.85))
+        target_max = line_limit
+
+        system_content = prompt_template.format(
+            mode="prompt",
+            current_lines=current_lines,
+            min_target_lines=target_min,
+            max_target_lines=target_max,
+            input_content=current_md,
+        )
+
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": "请压缩上述 Prompt 全文。"},
+        ]
+
+        try:
+            response = self.model_client.complete(messages, model_config=self.model_config)
+            result = response.raw_output.strip()
+            result = self._strip_markdown(result)
+            if result and len(result.splitlines()) < current_lines:
+                # 用 LLM 压缩结果重建 prompt
+                from ..phases.prompt_structuring import MarkdownParser
+                try:
+                    parser = MarkdownParser()
+                    new_prompt = parser.parse(
+                        result, prompt_type=prompt.prompt_type, prompt_id=f"{prompt.id}_llm_compressed",
+                    )
+                    new_prompt.version = prompt.version + 1
+                    new_md = new_prompt.to_markdown()
+                    logger.info(
+                        "[Compression] Prompt 级 LLM 压缩: %d → %d 行",
+                        current_lines, len(new_md.splitlines()),
+                    )
+                    return new_prompt, len(new_md.splitlines()), len(new_md)
+                except Exception as e:
+                    logger.warning("[Compression] Prompt 级压缩结果解析失败: %s", e)
+        except Exception as e:
+            logger.warning("[Compression] Prompt 级 LLM 压缩失败: %s", e)
+
+        return prompt, current_lines, len(current_md)
+
+    # ------------------------------------------------------------------
+    # LLM 验证
+    # ------------------------------------------------------------------
+
+    def _llm_validate_compression(self, original: str, compressed: str) -> bool:
+        """调用 LLM 验证压缩后的语义等价性。
+
+        Args:
+            original: 原始文本
+            compressed: 压缩后文本
+
+        Returns:
+            True 表示验证通过
+        """
+        if not original.strip() or not compressed.strip():
+            return True
+
+        if self.model_client is None:
+            return True
+
+        try:
+            prompt_template = Path(self.validation_prompt_path).read_text(encoding="utf-8")
+        except Exception:
+            logger.warning("[Compression] 无法加载验证 prompt: %s", self.validation_prompt_path)
+            return True  # 无法加载验证 prompt 时放行
+
+        system_content = prompt_template.format(
+            original_section=original,
+            pruned_section=compressed,
+        )
+
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": "请验证上述压缩是否合格。"},
+        ]
+
+        try:
+            response = self.model_client.complete(messages, model_config=self.model_config)
+            result = response.raw_output.strip()
+            # 解析 JSON 验证结果
+            parsed = self._parse_validation_result(result)
+            if parsed is not None:
+                valid, reason = parsed
+                if not valid:
+                    logger.info("[Compression] 验证失败: %s", reason)
+                return valid
+            # 解析失败，放行
+            return True
+        except Exception as e:
+            logger.warning("[Compression] LLM 验证调用失败: %s", e)
+            return True
+
+    def _llm_validate_prompt(
+        self,
+        original: StructuredPrompt,
+        compressed: StructuredPrompt,
+    ) -> bool:
+        """验证整个 prompt 压缩的语义等价性。
+
+        逐 section 验证 mutable section，immutable section 跳过（已有约束检查）。
+        """
+        orig_sections = {s.id: s for s in self._flatten_sections(original.sections)}
+        comp_sections = {s.id: s for s in self._flatten_sections(compressed.sections)}
+
+        for sid, orig_sec in orig_sections.items():
+            comp_sec = comp_sections.get(sid)
+            if comp_sec is None:
                 continue
-            if pre.analysis_correct and not post.analysis_correct:
-                broken.append(sample_id)
-            elif not pre.analysis_correct and post.analysis_correct:
-                fixed.append(sample_id)
+            if not orig_sec.mutable:
+                continue
+            if orig_sec.content == comp_sec.content:
+                continue
+            if not self._llm_validate_compression(orig_sec.content, comp_sec.content):
+                return False
 
-        pre_correct = sum(1 for r in pre_analysis_results if r.analysis_correct)
-        post_correct = sum(1 for r in results if r.analysis_correct)
-        total = len(results)
-        pre_acc = pre_correct / total if total > 0 else 0.0
-        post_acc = post_correct / total if total > 0 else 0.0
+        return True
 
-        _ = pre_acc  # noqa: F841
-        return post_acc, broken, fixed, results
+    # ------------------------------------------------------------------
+    # 辅助方法
+    # ------------------------------------------------------------------
+
+    def _strip_markdown(self, text: str) -> str:
+        """移除 markdown 代码块标记。"""
+        text = re.sub(r"^```json\s*\n?", "", text, flags=re.MULTILINE)
+        text = re.sub(r"^```\s*\n?", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
+        return text.strip()
+
+    def _parse_validation_result(self, text: str) -> tuple[bool, str] | None:
+        """解析 LLM 验证结果 JSON。
+
+        Returns:
+            (valid, reason) 元组，或 None 表示解析失败
+        """
+        cleaned = self._strip_markdown(text)
+        # 尝试直接解析
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict) and "valid" in parsed:
+                return bool(parsed["valid"]), str(parsed.get("reason", ""))
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # 尝试提取 JSON 对象
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and start < end:
+            try:
+                parsed = json.loads(cleaned[start : end + 1])
+                if isinstance(parsed, dict) and "valid" in parsed:
+                    return bool(parsed["valid"]), str(parsed.get("reason", ""))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return None

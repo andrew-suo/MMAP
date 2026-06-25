@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from mmap_optimizer.config import ModelConfig
+from mmap_optimizer.core.config import ModelConfig
 from mmap_optimizer.model.factory import build_model_client
 from mmap_optimizer.model.client import MockModelClient
 from mmap_optimizer.model.openai_compatible import OpenAICompatibleClient

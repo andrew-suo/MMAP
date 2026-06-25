@@ -2,7 +2,7 @@ import os
 import ssl
 from unittest import mock
 
-from mmap_optimizer.config import model_config_from_mapping, ModelConfig
+from mmap_optimizer.core.config import model_config_from_mapping, ModelConfig
 from mmap_optimizer.model.openai_compatible import OpenAICompatibleClient
 
 

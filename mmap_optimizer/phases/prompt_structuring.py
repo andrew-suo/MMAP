@@ -182,6 +182,8 @@ class PromptStructuringPhase:
         Returns:
             (structured_extraction_prompt, structured_analysis_prompt)
         """
+        print(f"\n--- Phase 1: Prompt 结构化 ---")
+
         # 读取原始 Markdown
         extraction_markdown = Path(extraction_prompt_path).read_text(encoding="utf-8")
         analysis_markdown = Path(analysis_prompt_path).read_text(encoding="utf-8")
@@ -192,12 +194,14 @@ class PromptStructuringPhase:
             prompt_type="extraction",
             prompt_id="structured_extraction_prompt",
         )
+        print(f"Extraction 结构化完成，共 {len(structured_extraction.sections)} 个 section")
 
         structured_analysis = self._parse_and_standardize(
             analysis_markdown,
             prompt_type="analysis",
             prompt_id="structured_analysis_prompt",
         )
+        print(f"Analysis 结构化完成，共 {len(structured_analysis.sections)} 个 section")
 
         return structured_extraction, structured_analysis
 
@@ -222,6 +226,7 @@ class PromptStructuringPhase:
 
         # 检查结构质量
         quality = self._evaluate_structure_quality(structured)
+        print(f"结构化质量: {quality}")
         structured.metadata["structure_quality"] = quality
         structured.metadata["standardized"] = False
 
@@ -232,6 +237,7 @@ class PromptStructuringPhase:
             and self.model_client is not None
             and self.config.standardization_prompt_path is not None
         ):
+            print("调用模型进行 Prompt 标准化...")
             standardized_markdown = self._standardize_with_model(markdown)
             if standardized_markdown:
                 # 重新解析标准化后的文本
@@ -241,6 +247,7 @@ class PromptStructuringPhase:
                     f"{prompt_id}_standardized",
                 )
                 quality = self._evaluate_structure_quality(structured)
+                print(f"标准化后结构化质量: {quality}")
                 structured.metadata["structure_quality"] = quality
                 structured.metadata["standardized"] = True
                 structured.metadata["original_markdown"] = markdown
@@ -262,10 +269,15 @@ class PromptStructuringPhase:
                 self.config.standardization_prompt_path
             ).read_text(encoding="utf-8")
 
+            # 将原始 prompt 注入到 system prompt 的占位符中
+            standardization_prompt = standardization_prompt.replace(
+                "{original_prompt}", markdown
+            )
+
             # 构建消息
             messages = [
                 {"role": "system", "content": standardization_prompt},
-                {"role": "user", "content": f"# Input Prompt\n\n{markdown}"},
+                {"role": "user", "content": "请开始标准化处理。"},
             ]
 
             # 调用模型

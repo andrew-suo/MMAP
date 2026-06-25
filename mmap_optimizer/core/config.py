@@ -91,10 +91,13 @@ class PromptsConfig:
     """Prompt 文件路径配置。"""
     extraction: str = "prompts/extraction.txt"
     analysis: str = "prompts/analysis.txt"
-    analysis_task: str = "prompts/analysis_task.txt"
     analysis_reflection: str = "prompts/analysis_reflection.txt"
     prompt_standardization: str = "prompts/prompt_standardization.txt"
     patch_generation: str = "prompts/patch_generation.txt"
+    patch_calibration: str = "prompts/patch_calibration.txt"
+    patch_merge: str = "prompts/patch_merge.txt"
+    patch_root_merge: str = "prompts/patch_root_merge.txt"
+    patch_text_match: str = "prompts/patch_text_match.txt"
 
 
 @dataclass
@@ -127,10 +130,13 @@ class RefactoredConfig:
             "prompts": {
                 "extraction": self.prompts.extraction,
                 "analysis": self.prompts.analysis,
-                "analysis_task": self.prompts.analysis_task,
                 "analysis_reflection": self.prompts.analysis_reflection,
                 "prompt_standardization": self.prompts.prompt_standardization,
                 "patch_generation": self.prompts.patch_generation,
+                "patch_calibration": self.prompts.patch_calibration,
+                "patch_merge": self.prompts.patch_merge,
+                "patch_root_merge": self.prompts.patch_root_merge,
+                "patch_text_match": self.prompts.patch_text_match,
             },
             "prompt_structuring": {
                 "enabled": self.prompt_structuring.enabled,
@@ -224,10 +230,13 @@ class RefactoredConfig:
         prompts_config = PromptsConfig(
             extraction=prompts_data.get("extraction", "prompts/extraction.txt"),
             analysis=prompts_data.get("analysis", "prompts/analysis.txt"),
-            analysis_task=prompts_data.get("analysis_task", "prompts/analysis_task.txt"),
             analysis_reflection=prompts_data.get("analysis_reflection", "prompts/analysis_reflection.txt"),
             prompt_standardization=prompts_data.get("prompt_standardization", "prompts/prompt_standardization.txt"),
             patch_generation=prompts_data.get("patch_generation", "prompts/patch_generation.txt"),
+            patch_calibration=prompts_data.get("patch_calibration", "prompts/patch_calibration.txt"),
+            patch_merge=prompts_data.get("patch_merge", "prompts/patch_merge.txt"),
+            patch_root_merge=prompts_data.get("patch_root_merge", "prompts/patch_root_merge.txt"),
+            patch_text_match=prompts_data.get("patch_text_match", "prompts/patch_text_match.txt"),
         )
 
         # 构建 PromptStructuringConfig

@@ -20,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from mmap_optimizer.config import RefactoredConfig, RunConfig, load_config
+from mmap_optimizer.core.config import RefactoredConfig, RunConfig, load_config
 from mmap_optimizer.executors.factory import create_executors
-from mmap_optimizer.runner import (
+from mmap_optimizer.core.runner import (
     AnalysisPromptSummary,
     FewshotOptimizationSummary,
     MMAPRunner,

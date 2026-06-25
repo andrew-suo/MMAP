@@ -1,124 +1,147 @@
 # MMAP Optimizer
 
-Multimodal prompt optimization framework that iteratively improves extraction and analysis prompts through automated patch generation, validation, compression, and few-shot optimization.
+Multimodal prompt optimization framework that iteratively improves extraction and analysis prompts through automated patch generation, LLM-based merge, validation, compression, and few-shot optimization.
 
 ## Features
 
-- **Prompt IR & Versioning** — Structured `PromptIR` with section-level control, immutable output-schema contracts, and `PromptVersion` with full round/run-level provenance tracking
-- **Patch Workflow** — Analysis-driven patch generation, self-describing constraints (`allowed_operation_types` / `forbidden_keywords` / `must_mention_section_ids`), tree-reduce merge, strict individual + bundle testing, and safe application with traceability
-- **Round Stage State Machine** — Explicit `RoundStage` enum (15 stages from `INIT` to `COMPLETED`) for deterministic round progression tracking
-- **Compression** — Line-budget and token-budget dual-threshold compression with behavior-preservation gates for both extraction and analysis prompts
-- **Few-Shot Optimization** — Greedy slot optimization with persistent candidate pool, schema-complete example generation, and accuracy-delta promotion gates
-- **Checkpoint & Snapshot** — `OptimizerCheckpoint` for run-state persistence and `PromptSnapshot` with rollback support for safe prompt mutation
-- **Dynamic Validation** — Non-fixed validation set with label/difficulty coverage and recent-selection penalty
-- **Config Safety** — Safe type conversion (`_int_safe` / `_float_safe`), instance-level `validate()` with range checks, and graceful fallback for invalid inputs
-- **Debug Event Logger** — In-memory event counting, aggregation by stage/round, and JSONL persistence with cleanup controls
-- **Multimodal Support** — OpenAI-compatible adapter for local/remote image assets as multimodal message parts
+- **Three-Phase Workflow** — Prompt Structuring → Prompt Optimization → Few-shot Optimization
+- **Structured Prompt** — `StructuredPrompt` with section-level control, mutable/protected flags, and version tracking
+- **LLM-Based Patch Generation** — Model-driven patch generation based on analysis results and reflection results
+- **Parallel Patch Merge** — LLM-based parallel merge with deterministic guardrail (ADD+DELETE conflict + replace n-gram overlap detection), Section-Aware grouping, and root merge for cross-section consistency
+- **Patch Validation & Calibration** — PatchValidator with model-based calibration for fuzzy target_section/old_text alignment
+- **Three-Level Text Matching** — Exact match → difflib fuzzy match → LLM semantic match for robust patch application
+- **Toxicity Testing** — Individual patch validation to prevent regression
+- **Compression** — Line-budget and token-budget dual-threshold compression with behavior-preservation gates
+- **Few-Shot Optimization** — Greedy slot optimization with persistent candidate pool
+- **Multimodal Support** — OpenAI-compatible adapter for image assets as multimodal message parts
+- **Centralized Prompt Management** — All LLM prompts stored in `prompts/` directory with CLI/YAML configuration
 
 ## Quick Start
 
 ```bash
 # Smoke run with mock model
-python -m mmap_optimizer.cli.main run-smoke \
+python -m mmap_optimizer.core.cli run-smoke \
   --data-dir data \
-  --run-dir runs/smoke \
+  --output-dir runs/smoke \
   --batch-size 2 \
-  --dynamic-validation-batch-size 1 \
-  --rounds 2 \
-  --extraction-line-budget 120 \
-  --fewshot-enabled
+  --rounds 2
 
 # Configurable run with real model
-python -m mmap_optimizer.cli.main run --config configs/optimizer.yaml
+python -m mmap_optimizer.core.cli run --config configs/optimizer.yaml
 
-# Prompt health check without starting a run
-python -m mmap_optimizer.cli.main check-prompt --data-dir data
-
-# Resume an interrupted run
-python -m mmap_optimizer.cli.main run-smoke --rounds 1 --run-dir /tmp/mmap-smoke --resume
+# Validate configuration
+python -m mmap_optimizer.core.cli validate --config configs/optimizer.yaml
 ```
 
 ## Architecture
 
 ```
 mmap_optimizer/
-├── prompt/           # Prompt IR, versioning, rendering, snapshots, health, contracts
-│   ├── ir.py         # PromptSection + PromptIR (structured prompt representation)
-│   ├── version.py    # PromptVersion with from_dict() + round/run provenance
-│   ├── renderer.py   # PromptRenderer (IR → rendered text with section markers)
-│   ├── snapshot.py   # save_prompt_snapshot() + rollback_to_snapshot()
-│   ├── contract.py   # OutputSchemaContract (frozen external schema)
-│   ├── health.py     # Prompt health validation
-│   └── ...
-├── patch/            # Patch schema, validation, merge, application
-│   ├── schema.py     # Patch (with constraints, to_dict, compact_dict)
-│   ├── validator.py  # PatchValidator (constraint-aware, detailed error reasons)
-│   ├── applier.py    # PatchApplier (round_id/run_id traceability)
-│   ├── tree_reduce.py # Tree-reduce merge with conflict detection
-│   └── ...
-├── orchestration/    # Round runner, optimizer loop, records, checkpoint
-│   ├── records.py    # RoundStage enum + OptimizationRound + RunRecord
-│   ├── round_runner.py # Single-round execution with stage tracking
-│   ├── optimizer_loop.py # Serial multi-round loop
-│   ├── checkpoint.py # OptimizerCheckpoint (save/restore active prompts)
-│   └── ...
-├── compression/      # Line/token budget compression
-│   ├── engine.py     # CompressionEngine (line_budget + token_budget)
-│   ├── report.py     # CompressionReport (with token counts)
-│   └── ...
-├── evaluation/       # Extraction evaluation, schema validation, voting
-├── sampling/         # Optimization + dynamic-validation samplers
-├── fewshot/          # Few-shot candidate pool, slot optimization
-├── analysis/         # Analysis output parsing, repair, evolution
-├── core/             # Config, enums, hashing, scenario loading
-│   ├── config.py     # OptimizerConfig with validate() + safe converters
-│   ├── enums.py      # PromptType, PatchStatus, RunType, EvaluationStatus
-│   └── ...
-├── debug/            # Debug event logger with aggregation
-│   └── logger.py     # DebugEventLogger (counts, summary, clear, reset)
-├── model/            # Mock + OpenAI-compatible multimodal client
-├── storage/          # JSON/JSONL persistence
-├── templates/        # Versioned prompt template registry
-├── testing/          # Patch test runner, suite builder, transitions
-├── metrics/          # Round metrics, section contribution, trend
-├── dataset/          # Sample loader and schema
-└── cli/              # Command-line interface
+├── core/               # 核心运行器和配置
+│   ├── runner.py       # MMAPRunner - 三阶段工作流编排
+│   ├── config.py       # OptimizerConfig + PromptsConfig
+│   └── cli.py          # CLI 命令行接口
+├── phases/             # 三个优化阶段
+│   ├── prompt_structuring.py    # Phase 1: Prompt 结构化
+│   ├── prompt_optimization.py   # Phase 2: Prompt 优化
+│   └── fewshot_optimization.py  # Phase 3: Few-shot 优化
+├── stages/             # 阶段内步骤实现
+│   ├── extraction_prompt_optimization.py  # 9 步提取提示优化
+│   ├── analysis_prompt_optimization.py    # 8 步分析提示优化
+│   └── batch_size_controller.py           # 自适应批大小控制
+├── executors/          # 执行器
+│   ├── extraction_executor.py       # 多模态信息抽取
+│   ├── analysis_executor.py         # 盲评分析 + 反思
+│   ├── patch_generation_executor.py # LLM 驱动的 patch 生成
+│   ├── patch_validator.py           # Patch 校验 + 模型校准
+│   ├── patch_apply_executor.py      # Patch 应用 + 三级降级匹配
+│   ├── merge_executor.py            # ParallelPatchMerger 包装
+│   ├── toxicity_executor.py         # 测毒验证
+│   ├── compression_executor.py      # Prompt 压缩
+│   └── factory.py                   # 执行器工厂
+├── patch/              # Patch 核心模块
+│   ├── types.py        # ExtractionPatch, AnalysisPatch, PatchMergeReport
+│   ├── tree_reduce.py  # ParallelPatchMerger (LLM 并行合并)
+│   ├── conflict.py     # 确定性前筛 (ADD+DELETE + replace 重叠)
+│   ├── clusterer.py    # Section-Aware 分组
+│   ├── deduplicate.py  # 文本归一化
+│   └── text_matcher.py # 三级降级文本匹配
+├── prompt/             # Prompt 管理
+│   ├── structured_prompt.py  # StructuredPrompt + PromptSection
+│   ├── prompt_manager.py     # Prompt 统一管理
+│   ├── output_repair.py      # 模型输出修复
+│   └── prompt_structuring.py # Prompt 结构化解析
+├── data/               # 数据模块
+│   ├── sample.py       # SampleSet, SampleSpec, SampleState
+│   └── sampler.py      # 抽样策略 (difficulty_frequency 等)
+└── model/              # 模型客户端
+    └── client.py       # ModelClient (OpenAI-compatible)
+
+prompts/                # 所有 LLM 提示词
+├── extraction.txt              # 抽取系统提示词
+├── analysis.txt                # 分析系统提示词 (盲评)
+├── analysis_reflection.txt     # 分析反思提示词
+├── patch_generation.txt        # Patch 生成提示词
+├── patch_calibration.txt       # Patch 校准提示词
+├── patch_merge.txt             # Patch 合并提示词
+├── patch_root_merge.txt        # Root Merge 提示词
+├── patch_text_match.txt        # 文本匹配提示词
+├── prompt_standardization.txt  # Prompt 标准化提示词
+└── output_repair.txt           # 输出修复提示词
 ```
 
 ## Core Concepts
 
-### Prompt Version Provenance
-
-Every `PromptVersion` carries `created_by_round_id` and `created_by_run_id`, enabling full traceability from any prompt back to the optimization step that produced it. `PromptVersion.from_dict()` reconstructs versions from serialized data while preserving unknown fields in `_extra` to prevent data loss across version upgrades.
-
-### Patch Self-Describing Constraints
-
-Patches carry their own `constraints` dict with three validation dimensions:
-- `allowed_operation_types` — restrict which operations this patch may use
-- `forbidden_keywords` — reject patches that mention protected terms (e.g., schema mutation)
-- `must_mention_section_ids` — require patch text to reference specific sections
-
-`PatchValidator` checks these constraints before any patch is applied, with detailed error reasons for debugging.
-
-### Round Stage State Machine
-
-Each `OptimizationRound` tracks its current stage via the `RoundStage` enum:
+### Three-Phase Workflow
 
 ```
-INIT → OPTIMIZATION_BATCH_SELECT → BASELINE_EVAL → DYNAMIC_VALIDATION
-     → PATCH_GENERATION → PATCH_VALIDATION → PATCH_TREE_REDUCE
-     → PATCH_EVAL → PATCH_RANKING → PATCH_APPLY → COMPRESSION
-     → FEWSHOT → ANALYSIS_EVOLUTION → METRICS → COMPLETED
-                                                     ↘ FAILED
+Phase 1: Prompt Structuring
+  └─ Markdown → StructuredPrompt (7-section standardization)
+
+Phase 2: Prompt Optimization (N iterations)
+  ├─ Extraction Prompt Optimization (9 steps)
+  │   └─ Extract → Evaluate → Analyze → Generate Patches → Merge → Apply → Toxicity → Compress → Result
+  └─ Analysis Prompt Optimization (8 steps)
+      └─ Analyze → Reflect → Generate Patches → Merge → Apply → Toxicity → Compress → Result
+
+Phase 3: Few-shot Optimization (N iterations)
+  └─ Select candidates → Generate examples → Evaluate → Promote
 ```
 
-### Dual-Budget Compression
+### Patch Lifecycle
 
-`CompressionEngine` supports both line-budget and token-budget thresholds. When either budget is exceeded, the engine ranks mutable sections, removes blank/duplicate lines one section at a time, and runs a behavior-preservation gate before promotion. `CompressionReport` records `token_count_before`, `token_count_after`, `token_budget`, and `token_reduction`.
+```
+AnalysisResult / ReflectionResult
+    ↓
+PatchGenerationExecutor (LLM 生成 patch)
+    ↓
+PatchValidator (校验 + 模型校准)
+    ↓
+MergeExecutor → ParallelPatchMerger (LLM 并行合并)
+  ├─ deterministic_guardrail (ADD+DELETE 冲突 + replace 重叠)
+  ├─ Section-Aware 分组
+  ├─ ThreadPoolExecutor 并行 LLM 合并
+  └─ Root Merge (跨 section 一致性审查)
+    ↓
+PatchApplyExecutor (应用 patch + 三级降级匹配)
+  ├─ exact_match
+  ├─ fuzzy_match (difflib)
+  └─ llm_match (LLM 语义匹配)
+    ↓
+ToxicityTestExecutor (测毒验证)
+```
 
-### Config Safety
+### Patch Operations
 
-`OptimizerConfig.validate()` performs instance-level range checks on all numeric fields. `_int_safe()` and `_float_safe()` handle `None`, non-numeric strings, and nested types gracefully, falling back to defaults instead of raising exceptions. `optimizer_config_from_mapping()` uses these safe converters throughout.
+| Operation | Description |
+|-----------|-------------|
+| `append_to_section` | 在 section 末尾追加内容 |
+| `insert_after` | 在指定文本之后插入 |
+| `insert_before` | 在指定文本之前插入 |
+| `replace_in_section` | 替换 section 中的文本 |
+| `replace_section` | 完全重写整个 section |
+| `add_after_section` | 在目标 section 之后新增 section |
+| `delete_section` | 删除整个 section |
 
 ## Configuration
 
@@ -138,45 +161,60 @@ models:
 
 optimizer:
   batch_size: 5
-  max_text_rounds: 5
-  extraction_line_budget: 120
-  analysis_line_budget: 80
-  extraction_token_budget: 4000
-  analysis_token_budget: 2000
+  max_iterations: 5
   fewshot_enabled: true
 
-dynamic_validation:
-  min_label_count: 1
-  cover_difficulty_bins: true
-  recent_window_rounds: 3
-  max_recent_selections: 2
+prompts:
+  extraction: prompts/extraction.txt
+  analysis: prompts/analysis.txt
+  analysis_reflection: prompts/analysis_reflection.txt
+  patch_generation: prompts/patch_generation.txt
+  patch_calibration: prompts/patch_calibration.txt
+  patch_merge: prompts/patch_merge.txt
+  patch_root_merge: prompts/patch_root_merge.txt
+  patch_text_match: prompts/patch_text_match.txt
+  prompt_standardization: prompts/prompt_standardization.txt
+  output_repair: prompts/output_repair.txt
+```
 
-execution:
-  max_workers: 4
-  timeout_seconds: 120
+## CLI Parameters
+
+```bash
+python -m mmap_optimizer.core.cli run \
+  --data-dir data \
+  --output-dir runs/output \
+  --batch-size 5 \
+  --rounds 3 \
+  --extraction-prompt prompts/extraction.txt \
+  --analysis-prompt prompts/analysis.txt \
+  --analysis-reflection-prompt prompts/analysis_reflection.txt \
+  --patch-generation-prompt prompts/patch_generation.txt \
+  --patch-calibration-prompt prompts/patch_calibration.txt \
+  --patch-merge-prompt prompts/patch_merge.txt \
+  --patch-root-merge-prompt prompts/patch_root_merge.txt \
+  --patch-text-match-prompt prompts/patch_text_match.txt \
+  --prompt-standardization prompts/prompt_standardization.txt
 ```
 
 ## Testing
 
 ```bash
 # Run all tests
-python -m pytest -q
+python -m pytest tests/ -v
 
-# Run P0-P2 feature coverage tests
-python -m pytest tests/test_p0_p2_feature_coverage.py -v
+# Run core tests
+python -m pytest tests/test_core.py -v
 
-# Smoke test
-python -m mmap_optimizer.cli.main run-smoke --rounds 1 --run-dir /tmp/mmap-smoke
+# Run new patch system tests
+python -m pytest tests/test_patch_new_system.py -v
 ```
-
-## Prompt Migration
-
-The `docs/prompt_migration/` directory contains the migration and absorption plan for integrating capabilities from legacy prompts into the current system. The approach focuses on **capability modules** (patterns) rather than direct text reuse, ensuring safe and reversible integration. See [docs/prompt_migration/README.md](docs/prompt_migration/README.md) for details.
 
 ## Key Design Decisions
 
-- **Frozen output schemas** — External output-schema contracts are immutable; patches that modify schema sections are rejected
-- **Behavior-preservation gates** — Compression and few-shot changes must preserve baseline extraction predictions and evaluation statuses
-- **No early stopping** — The optimizer loop does not early-stop when a text round accepts no patches, because analysis evolution, compression, and few-shot phases still need deterministic round accounting
-- **Dynamic validation** — Validation sets are intentionally not fixed across rounds; composition is driven by label/difficulty coverage with a recent-selection penalty
-- **Parallel IR models** — Runtime optimizer prompts (`mmap_optimizer.prompt.ir.PromptIR`) and evaluation-prompt optimization prompts (`mmap_optimizer.prompts.PromptIR`) are semantically distinct and intentionally separate
+- **LLM-based merge** — Patch merge uses LLM for semantic-level deduplication, generalization, and conflict resolution, replacing the old text-concatenation approach
+- **Three-level text matching** — When exact match fails for `old_text`/`target_text`, the system degrades to difflib fuzzy match, then to LLM semantic match
+- **Deterministic guardrail** — Before LLM merge, deterministic checks (ADD+DELETE conflicts, replace n-gram overlaps) filter out obvious conflicts
+- **Section-Aware grouping** — Patches are grouped by `target_section` for parallel processing, with single-pass for isolated patches
+- **Centralized prompts** — All LLM prompts are stored in `prompts/` directory, configurable via CLI or YAML
+- **Blind review** — AnalysisExecutor performs blind review without ground truth, only using image and extraction result
+- **Reflection mechanism** — When blind review is incorrect, reflection is triggered with ground truth for error analysis

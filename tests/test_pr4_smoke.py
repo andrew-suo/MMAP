@@ -28,8 +28,8 @@ from pathlib import Path
 
 import pytest
 
-from mmap_optimizer.config import load_config
-from mmap_optimizer.runner import MMAPRunner
+from mmap_optimizer.core.config import load_config
+from mmap_optimizer.core.runner import MMAPRunner
 
 
 # ============================================================
@@ -329,11 +329,11 @@ def test_smoke_run_patch_apply_reports_jsonl_exists(tmp_path):
 # ============================================================
 
 def test_smoke_cli_command_executes(tmp_path):
-    """CLI 命令 `python -m mmap_optimizer.cli run --config ... --use-mock` 可执行。"""
+    """CLI 命令 `python -m mmap_optimizer.core.cli run --config ... --use-mock` 可执行。"""
     output_dir = tmp_path / "cli_smoke_run"
 
     cmd = [
-        sys.executable, "-m", "mmap_optimizer.cli", "run",
+        sys.executable, "-m", "mmap_optimizer.core.cli", "run",
         "--config", str(SMOKE_CONFIG),
         "--extraction-prompt", str(EXTRACTION_PROMPT),
         "--analysis-prompt", str(ANALYSIS_PROMPT),
@@ -368,7 +368,7 @@ def test_smoke_cli_no_mock_without_model_client_errors(tmp_path):
     output_dir = tmp_path / "cli_no_mock_run"
 
     cmd = [
-        sys.executable, "-m", "mmap_optimizer.cli", "run",
+        sys.executable, "-m", "mmap_optimizer.core.cli", "run",
         "--config", str(SMOKE_CONFIG),
         "--extraction-prompt", str(EXTRACTION_PROMPT),
         "--analysis-prompt", str(ANALYSIS_PROMPT),

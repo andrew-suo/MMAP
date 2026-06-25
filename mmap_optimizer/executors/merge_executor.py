@@ -1,56 +1,61 @@
 """MergeExecutor - Patch 合并执行器。
 
-将多个 patch 合并为更少的 patch，支持 tree_merge / hierarchical_merge
-策略，并在合并后通过 PatchValidator 进行校验。
+将多个 patch 合并为更少的 patch，并在合并后通过 PatchValidator 进行校验。
 
-tree_merge 策略复用老系统 ``TreeReducePatchMerger``，通过数据结构
-转换将 ExtractionPatch / AnalysisPatch 映射为老系统 ``Patch``，合并
-完成后再转回。当老系统不可用或合并抛异常时，回退到 passthrough
-策略（原样返回输入 patch）。
+当 model_client 可用时，使用 ``ParallelPatchMerger``（基于 LLM 的并行合并）；
+当 model_client 不可用或合并抛异常时，回退到 passthrough（原样返回输入 patch）。
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from ..patch.types import AnalysisPatch, ExtractionPatch, PatchMergeReport
+from ..patch.types import ExtractionPatch, PatchMergeReport
 from ..data.sample import SampleSet
 from ..prompt.structured_prompt import StructuredPrompt
+from ..patch.tree_reduce import ParallelPatchMerger
 from .patch_validator import PatchValidator
 
-# 老系统导入：用 try/except 包裹，便于在老系统不可用时回退到 passthrough。
-try:
-    from ..patch.schema import Patch as _OldPatch
-    from ..patch.tree_reduce import TreeReducePatchMerger as _TreeReducePatchMerger
-
-    _OLD_SYSTEM_AVAILABLE = True
-except Exception:  # pragma: no cover - 老系统缺失时的兜底分支
-    _OldPatch = None  # type: ignore[assignment]
-    _TreeReducePatchMerger = None  # type: ignore[assignment]
-    _OLD_SYSTEM_AVAILABLE = False
+logger = logging.getLogger(__name__)
 
 
 class MergeExecutor:
     """Patch 合并执行器。
 
-    支持的策略：
-    - ``tree_merge``：调用老系统 ``TreeReducePatchMerger`` 进行去重/合并。
-    - ``hierarchical_merge``：当前等价于 ``tree_merge``（占位实现）。
-    - 任意策略失败时回退到 passthrough（原样返回输入 patch）。
+    合并策略：
+    - 有 model_client 时使用 ``ParallelPatchMerger`` 进行 LLM 并行合并；
+    - 无 model_client 或合并抛异常时回退到 passthrough（原样返回输入 patch）。
 
     合并完成后，如果传入 ``sample_set``，会对 merged patches 跑一次
     ``PatchValidator.validate_batch``，校验失败的 patch 会被标记
     ``rejection_reason="MERGED_PATCH_VALIDATION_FAILED"``。
     """
 
-    def __init__(self, patch_validator: PatchValidator | None = None) -> None:
+    def __init__(
+        self,
+        patch_validator: PatchValidator | None = None,
+        model_client: Any = None,
+        model_config: Any = None,
+        merge_prompt_path: str | None = None,
+        root_merge_prompt_path: str | None = None,
+    ) -> None:
         """初始化合并执行器。
 
         Args:
             patch_validator: 可选的 PatchValidator 实例。如果未提供，
                 内部创建默认实例。
+            model_client: 模型客户端，用于 ParallelPatchMerger。
+                为 None 时回退到 passthrough。
+            model_config: 模型配置。
+            merge_prompt_path: patch_merge.txt 路径。
+            root_merge_prompt_path: patch_root_merge.txt 路径。
         """
         self.patch_validator = patch_validator or PatchValidator()
+        self.model_client = model_client
+        self.model_config = model_config
+        self.merge_prompt_path = merge_prompt_path or "prompts/patch_merge.txt"
+        self.root_merge_prompt_path = root_merge_prompt_path or "prompts/patch_root_merge.txt"
 
     def merge(
         self,
@@ -64,7 +69,7 @@ class MergeExecutor:
         Args:
             patches: 待合并的 patch 列表（ExtractionPatch 或 AnalysisPatch）。
             prompt: 目标 StructuredPrompt，用于生成 round_id 和后置校验。
-            merge_strategy: 合并策略，支持 ``tree_merge`` / ``hierarchical_merge``。
+            merge_strategy: 合并策略（保留参数以兼容调用方，实际统一走 parallel_merge / passthrough）。
             sample_set: 可选的样本集合，提供时会在合并后做校验。
 
         Returns:
@@ -92,15 +97,7 @@ class MergeExecutor:
             )
             return [], report
 
-        # 选择合并策略：hierarchical_merge 当前等价于 tree_merge
-        effective_strategy = merge_strategy
-        if merge_strategy == "hierarchical_merge":
-            effective_strategy = "tree_merge"
-            warnings.append(
-                "hierarchical_merge falls back to tree_merge (placeholder)"
-            )
-
-        # 尝试 tree_merge
+        # 尝试 parallel_merge（需要 model_client）→ passthrough
         merged_patches: list
         dropped_patches: list
         conflict_count: int
@@ -109,37 +106,29 @@ class MergeExecutor:
         fallback_used: bool = False
         merge_reason: str = ""
 
-        if effective_strategy == "tree_merge" and _OLD_SYSTEM_AVAILABLE:
+        if self.model_client is not None and merge_strategy == "tree_merge":
             try:
                 merged_patches, dropped_patches, conflict_count, conflict_patch_ids, conflicts, merge_reason = (
-                    self._tree_merge(patches, prompt)
+                    self._parallel_merge(patches, prompt)
                 )
-            except Exception as exc:  # pragma: no cover - 异常路径
-                warnings.append(
-                    f"tree_merge failed, falling back to passthrough: {exc}"
-                )
+            except Exception as exc:
+                logger.warning("parallel_merge failed, using passthrough: %s", exc)
+                warnings.append(f"parallel_merge failed: {exc}")
                 merged_patches = list(patches)
                 dropped_patches = []
                 conflict_count = 0
                 conflict_patch_ids = []
                 conflicts = []
                 fallback_used = True
-                merge_reason = f"tree_merge exception: {exc}"
+                merge_reason = f"parallel_merge failed: {exc}"
         else:
-            if not _OLD_SYSTEM_AVAILABLE:
-                warnings.append(
-                    "old system TreeReducePatchMerger unavailable, using passthrough"
-                )
-                merge_reason = "old system unavailable"
-            else:
-                merge_reason = f"unsupported strategy: {merge_strategy}"
-                warnings.append(merge_reason)
             merged_patches = list(patches)
             dropped_patches = []
             conflict_count = 0
             conflict_patch_ids = []
             conflicts = []
             fallback_used = True
+            merge_reason = "passthrough (no model_client or strategy != tree_merge)"
 
         # 合并后校验：如果提供 sample_set，对 merged patches 跑 PatchValidator
         validation_warnings = self._post_merge_validate(
@@ -159,7 +148,6 @@ class MergeExecutor:
             conflicts=conflicts,
             metadata={
                 "strategy": merge_strategy,
-                "effective_strategy": effective_strategy,
             },
             strategy=merge_strategy,
             dropped_patch_count=len(dropped_patches),
@@ -175,57 +163,55 @@ class MergeExecutor:
         return merged_patches, report
 
     # ------------------------------------------------------------------
-    # tree_merge 实现
+    # parallel_merge 实现（基于 LLM 的并行合并）
     # ------------------------------------------------------------------
 
-    def _tree_merge(
+    def _parallel_merge(
         self,
         patches: list,
         prompt: StructuredPrompt,
     ) -> tuple[list, list, int, list[str], list[dict[str, Any]], str]:
-        """调用老系统 TreeReducePatchMerger 进行合并。
+        """调用 ParallelPatchMerger 进行 LLM 并行合并。
 
         Returns:
             (merged_patches, dropped_patches, conflict_count,
              conflict_patch_ids, conflicts, merge_reason) 元组。
         """
-        assert _OldPatch is not None and _TreeReducePatchMerger is not None
+        # 生成 prompt_structure 字符串
+        prompt_structure = self._build_prompt_structure(prompt)
 
-        # 转换为老系统 Patch
-        old_patches = [self._to_old_patch(p, prompt) for p in patches]
+        # 将 patches 转换为 dict 列表
+        patch_dicts = [self._patch_to_merge_dict(p) for p in patches]
 
-        round_id = f"merge_{prompt.id}"
-        merger = _TreeReducePatchMerger()
-        result = merger.merge(
-            round_id=round_id,
-            patches=old_patches,
-            prompt_ir=None,
+        # 创建 ParallelPatchMerger 并执行合并
+        merger = ParallelPatchMerger(
+            model_client=self.model_client,
+            model_config=self.model_config,
+            merge_prompt_path=self.merge_prompt_path,
+            root_merge_prompt_path=self.root_merge_prompt_path,
         )
 
-        # 转换回 ExtractionPatch / AnalysisPatch
+        merged_dicts = merger.merge(patch_dicts, prompt_structure)
+
+        # 将 dict 转换回 ExtractionPatch / AnalysisPatch
+        patch_class_map: dict[str, type] = {}
+        for p in patches:
+            patch_class_map[getattr(p, "id", "")] = type(p)
+
         merged_patches: list = []
-        for old_patch in result.final_patches:
-            patch_class = self._resolve_patch_class(old_patch)
-            merged_patches.append(self._from_old_patch(old_patch, patch_class))
+        for d in merged_dicts:
+            patch_id = d.get("id", "")
+            patch_class = patch_class_map.get(patch_id, ExtractionPatch)
+            merged_patches.append(self._dict_to_patch(d, patch_class))
 
+        # ParallelPatchMerger 不区分 dropped_patches
         dropped_patches: list = []
-        for old_patch in result.rejected_patches:
-            patch_class = self._resolve_patch_class(old_patch)
-            dropped_patches.append(self._from_old_patch(old_patch, patch_class))
-
-        old_report = result.merge_report
-        conflict_patch_ids = list(getattr(old_report, "conflict_patch_ids", []))
-        conflict_count = len(conflict_patch_ids)
-
-        # 提取 conflicts 信息（从 clusters 中聚合）
+        conflict_count = 0
+        conflict_patch_ids: list[str] = []
         conflicts: list[dict[str, Any]] = []
-        clusters = getattr(old_report, "clusters", []) or []
-        for cluster in clusters:
-            conflicts.extend(cluster.get("conflicts", []) or [])
 
         merge_reason = (
-            f"tree_merge: {len(patches)} input -> {len(merged_patches)} merged, "
-            f"{len(dropped_patches)} dropped"
+            f"parallel_merge: {len(patches)} input -> {len(merged_patches)} merged"
         )
 
         return (
@@ -235,6 +221,37 @@ class MergeExecutor:
             conflict_patch_ids,
             conflicts,
             merge_reason,
+        )
+
+    def _build_prompt_structure(self, prompt: StructuredPrompt) -> str:
+        """构建 prompt 结构骨架字符串。"""
+        lines: list[str] = []
+        for section in prompt.sections:
+            mutable_tag = "" if section.mutable else " [PROTECTED]"
+            lines.append(f"{section.header}{mutable_tag}")
+        return "\n".join(lines)
+
+    def _patch_to_merge_dict(self, patch: Any) -> dict[str, Any]:
+        """将 ExtractionPatch / AnalysisPatch 转换为合并用的 dict。"""
+        return {
+            "id": getattr(patch, "id", ""),
+            "op": getattr(patch, "operation_type", ""),
+            "target_section": getattr(patch, "target_section_id", ""),
+            "content": getattr(patch, "content", ""),
+            "rationale": getattr(patch, "rationale", ""),
+            "source_sample_ids": list(getattr(patch, "source_sample_ids", [])),
+        }
+
+    def _dict_to_patch(self, d: dict[str, Any], patch_class: type) -> Any:
+        """将合并后的 dict 转换回 patch 对象。"""
+        return patch_class(
+            id=d.get("id", ""),
+            target_section_id=d.get("target_section", d.get("target_section_id", "")),
+            operation_type=d.get("op", d.get("operation_type", "append_to_section")),
+            content=d.get("content", ""),
+            rationale=d.get("rationale", d.get("reasoning", "")),
+            source_sample_ids=d.get("source_sample_ids", []),
+            status="merged",
         )
 
     # ------------------------------------------------------------------
@@ -269,48 +286,6 @@ class MergeExecutor:
     # ------------------------------------------------------------------
     # 数据结构转换
     # ------------------------------------------------------------------
-
-    def _to_old_patch(self, patch: Any, prompt: StructuredPrompt) -> Any:
-        """将 ExtractionPatch / AnalysisPatch 转换为老系统 Patch。"""
-        assert _OldPatch is not None
-        patch_type = "extraction" if isinstance(patch, ExtractionPatch) else "analysis"
-        return _OldPatch(
-            id=patch.id,
-            type=patch_type,
-            status="pending",
-            target_prompt_type=patch_type,
-            base_version_id=prompt.id,
-            section_id=patch.target_section_id,
-            operation_type=patch.operation_type,
-            operation_mode=patch.operation_type,
-            intent_name=patch.id,
-            intent_description=patch.rationale,
-            patch_text=patch.content,
-            rationale=patch.rationale,
-            source_sample_ids=list(patch.source_sample_ids),
-        )
-
-    def _from_old_patch(
-        self,
-        old_patch: Any,
-        original_patch_class: type,
-    ) -> ExtractionPatch | AnalysisPatch:
-        """将老系统 Patch 转换回 ExtractionPatch / AnalysisPatch。"""
-        return original_patch_class(
-            id=old_patch.id,
-            target_section_id=old_patch.section_id,
-            operation_type=old_patch.operation_type,
-            content=old_patch.patch_text,
-            rationale=old_patch.rationale,
-            source_sample_ids=list(old_patch.source_sample_ids),
-            status="merged",
-        )
-
-    def _resolve_patch_class(self, old_patch: Any) -> type:
-        """根据老系统 Patch 的 type 字段决定转换目标类。"""
-        if getattr(old_patch, "type", "") == "analysis":
-            return AnalysisPatch
-        return ExtractionPatch
 
     def _patch_to_dict(self, patch: Any) -> dict[str, Any]:
         """将 patch 转换为字典（优先使用 to_dict，否则手动提取字段）。"""

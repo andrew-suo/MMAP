@@ -14,19 +14,19 @@
 from __future__ import annotations
 
 from mmap_optimizer.executors.compression_executor import CompressionExecutor
-from mmap_optimizer.extraction_prompt_optimization_stage import (
+from mmap_optimizer.stages.extraction_prompt_optimization import (
     AnalysisResult,
     EvalRecord,
     ExtractionResult,
 )
-from mmap_optimizer.patch_types import CompressionReport
-from mmap_optimizer.sample import (
+from mmap_optimizer.patch.types import CompressionReport
+from mmap_optimizer.data.sample import (
     SampleBatch,
     SampleSet,
     SampleSpec,
     SampleState,
 )
-from mmap_optimizer.structured_prompt import (
+from mmap_optimizer.prompt.structured_prompt import (
     PromptSection,
     StructuredPrompt,
 )

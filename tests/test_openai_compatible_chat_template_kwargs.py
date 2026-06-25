@@ -1,6 +1,6 @@
 """Tests for chat_template_kwargs in OpenAI-compatible payload."""
 
-from mmap_optimizer.config import ModelConfig, model_config_from_mapping
+from mmap_optimizer.core.config import ModelConfig, model_config_from_mapping
 from mmap_optimizer.model.openai_compatible import OpenAICompatibleClient
 
 

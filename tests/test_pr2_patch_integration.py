@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from mmap_optimizer.analysis_prompt_optimization_stage import (
+from mmap_optimizer.stages.analysis_prompt_optimization import (
     AnalysisPromptOptimizationStage,
     ReflectionResult,
 )
-from mmap_optimizer.extraction_prompt_optimization_stage import (
+from mmap_optimizer.stages.extraction_prompt_optimization import (
     AnalysisResult,
     EvalRecord,
     ExtractionPromptOptimizationStage,
@@ -25,14 +25,14 @@ from mmap_optimizer.executors.patch_generation_executor import (
     PatchGenerationExecutor,
 )
 from mmap_optimizer.executors.patch_validator import PatchValidator
-from mmap_optimizer.patch_types import AnalysisPatch, ExtractionPatch
-from mmap_optimizer.sample import (
+from mmap_optimizer.patch.types import AnalysisPatch, ExtractionPatch
+from mmap_optimizer.data.sample import (
     SampleBatch,
     SampleSet,
     SampleSpec,
     SampleState,
 )
-from mmap_optimizer.structured_prompt import (
+from mmap_optimizer.prompt.structured_prompt import (
     PromptSection,
     StructuredPrompt,
 )
@@ -524,7 +524,7 @@ def test_broken_sample_rollback():
         ExtractionPatch(
             id="patch_1",
             target_section_id="section_1",
-            operation_type="replace",
+            operation_type="replace_section",
             content="new content for broken test",
             rationale="test broken rollback",
             source_sample_ids=["s1"],
@@ -602,7 +602,7 @@ def test_fixed_sample_accepted():
         ExtractionPatch(
             id="patch_1",
             target_section_id="section_1",
-            operation_type="replace",
+            operation_type="replace_section",
             content="new content for fixed test",
             rationale="test fixed acceptance",
             source_sample_ids=["s1"],

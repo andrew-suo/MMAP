@@ -349,15 +349,29 @@ class MMAPRunner:
         self._save_initial_artifacts()
 
         # Phase 1: Prompt Structuring
+        print(f"\n{'='*60}\n🚀 Phase 1: Prompt Structuring 开始\n{'='*60}")
         self._run_prompt_structuring()
+        print(f"\n{'='*60}\n✅ Phase 1: Prompt Structuring 完成\n{'='*60}")
 
         # Phase 2: Prompt Optimization
         if self.config.prompt_optimization.enabled:
+            print(f"\n{'='*60}\n🚀 Phase 2: Prompt Optimization 开始\n{'='*60}")
             self._run_prompt_optimization()
+            po_summary = self.run_summary.prompt_optimization
+            if po_summary.final_accuracy_last is not None:
+                print(f"当前 Extraction 准确率: {po_summary.final_accuracy_last:.2%}")
+            if self.run_summary.analysis_prompt.final_accuracy_last is not None:
+                print(f"当前 Analysis 准确率: {self.run_summary.analysis_prompt.final_accuracy_last:.2%}")
+            print(f"{'='*60}\n✅ Phase 2: Prompt Optimization 完成\n{'='*60}")
 
         # Phase 3: Few-shot Optimization
         if self.config.fewshot_optimization.enabled:
+            print(f"\n{'='*60}\n🚀 Phase 3: Few-shot Optimization 开始\n{'='*60}")
             self._run_fewshot_optimization()
+            fo_summary = self.run_summary.fewshot_optimization
+            if fo_summary.final_accuracy_last is not None:
+                print(f"当前 Few-shot 准确率: {fo_summary.final_accuracy_last:.2%}")
+            print(f"{'='*60}\n✅ Phase 3: Few-shot Optimization 完成\n{'='*60}")
 
         # 完成
         end_ts = time.time()

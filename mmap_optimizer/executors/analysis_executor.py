@@ -38,7 +38,6 @@ class AnalysisExecutor:
         model_config: dict[str, Any] | None = None,
         primary_answer_fields: list[str] | None = None,
         label_mapping: dict[str, Any] | None = None,
-        analysis_task_template_path: str | None = None,
         analysis_reflection_template_path: str | None = None,
     ):
         self.model_client = model_client
@@ -46,7 +45,6 @@ class AnalysisExecutor:
         self.primary_answer_fields = primary_answer_fields or ["result"]
         self.label_mapping = label_mapping
         self.renderer = StructuredPromptRenderer()
-        self.analysis_task_template_path = analysis_task_template_path
         self.analysis_reflection_template_path = analysis_reflection_template_path
 
     def execute(
@@ -165,79 +163,29 @@ class AnalysisExecutor:
             else "null"
         )
 
-        error_details = (
-            f"error_details: {json.dumps(extraction_result.error_details, ensure_ascii=False)}"
-            if extraction_result.error_details
-            else ""
-        )
-
-        sample_metadata = (
-            f"# Sample Metadata\n{json.dumps(sample_spec.metadata, ensure_ascii=False, indent=2)}"
-            if sample_spec.metadata
-            else ""
-        )
-
-        if self.analysis_task_template_path:
-            user_content = render_prompt(
-                self.analysis_task_template_path,
-                extraction_prompt=extraction_prompt_text,
-                sample_id=extraction_result.sample_id,
-                status=extraction_result.status,
-                raw_output=extraction_result.raw_output,
-                parsed_output=parsed_output_text,
-                error_details=error_details,
-                sample_input=json.dumps(sample_spec.input, ensure_ascii=False, indent=2),
-                sample_metadata=sample_metadata,
+        user_parts: list[str] = []
+        user_parts.append("# Extraction Prompt (for reference)")
+        user_parts.append(extraction_prompt_text)
+        user_parts.append("")
+        user_parts.append("# Extraction Result")
+        user_parts.append(f"sample_id: {extraction_result.sample_id}")
+        user_parts.append(f"status: {extraction_result.status}")
+        user_parts.append(f"raw_output: {extraction_result.raw_output}")
+        user_parts.append(f"parsed_output: {parsed_output_text}")
+        if extraction_result.error_details:
+            user_parts.append(
+                f"error_details: {json.dumps(extraction_result.error_details, ensure_ascii=False)}"
             )
-        else:
-            user_parts: list[str] = []
-            user_parts.append("# Extraction Prompt (for reference)")
-            user_parts.append(extraction_prompt_text)
+        user_parts.append("")
+        user_parts.append("# Sample Input")
+        user_parts.append(json.dumps(sample_spec.input, ensure_ascii=False, indent=2))
+        if sample_spec.metadata:
             user_parts.append("")
-            user_parts.append("# Extraction Result")
-            user_parts.append(f"sample_id: {extraction_result.sample_id}")
-            user_parts.append(f"status: {extraction_result.status}")
-            user_parts.append(f"raw_output: {extraction_result.raw_output}")
-            user_parts.append(f"parsed_output: {parsed_output_text}")
-            if extraction_result.error_details:
-                user_parts.append(
-                    f"error_details: {json.dumps(extraction_result.error_details, ensure_ascii=False)}"
-                )
-            user_parts.append("")
-            user_parts.append("# Sample Input")
-            user_parts.append(json.dumps(sample_spec.input, ensure_ascii=False, indent=2))
-            if sample_spec.metadata:
-                user_parts.append("")
-                user_parts.append("# Sample Metadata")
-                user_parts.append(
-                    json.dumps(sample_spec.metadata, ensure_ascii=False, indent=2)
-                )
-            user_parts.append("")
-            user_parts.append("# Task")
+            user_parts.append("# Sample Metadata")
             user_parts.append(
-                "Based on the image content and the extraction result, "
-                "determine whether the extraction result is correct."
+                json.dumps(sample_spec.metadata, ensure_ascii=False, indent=2)
             )
-            user_parts.append(
-                "Do NOT rely on any ground truth - judge solely from the image and extraction output."
-            )
-            user_parts.append("Respond with a JSON object containing:")
-            user_parts.append(
-                '- "judgement": object with at least "is_correct" boolean'
-            )
-            user_parts.append(
-                '- "confirmed_facts": list of strings, facts you can confirm from the image'
-            )
-            user_parts.append(
-                '- "hypothesized_error_causes": list of strings, hypothesized error causes'
-            )
-            user_parts.append(
-                '- "prompt_section_attribution": list of objects, related prompt sections'
-            )
-            user_parts.append(
-                '- "error_reason": string or null, reason if the extraction is incorrect'
-            )
-            user_content = "\n".join(user_parts)
+        user_content = "\n".join(user_parts)
 
         assets = self._build_assets(sample_spec)
 
@@ -387,6 +335,8 @@ class AnalysisExecutor:
 
         if self.model_client is not None:
             expected_schema = {
+                "reason": str,
+                "status": str,
                 "judgement": dict,
                 "confirmed_facts": list,
                 "hypothesized_error_causes": list,
@@ -422,13 +372,33 @@ class AnalysisExecutor:
     def _extract_analysis_judgement(
         self, judgement: dict[str, Any]
     ) -> bool | None:
-        """从 judgement 中提取 analysis 对 extraction result 是否正确的判断。"""
+        """从 judgement 中提取 analysis 对 extraction result 是否正确的判断。
+
+        支持以下字段：
+        - judgement.is_correct（优先）
+        - status（CORRECT/INCORRECT/UNCERTAIN）
+        - is_correct
+        - extraction_correct
+        """
         if not isinstance(judgement, dict):
             return None
+
+        # 优先从 judgement.is_correct 提取
         judgement_obj = judgement.get("judgement")
         if isinstance(judgement_obj, dict):
             if "is_correct" in judgement_obj and isinstance(judgement_obj["is_correct"], bool):
                 return judgement_obj["is_correct"]
+
+        # 从 status 字段提取（CORRECT -> true, INCORRECT/UNCERTAIN -> false）
+        status = judgement.get("status")
+        if isinstance(status, str):
+            status_upper = status.strip().upper()
+            if status_upper == "CORRECT":
+                return True
+            elif status_upper in ("INCORRECT", "UNCERTAIN"):
+                return False
+
+        # 从其他字段提取
         if "is_correct" in judgement and isinstance(judgement["is_correct"], bool):
             return judgement["is_correct"]
         if "extraction_correct" in judgement and isinstance(

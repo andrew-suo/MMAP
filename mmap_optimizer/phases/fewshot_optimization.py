@@ -140,9 +140,25 @@ class FewshotOptimizationPhase:
         if not self.config.enabled:
             return []
 
-        for iteration in range(1, self.config.rounds + 1):
+        print(f"\n--- Phase 3: Few-shot 优化 ---")
+        max_iterations = self.config.rounds
+
+        for iteration in range(1, max_iterations + 1):
+            print(f"  迭代 {iteration}/{max_iterations}")
             result = self._run_iteration(iteration)
             self.iteration_results.append(result)
+            if result.metrics.final_accuracy is not None:
+                print(f"  迭代 {iteration} 完成，准确率: {result.metrics.final_accuracy:.2%}")
+            else:
+                print(f"  迭代 {iteration} 完成")
+
+        # 输出最终准确率
+        if self.iteration_results:
+            last_acc = self.iteration_results[-1].metrics.final_accuracy
+            if last_acc is not None:
+                print(f"Few-shot 优化完成，准确率: {last_acc:.2%}")
+            else:
+                print(f"Few-shot 优化完成")
 
         return self.iteration_results
 

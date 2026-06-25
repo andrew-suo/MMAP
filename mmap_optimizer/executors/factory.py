@@ -14,12 +14,6 @@ from ..stages.extraction_prompt_optimization import (
     ExtractionResult,
 )
 from ..phases.fewshot_optimization import FewshotExample
-from ..patch.types import (
-    AnalysisPatch,
-    ExtractionPatch,
-    PatchMergeReport,
-    ToxicityReport,
-)
 from ..data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
 from ..prompt.structured_prompt import StructuredPrompt
 from .analysis_executor import AnalysisExecutor
@@ -147,127 +141,6 @@ class _MockAnalysisExecutor:
         )
 
 
-class _MockPatchGenerationExecutor:
-    """Mock patch 生成执行器。"""
-
-    def generate_extraction_patches(
-        self,
-        analysis_results: list[AnalysisResult],
-        extraction_results: list[ExtractionResult],
-        extraction_prompt: StructuredPrompt,
-        sample_set: SampleSet,
-    ) -> list[ExtractionPatch]:
-        patches: list[ExtractionPatch] = []
-        for analysis_result in analysis_results:
-            if not analysis_result.analysis_correct:
-                continue
-            patches.append(
-                ExtractionPatch(
-                    id=f"patch_extraction_{analysis_result.sample_id}",
-                    target_section_id="section_1",
-                    operation_type="replace",
-                    content="Mock patch content",
-                    rationale="Mock rationale",
-                    source_sample_ids=[analysis_result.sample_id],
-                    status="draft",
-                )
-            )
-        return patches
-
-    def generate_analysis_patches(
-        self,
-        reflection_results: list,
-        analysis_prompt: StructuredPrompt,
-        sample_set: SampleSet,
-    ) -> list[AnalysisPatch]:
-        patches: list[AnalysisPatch] = []
-        for reflection in reflection_results:
-            patches.append(
-                AnalysisPatch(
-                    id=f"patch_analysis_{getattr(reflection, 'sample_id', 'unknown')}",
-                    target_section_id="section_1",
-                    operation_type="replace",
-                    content="Mock analysis patch content",
-                    rationale="Mock rationale",
-                    source_sample_ids=[getattr(reflection, "sample_id", "unknown")],
-                    status="draft",
-                )
-            )
-        return patches
-
-
-class _MockPatchApplyExecutor:
-    """Mock patch 应用执行器。"""
-
-    def apply(
-        self,
-        base_prompt: StructuredPrompt,
-        patches: list,
-    ) -> tuple[StructuredPrompt, dict[str, Any]]:
-        # Mock：直接返回原 prompt
-        return base_prompt, {"applied_patch_count": len(patches)}
-
-
-class _MockMergeExecutor:
-    """Mock patch 合并执行器。"""
-
-    def merge(
-        self,
-        patches: list,
-        prompt: StructuredPrompt,
-        merge_strategy: str = "tree_merge",
-    ) -> tuple[list, PatchMergeReport]:
-        report = PatchMergeReport(
-            id=f"merge_report_{merge_strategy}",
-            input_patch_count=len(patches),
-            merged_patch_count=len(patches),
-            conflict_count=0,
-        )
-        return list(patches), report
-
-
-class _MockToxicityTestExecutor:
-    """Mock 测毒执行器。"""
-
-    def test(
-        self,
-        base_prompt: StructuredPrompt,
-        candidate_patches: list,
-        toxic_sample_ids: list[str],
-        sample_set: SampleSet,
-        extraction_executor: Any = None,
-        evaluation_executor: Any = None,
-        early_stop: bool = True,
-    ) -> tuple[list, list, ToxicityReport]:
-        safe_patches = list(candidate_patches)
-        toxic_patches: list = []
-        report = ToxicityReport(
-            id="toxicity_report_mock",
-            tested_patch_count=len(candidate_patches),
-            toxic_patch_count=0,
-            safe_patch_count=len(safe_patches),
-            toxic_sample_ids=list(toxic_sample_ids),
-        )
-        return safe_patches, toxic_patches, report
-
-
-class _MockCompressionExecutor:
-    """Mock 压缩执行器。"""
-
-    def compress_if_needed(
-        self,
-        prompt: StructuredPrompt,
-        line_limit: int,
-        char_limit: int,
-        batch: SampleBatch,
-        sample_set: SampleSet,
-        extraction_executor: Any = None,
-        evaluation_executor: Any = None,
-    ) -> tuple[StructuredPrompt, dict[str, Any]]:
-        # Mock：不压缩，直接返回原 prompt
-        return prompt, {"compressed": False, "line_limit": line_limit, "char_limit": char_limit}
-
-
 class _MockFewshotExecutor:
     """Mock few-shot 执行器。"""
 
@@ -381,9 +254,12 @@ def create_executors(
         )
 
     prompts_config = config.get("prompts", {}) if isinstance(config, dict) else {}
-    analysis_task_template_path = prompts_config.get("analysis_task")
     analysis_reflection_template_path = prompts_config.get("analysis_reflection")
     patch_generation_prompt_path = prompts_config.get("patch_generation")
+    patch_calibration_prompt_path = prompts_config.get("patch_calibration")
+    patch_merge_prompt_path = prompts_config.get("patch_merge")
+    patch_root_merge_prompt_path = prompts_config.get("patch_root_merge")
+    patch_text_match_prompt_path = prompts_config.get("patch_text_match")
 
     # 当 model_client 可用且未强制 mock 时，使用真实 executor
     use_real = model_client is not None and use_mock is not True
@@ -393,7 +269,6 @@ def create_executors(
         analysis_executor: Any = AnalysisExecutor(
             model_client,
             optimizer_model_config,
-            analysis_task_template_path=analysis_task_template_path,
             analysis_reflection_template_path=analysis_reflection_template_path,
         )
         fewshot_executor: Any = FewshotExecutor(model_client, extraction_model_config)
@@ -414,9 +289,22 @@ def create_executors(
         "evaluation": evaluation_executor,
         "analysis": analysis_executor,
         "patch_generation": patch_generation_executor,
-        "patch_apply": PatchApplyExecutor(),
-        "patch_validator": PatchValidator(),
-        "merge": MergeExecutor(),
+        "patch_apply": PatchApplyExecutor(
+            model_client=model_client,
+            model_config=optimizer_model_config,
+            text_match_prompt_path=patch_text_match_prompt_path,
+        ),
+        "patch_validator": PatchValidator(
+            model_client=model_client,
+            model_config=optimizer_model_config,
+            calibration_prompt_path=patch_calibration_prompt_path,
+        ),
+        "merge": MergeExecutor(
+            model_client=model_client,
+            model_config=optimizer_model_config,
+            merge_prompt_path=patch_merge_prompt_path,
+            root_merge_prompt_path=patch_root_merge_prompt_path,
+        ),
         "toxicity_test": ToxicityTestExecutor(),
         "compression": CompressionExecutor(model_client=model_client),
         "fewshot": fewshot_executor,

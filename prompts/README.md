@@ -10,6 +10,8 @@
 | `analysis.txt` | Analysis 任务系统提示词 | 静态 prompt |
 | `analysis_task.txt` | Analysis 任务消息模板 | 动态模板 |
 | `analysis_reflection.txt` | Analysis 反思消息模板 | 动态模板 |
+| `semantic_patch_generation.txt` | 语义 patch 草稿生成提示词 | 静态 prompt |
+| `semantic_patch_translation.txt` | 语义 patch 到严格 patch 的翻译提示词 | 静态 prompt |
 
 ## Prompt 类型说明
 

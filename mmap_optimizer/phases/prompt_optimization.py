@@ -53,6 +53,12 @@ class PromptOptimizationConfig:
     toxicity_test_enabled: bool = True
     toxicity_test_early_stop: bool = True
     toxicity_test_sort_by_source_difficulty: bool = True
+    patch_generation_mode: str = "semantic_then_translate"
+    candidate_selection_enabled: bool = False
+    candidate_count: int = 3
+    candidate_validation_split_ratio: float = 0.3
+    candidate_min_gain: float = 0.0
+    candidate_reject_on_any_broken: bool = True
 
 
 @dataclass
@@ -190,6 +196,10 @@ class PromptOptimizationPhase:
             char_limit=self.config.extraction_prompt_char_limit,
             compression_enabled=self.config.extraction_prompt_compression_enabled,
             ema_alpha=self.config.ema_alpha,
+            candidate_selection_enabled=self.config.candidate_selection_enabled,
+            candidate_count=self.config.candidate_count,
+            candidate_min_gain=self.config.candidate_min_gain,
+            candidate_reject_on_any_broken=self.config.candidate_reject_on_any_broken,
         )
         extraction_metrics = extraction_stage.run()
         self.extraction_stages.append(extraction_stage)
@@ -227,6 +237,10 @@ class PromptOptimizationPhase:
             char_limit=self.config.analysis_prompt_char_limit,
             compression_enabled=self.config.analysis_prompt_compression_enabled,
             ema_alpha=self.config.ema_alpha,
+            candidate_selection_enabled=self.config.candidate_selection_enabled,
+            candidate_count=self.config.candidate_count,
+            candidate_min_gain=self.config.candidate_min_gain,
+            candidate_reject_on_any_broken=self.config.candidate_reject_on_any_broken,
         )
         analysis_metrics = analysis_stage.run()
         self.analysis_stages.append(analysis_stage)
@@ -538,6 +552,9 @@ class PromptOptimizationPhase:
         _write_jsonl(extraction_dir / "base_results.jsonl", extraction_stage.base_extraction_results)
         _write_jsonl(extraction_dir / "base_eval.jsonl", extraction_stage.base_eval_records)
         _write_jsonl(extraction_dir / "analysis_results.jsonl", extraction_stage.analysis_results)
+        _write_jsonl(extraction_dir / "semantic_patch_drafts.jsonl", getattr(extraction_stage, "semantic_patch_drafts", []))
+        _write_jsonl(extraction_dir / "translated_patches.jsonl", getattr(extraction_stage, "translated_patches", []))
+        _write_jsonl(extraction_dir / "model_output_repairs.jsonl", getattr(extraction_stage, "model_output_repairs", []))
         _write_jsonl(extraction_dir / "draft_patches.jsonl", extraction_stage.draft_patches)
         _write_jsonl(extraction_dir / "validated_patches.jsonl", getattr(extraction_stage, "validated_patches", []))
         _write_jsonl(extraction_dir / "rejected_patches.jsonl", getattr(extraction_stage, "rejected_patches", []))
@@ -561,6 +578,12 @@ class PromptOptimizationPhase:
         # PR3: Extraction 阶段新增 artifact
         if getattr(extraction_stage, "transition_report", None) is not None:
             _write_json(extraction_dir / "transition_report.json", extraction_stage.transition_report)
+        if getattr(extraction_stage, "candidate_validation_report", None) is not None:
+            _write_json(extraction_dir / "candidate_validation_report.json", extraction_stage.candidate_validation_report)
+            _write_jsonl(
+                extraction_dir / "candidate_patch_sets.jsonl",
+                extraction_stage.candidate_validation_report.candidates,
+            )
         _write_jsonl(extraction_dir / "ineffective_patches.jsonl", getattr(extraction_stage, "ineffective_patches", []))
         if getattr(extraction_stage, "toxicity_report", None) is not None:
             _write_json(extraction_dir / "toxicity_report.json", extraction_stage.toxicity_report)
@@ -587,6 +610,9 @@ class PromptOptimizationPhase:
 
         _write_json(analysis_dir / "base_metrics.json", analysis_stage.metrics)
         _write_jsonl(analysis_dir / "reflection_results.jsonl", analysis_stage.reflection_results)
+        _write_jsonl(analysis_dir / "semantic_patch_drafts.jsonl", getattr(analysis_stage, "semantic_patch_drafts", []))
+        _write_jsonl(analysis_dir / "translated_patches.jsonl", getattr(analysis_stage, "translated_patches", []))
+        _write_jsonl(analysis_dir / "model_output_repairs.jsonl", getattr(analysis_stage, "model_output_repairs", []))
         _write_jsonl(analysis_dir / "draft_patches.jsonl", analysis_stage.draft_patches)
         _write_jsonl(analysis_dir / "validated_patches.jsonl", getattr(analysis_stage, "validated_patches", []))
         _write_jsonl(analysis_dir / "rejected_patches.jsonl", getattr(analysis_stage, "rejected_patches", []))
@@ -608,6 +634,12 @@ class PromptOptimizationPhase:
         # PR3: Analysis 阶段新增 artifact
         if getattr(analysis_stage, "transition_report", None) is not None:
             _write_json(analysis_dir / "transition_report.json", analysis_stage.transition_report)
+        if getattr(analysis_stage, "candidate_validation_report", None) is not None:
+            _write_json(analysis_dir / "candidate_validation_report.json", analysis_stage.candidate_validation_report)
+            _write_jsonl(
+                analysis_dir / "candidate_patch_sets.jsonl",
+                analysis_stage.candidate_validation_report.candidates,
+            )
         _write_jsonl(analysis_dir / "ineffective_patches.jsonl", getattr(analysis_stage, "ineffective_patches", []))
         if getattr(analysis_stage, "toxicity_report", None) is not None:
             _write_json(analysis_dir / "toxicity_report.json", analysis_stage.toxicity_report)

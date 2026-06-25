@@ -14,7 +14,7 @@ from .prompt_manager import (
     load_prompt,
     render_prompt,
 )
-from .output_repair import repair_json_output
+from .output_repair import ParsedModelOutput, parse_model_json_output, repair_json_output
 
 __all__ = [
     "PromptSection",
@@ -24,5 +24,7 @@ __all__ = [
     "get_prompt_manager",
     "load_prompt",
     "render_prompt",
+    "ParsedModelOutput",
+    "parse_model_json_output",
     "repair_json_output",
 ]

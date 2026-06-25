@@ -348,7 +348,7 @@ class AnalysisExecutor:
                 model_client=self.model_client,
                 model_config=self.model_config,
             )
-            if repair_status == "repaired" and repaired is not None:
+            if repair_status == "repaired" and isinstance(repaired, dict):
                 return repaired
 
         return {}

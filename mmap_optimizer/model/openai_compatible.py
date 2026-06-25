@@ -10,8 +10,8 @@ import time
 import urllib.request
 from typing import Any
 
-from ..logging import get_logger, log_stage
-from ..sample import SampleAsset
+from ..core.logging import get_logger, log_stage
+from ..data.sample import SampleAsset
 from .client import ModelResponse
 
 logger = get_logger(__name__)

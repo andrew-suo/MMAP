@@ -263,7 +263,7 @@ class PatchGenerationExecutor:
                 messages=messages,
                 model_config=self.model_config,
             )
-            raw_output = response.get("content", "") if isinstance(response, dict) else str(response)
+            raw_output = response.raw_output
         except Exception:
             return [], []
 

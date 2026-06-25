@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from ..config import ModelConfig
+from ..core.config import ModelConfig
 from .client import MockModelClient, ModelClient
 from .openai_compatible import OpenAICompatibleClient
 

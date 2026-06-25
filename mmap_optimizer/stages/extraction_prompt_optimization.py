@@ -129,6 +129,10 @@ class ExtractionPromptOptimizationStage:
         merge_executor=None,
         toxicity_test_executor=None,
         compression_executor=None,
+        line_limit: int = 300,
+        char_limit: int = 20000,
+        compression_enabled: bool = True,
+        ema_alpha: float = 0.3,
     ):
         self.extraction_prompt = extraction_prompt
         self.analysis_prompt = analysis_prompt
@@ -144,6 +148,10 @@ class ExtractionPromptOptimizationStage:
         self.merge_executor = merge_executor
         self.toxicity_test_executor = toxicity_test_executor
         self.compression_executor = compression_executor
+        self.line_limit = line_limit
+        self.char_limit = char_limit
+        self.compression_enabled = compression_enabled
+        self.ema_alpha = ema_alpha
 
         self.base_extraction_results: list[ExtractionResult] = []
         self.base_eval_records: list[EvalRecord] = []
@@ -794,7 +802,7 @@ class ExtractionPromptOptimizationStage:
 
     def _step8_compress_if_needed(self) -> None:
         """Step 8: Prompt 压缩（如果需要）。"""
-        if self.compression_executor is None:
+        if self.compression_executor is None or not self.compression_enabled:
             self.metrics.compression_accepted = False
             return
 
@@ -803,8 +811,8 @@ class ExtractionPromptOptimizationStage:
             self.metrics.compression_accepted = False
             return
 
-        line_limit = getattr(self, "line_limit", 300)
-        char_limit = getattr(self, "char_limit", 20000)
+        line_limit = self.line_limit
+        char_limit = self.char_limit
 
         compressed_prompt, report = self.compression_executor.compress_if_needed(
             prompt=prompt_to_compress,
@@ -826,7 +834,7 @@ class ExtractionPromptOptimizationStage:
                 self.final_extraction_results = self.extraction_executor.execute(
                     prompt=compressed_prompt, batch=self.batch, sample_set=self.sample_set
                 )
-                self.final_eval_records = self.evaluation_executor.evaluate(
+                self.final_eval_records = self.evaluation_executor.evaluate_batch(
                     self.final_extraction_results, self.sample_set
                 )
                 correct = sum(1 for r in self.final_eval_records if r.status == "correct")

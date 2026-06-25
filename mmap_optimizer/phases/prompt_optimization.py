@@ -186,6 +186,10 @@ class PromptOptimizationPhase:
             merge_executor=self.executors.get("merge"),
             toxicity_test_executor=self.executors.get("toxicity_test"),
             compression_executor=self.executors.get("compression"),
+            line_limit=self.config.extraction_prompt_line_limit,
+            char_limit=self.config.extraction_prompt_char_limit,
+            compression_enabled=self.config.extraction_prompt_compression_enabled,
+            ema_alpha=self.config.ema_alpha,
         )
         extraction_metrics = extraction_stage.run()
         self.extraction_stages.append(extraction_stage)
@@ -219,6 +223,10 @@ class PromptOptimizationPhase:
             merge_executor=self.executors.get("merge"),
             toxicity_test_executor=self.executors.get("toxicity_test"),
             compression_executor=self.executors.get("compression"),
+            line_limit=self.config.analysis_prompt_line_limit,
+            char_limit=self.config.analysis_prompt_char_limit,
+            compression_enabled=self.config.analysis_prompt_compression_enabled,
+            ema_alpha=self.config.ema_alpha,
         )
         analysis_metrics = analysis_stage.run()
         self.analysis_stages.append(analysis_stage)

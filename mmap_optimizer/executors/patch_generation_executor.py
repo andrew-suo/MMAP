@@ -16,10 +16,10 @@ import json
 from typing import Any
 
 from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionResult
-from ..patch.types import AnalysisPatch, ExtractionPatch
+from ..patch.types import AnalysisPatch, ExtractionPatch, SemanticPatchDraft
 from ..data.sample import SampleSet
 from ..prompt.structured_prompt import PromptSection, StructuredPrompt
-from ..prompt.output_repair import repair_json_output
+from ..prompt.output_repair import parse_model_json_output
 from .patch_validator import PatchValidator
 
 
@@ -40,6 +40,9 @@ class PatchGenerationExecutor:
         model_client: Any = None,
         model_config: dict[str, Any] | None = None,
         patch_generation_prompt_path: str = "prompts/patch_generation.txt",
+        semantic_patch_generation_prompt_path: str = "prompts/semantic_patch_generation.txt",
+        patch_translation_prompt_path: str = "prompts/semantic_patch_translation.txt",
+        patch_generation_mode: str = "semantic_then_translate",
         patch_validator: PatchValidator | None = None,
     ) -> None:
         """初始化 patch 生成执行器。
@@ -54,7 +57,13 @@ class PatchGenerationExecutor:
         self.model_client = model_client
         self.model_config = model_config or {}
         self.patch_generation_prompt_path = patch_generation_prompt_path
+        self.semantic_patch_generation_prompt_path = semantic_patch_generation_prompt_path
+        self.patch_translation_prompt_path = patch_translation_prompt_path
+        self.patch_generation_mode = patch_generation_mode
         self.patch_validator = patch_validator or PatchValidator()
+        self.semantic_patch_drafts: list[SemanticPatchDraft] = []
+        self.translated_patches: list[ExtractionPatch | AnalysisPatch] = []
+        self.model_output_repairs: list[dict[str, Any]] = []
 
     def generate_extraction_patches(
         self,
@@ -122,6 +131,7 @@ class PatchGenerationExecutor:
         输入包含：原抽取结果、分析过程、分析结果、GT。
         """
         draft_patches: list[ExtractionPatch] = []
+        self._reset_run_artifacts()
         extraction_result_map = {r.sample_id: r for r in extraction_results}
 
         for analysis_result in analysis_results:
@@ -181,6 +191,7 @@ class PatchGenerationExecutor:
         from ..stages.analysis_prompt_optimization import ReflectionResult
 
         draft_patches: list[AnalysisPatch] = []
+        self._reset_run_artifacts()
 
         for reflection in reflection_results:
             if not isinstance(reflection, ReflectionResult):
@@ -240,7 +251,7 @@ class PatchGenerationExecutor:
             (patches, cited_sections) 元组。
         """
         try:
-            system_content = self._load_patch_generation_prompt()
+            system_content = self._load_patch_generation_prompt(prompt_type)
         except Exception:
             return [], []
 
@@ -267,24 +278,44 @@ class PatchGenerationExecutor:
         except Exception:
             return [], []
 
-        parsed_output, status = repair_json_output(
+        parse_result = parse_model_json_output(
             raw_output=raw_output,
             expected_schema={"patches": [], "cited_sections": []},
             model_client=self.model_client,
             model_config=self.model_config,
         )
+        self.model_output_repairs.append({
+            "executor": "patch_generation",
+            "prompt_type": prompt_type,
+            "status": parse_result.status,
+            "failure_reason": parse_result.failure_reason,
+            "raw_output_preview": raw_output[:500],
+        })
 
+        parsed_output = parse_result.parsed
         if parsed_output is None:
             return [], []
 
-        # 兼容两种输出格式：
-        # - dict: {"patches": [...], "cited_sections": [...]}（标准格式）
-        # - list: [...]（模型直接返回 patch 数组，视为 patches）
         if isinstance(parsed_output, list):
             return parsed_output, []
 
         if not isinstance(parsed_output, dict):
             return [], []
+
+        if self.patch_generation_mode == "semantic_then_translate":
+            semantic_items = parsed_output.get("semantic_patches")
+            if isinstance(semantic_items, list):
+                drafts = [
+                    self._build_semantic_draft(prompt_type, item)
+                    for item in semantic_items
+                    if isinstance(item, dict)
+                ]
+                suggestions = [
+                    self._translate_semantic_draft_to_suggestion(draft, current_prompt)
+                    for draft in drafts
+                ]
+                self.semantic_patch_drafts.extend(drafts)
+                return [s for s in suggestions if s], self._list_field(parsed_output, "cited_sections")
 
         patches = parsed_output.get("patches", [])
         if not isinstance(patches, list):
@@ -296,10 +327,14 @@ class PatchGenerationExecutor:
 
         return patches, cited_sections
 
-    def _load_patch_generation_prompt(self) -> str:
+    def _load_patch_generation_prompt(self, prompt_type: str) -> str:
         """加载 patch 生成提示词文件。"""
         from pathlib import Path
 
+        if self.patch_generation_mode == "semantic_then_translate":
+            semantic_path = Path(self.semantic_patch_generation_prompt_path)
+            if semantic_path.exists():
+                return semantic_path.read_text(encoding="utf-8")
         path = Path(self.patch_generation_prompt_path)
         return path.read_text(encoding="utf-8")
 
@@ -374,6 +409,98 @@ class PatchGenerationExecutor:
             parts.append(json.dumps(ground_truth, ensure_ascii=False))
 
         return "\n".join(parts)
+
+    def _reset_run_artifacts(self) -> None:
+        self.semantic_patch_drafts = []
+        self.translated_patches = []
+        self.model_output_repairs = []
+
+    def _build_semantic_draft(
+        self,
+        prompt_type: str,
+        item: dict[str, Any],
+    ) -> SemanticPatchDraft:
+        source_sample_ids = item.get("source_sample_ids", [])
+        if isinstance(source_sample_ids, str):
+            source_sample_ids = [source_sample_ids]
+        elif not isinstance(source_sample_ids, list):
+            source_sample_ids = []
+        risk_notes = item.get("risk_notes", [])
+        if isinstance(risk_notes, str):
+            risk_notes = [risk_notes]
+        elif not isinstance(risk_notes, list):
+            risk_notes = []
+        return SemanticPatchDraft(
+            id=str(item.get("id") or f"semantic_{prompt_type}_{len(self.semantic_patch_drafts) + 1}"),
+            prompt_type=prompt_type,
+            source_sample_ids=[str(sid) for sid in source_sample_ids],
+            target_section_hint=str(item.get("target_section_hint") or item.get("target_section") or ""),
+            change_intent=str(item.get("change_intent") or item.get("intent") or ""),
+            location_hint=str(item.get("location_hint") or item.get("target_text") or ""),
+            proposed_text=str(item.get("proposed_text") or item.get("content") or ""),
+            rationale=str(item.get("rationale") or item.get("reasoning") or ""),
+            risk_notes=[str(note) for note in risk_notes],
+            metadata={"source_format": "semantic_patch"},
+        )
+
+    def _translate_semantic_draft_to_suggestion(
+        self,
+        draft: SemanticPatchDraft,
+        current_prompt: StructuredPrompt | None,
+    ) -> dict[str, Any] | None:
+        target_section = self._resolve_section_hint(draft.target_section_hint, current_prompt)
+        if not target_section:
+            draft.status = "rejected"
+            draft.rejection_reason = "TRANSLATION_FAILED:UNKNOWN_SECTION"
+            return None
+        if not draft.proposed_text.strip():
+            draft.status = "rejected"
+            draft.rejection_reason = "TRANSLATION_FAILED:EMPTY_CONTENT"
+            return None
+        draft.status = "translated"
+        return {
+            "target_section": target_section,
+            "op": "append_to_section",
+            "content": draft.proposed_text,
+            "reasoning": draft.rationale or draft.change_intent,
+            "semantic_draft_id": draft.id,
+        }
+
+    def _resolve_section_hint(
+        self,
+        hint: str,
+        current_prompt: StructuredPrompt | None,
+    ) -> str:
+        if current_prompt is None:
+            return hint or "section_1"
+        mutable_sections = self._get_mutable_section_ids(current_prompt)
+        if hint in mutable_sections:
+            return hint
+        normalized_hint = hint.strip().lower()
+        for section in self._flatten_sections(current_prompt):
+            if not section.mutable:
+                continue
+            if normalized_hint and normalized_hint in section.title.lower():
+                return section.id
+        return mutable_sections[0] if mutable_sections else ""
+
+    def _flatten_sections(self, prompt: StructuredPrompt) -> list[PromptSection]:
+        sections: list[PromptSection] = []
+
+        def collect(section: PromptSection) -> None:
+            sections.append(section)
+            for child in section.children:
+                collect(child)
+
+        for section in prompt.sections:
+            collect(section)
+        return sections
+
+    def _list_field(self, data: dict[str, Any], key: str) -> list[str]:
+        value = data.get(key, [])
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        return []
 
     def _render_prompt_structure(self, prompt: StructuredPrompt) -> str:
         """渲染 prompt 结构（section id、title、level、mutable 状态）。"""
@@ -557,11 +684,18 @@ class PatchGenerationExecutor:
         new_text = suggestion.get("new_text")
         new_header = suggestion.get("new_header")
 
-        metadata: dict[str, Any] = {}
+        metadata: dict[str, Any] = {
+            "source_phase": f"{patch_id_prefix.replace('patch_', '')}_patch_generation",
+        }
         if cited_sections:
             metadata["cited_sections"] = cited_sections
+        if rationale:
+            metadata["source_reason"] = rationale
+        if suggestion.get("semantic_draft_id"):
+            metadata["semantic_draft_id"] = suggestion["semantic_draft_id"]
+            metadata["translation_status"] = "translated"
 
-        return patch_class(
+        patch = patch_class(
             id=f"{patch_id_prefix}_{sample_id}",
             target_section_id=target_section_id,
             operation_type=operation_type,
@@ -575,6 +709,9 @@ class PatchGenerationExecutor:
             new_header=new_header,
             metadata=metadata,
         )
+        if suggestion.get("semantic_draft_id"):
+            self.translated_patches.append(patch)
+        return patch
 
     def _normalize_operation(self, operation: Any) -> str:
         """Normalize legacy suggestion operation names to patch operation types."""

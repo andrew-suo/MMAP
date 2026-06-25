@@ -53,6 +53,12 @@ class PromptOptimizationConfig:
     toxicity_test_enabled: bool = True
     toxicity_test_early_stop: bool = True
     toxicity_test_sort_by_source_difficulty: bool = True
+    patch_generation_mode: str = "semantic_then_translate"
+    candidate_selection_enabled: bool = False
+    candidate_count: int = 3
+    candidate_validation_split_ratio: float = 0.3
+    candidate_min_gain: float = 0.0
+    candidate_reject_on_any_broken: bool = True
 
 
 @dataclass
@@ -190,6 +196,10 @@ class PromptOptimizationPhase:
             char_limit=self.config.extraction_prompt_char_limit,
             compression_enabled=self.config.extraction_prompt_compression_enabled,
             ema_alpha=self.config.ema_alpha,
+            candidate_selection_enabled=self.config.candidate_selection_enabled,
+            candidate_count=self.config.candidate_count,
+            candidate_min_gain=self.config.candidate_min_gain,
+            candidate_reject_on_any_broken=self.config.candidate_reject_on_any_broken,
         )
         extraction_metrics = extraction_stage.run()
         self.extraction_stages.append(extraction_stage)
@@ -227,6 +237,10 @@ class PromptOptimizationPhase:
             char_limit=self.config.analysis_prompt_char_limit,
             compression_enabled=self.config.analysis_prompt_compression_enabled,
             ema_alpha=self.config.ema_alpha,
+            candidate_selection_enabled=self.config.candidate_selection_enabled,
+            candidate_count=self.config.candidate_count,
+            candidate_min_gain=self.config.candidate_min_gain,
+            candidate_reject_on_any_broken=self.config.candidate_reject_on_any_broken,
         )
         analysis_metrics = analysis_stage.run()
         self.analysis_stages.append(analysis_stage)
@@ -376,6 +390,103 @@ class PromptOptimizationPhase:
             d = data.to_dict() if hasattr(data, "to_dict") else data
             path.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
 
+        def _success_memory_items(results: list, prompt_type: str) -> list[dict[str, Any]]:
+            """从正确样本的 section attribution 中提炼成功记忆 artifact。"""
+            items: list[dict[str, Any]] = []
+            for result in results:
+                if not getattr(result, "analysis_correct", False):
+                    continue
+                judgement = getattr(result, "judgement", {})
+                if not isinstance(judgement, dict):
+                    continue
+                attributions = judgement.get("prompt_section_attribution", [])
+                if not isinstance(attributions, list):
+                    continue
+                for attribution in attributions:
+                    if not isinstance(attribution, dict):
+                        continue
+                    section_id = attribution.get("section_id")
+                    if not section_id:
+                        continue
+                    reason = attribution.get("reason", "")
+                    section_name = attribution.get("section_name", "")
+                    items.append({
+                        "sample_id": getattr(result, "sample_id", ""),
+                        "prompt_type": prompt_type,
+                        "section_id": section_id,
+                        "section_name": section_name,
+                        "reason": reason,
+                        "generalized_lesson": reason,
+                    })
+            return items
+
+        def _annotate_merge_report(report: Any) -> None:
+            """为 merge report 附加简要决策摘要。"""
+            if report is None or not hasattr(report, "metadata"):
+                return
+            report.metadata["merge_decision_summary"] = {
+                "input_patch_count": getattr(report, "input_patch_count", 0),
+                "merged_patch_count": getattr(report, "merged_patch_count", 0),
+                "dropped_patch_count": getattr(report, "dropped_patch_count", 0),
+                "conflict_count": getattr(report, "conflict_count", 0),
+                "fallback_used": getattr(report, "fallback_used", False),
+            }
+
+        def _patch_lifecycle(stage: Any, prompt_type: str) -> list[dict[str, Any]]:
+            """生成 patch 生命周期 artifact，并补充 final decision metadata。"""
+            ordered: dict[str, Any] = {}
+            phases = [
+                ("draft", getattr(stage, "draft_patches", [])),
+                ("validated", getattr(stage, "validated_patches", [])),
+                ("rejected", getattr(stage, "rejected_patches", [])),
+                ("initial_merged", getattr(stage, "initial_merged_patches", [])),
+                ("safe", getattr(stage, "safe_patches", [])),
+                ("toxic", getattr(stage, "toxic_patches", [])),
+                ("final_merged", getattr(stage, "final_merged_patches", [])),
+            ]
+            phase_by_id: dict[str, list[str]] = {}
+            for phase, patches in phases:
+                for patch in patches:
+                    ordered.setdefault(patch.id, patch)
+                    phase_by_id.setdefault(patch.id, []).append(phase)
+
+            records: list[dict[str, Any]] = []
+            for patch_id, patch in ordered.items():
+                phases_seen = phase_by_id.get(patch_id, [])
+                if "final_merged" in phases_seen or getattr(patch, "status", None) == "accepted":
+                    final_decision = "accepted"
+                elif "toxic" in phases_seen or getattr(patch, "rejection_reason", None) == "TOXIC":
+                    final_decision = "toxic"
+                elif getattr(patch, "rejection_reason", None) == "INEFFECTIVE":
+                    final_decision = "ineffective"
+                elif getattr(patch, "status", None) == "rejected" or "rejected" in phases_seen:
+                    final_decision = "rejected"
+                else:
+                    final_decision = getattr(patch, "status", "unknown")
+
+                decision_reason = getattr(patch, "rejection_reason", None) or final_decision
+                metadata = getattr(patch, "metadata", {})
+                metadata["final_decision"] = final_decision
+                metadata["decision_reason"] = decision_reason
+                if "source_phase" not in metadata:
+                    metadata["source_phase"] = f"{prompt_type}_patch_generation"
+
+                records.append({
+                    "patch_id": patch.id,
+                    "prompt_type": prompt_type,
+                    "phases": phases_seen,
+                    "status": getattr(patch, "status", None),
+                    "final_decision": final_decision,
+                    "decision_reason": decision_reason,
+                    "source_sample_ids": list(getattr(patch, "source_sample_ids", [])),
+                    "fixed_sample_ids": list(getattr(patch, "fixed_sample_ids", [])),
+                    "broken_sample_ids": list(getattr(patch, "broken_sample_ids", [])),
+                    "toxic_sample_ids": list(getattr(patch, "toxic_sample_ids", [])),
+                    "rejection_reason": getattr(patch, "rejection_reason", None),
+                    "metadata": dict(metadata),
+                })
+            return records
+
         iteration_dir = self.output_dir / "prompt_optimization" / f"iteration_{iteration}"
         iteration_dir.mkdir(parents=True, exist_ok=True)
 
@@ -441,9 +552,15 @@ class PromptOptimizationPhase:
         _write_jsonl(extraction_dir / "base_results.jsonl", extraction_stage.base_extraction_results)
         _write_jsonl(extraction_dir / "base_eval.jsonl", extraction_stage.base_eval_records)
         _write_jsonl(extraction_dir / "analysis_results.jsonl", extraction_stage.analysis_results)
+        _write_jsonl(extraction_dir / "semantic_patch_drafts.jsonl", getattr(extraction_stage, "semantic_patch_drafts", []))
+        _write_jsonl(extraction_dir / "translated_patches.jsonl", getattr(extraction_stage, "translated_patches", []))
+        _write_jsonl(extraction_dir / "model_output_repairs.jsonl", getattr(extraction_stage, "model_output_repairs", []))
         _write_jsonl(extraction_dir / "draft_patches.jsonl", extraction_stage.draft_patches)
         _write_jsonl(extraction_dir / "validated_patches.jsonl", getattr(extraction_stage, "validated_patches", []))
         _write_jsonl(extraction_dir / "rejected_patches.jsonl", getattr(extraction_stage, "rejected_patches", []))
+        _annotate_merge_report(extraction_stage.initial_merge_report)
+        _annotate_merge_report(extraction_stage.final_merge_report)
+
         if extraction_stage.initial_merge_report is not None:
             _write_json(extraction_dir / "initial_merge_report.json", extraction_stage.initial_merge_report)
         if getattr(extraction_stage, "patched_prompt", None) is not None:
@@ -461,6 +578,12 @@ class PromptOptimizationPhase:
         # PR3: Extraction 阶段新增 artifact
         if getattr(extraction_stage, "transition_report", None) is not None:
             _write_json(extraction_dir / "transition_report.json", extraction_stage.transition_report)
+        if getattr(extraction_stage, "candidate_validation_report", None) is not None:
+            _write_json(extraction_dir / "candidate_validation_report.json", extraction_stage.candidate_validation_report)
+            _write_jsonl(
+                extraction_dir / "candidate_patch_sets.jsonl",
+                extraction_stage.candidate_validation_report.candidates,
+            )
         _write_jsonl(extraction_dir / "ineffective_patches.jsonl", getattr(extraction_stage, "ineffective_patches", []))
         if getattr(extraction_stage, "toxicity_report", None) is not None:
             _write_json(extraction_dir / "toxicity_report.json", extraction_stage.toxicity_report)
@@ -469,6 +592,8 @@ class PromptOptimizationPhase:
         if getattr(extraction_stage, "final_merge_report", None) is not None:
             _write_json(extraction_dir / "final_merge_report.json", extraction_stage.final_merge_report)
         _write_jsonl(extraction_dir / "final_merged_patches.jsonl", getattr(extraction_stage, "final_merged_patches", []))
+        _write_jsonl(extraction_dir / "success_memory_items.jsonl", _success_memory_items(extraction_stage.analysis_results, "extraction"))
+        _write_jsonl(extraction_dir / "patch_lifecycle.jsonl", _patch_lifecycle(extraction_stage, "extraction"))
         if getattr(extraction_stage, "toxicity_report", None) is not None:
             _write_jsonl(
                 extraction_dir / "patch_test_records.jsonl",
@@ -485,9 +610,15 @@ class PromptOptimizationPhase:
 
         _write_json(analysis_dir / "base_metrics.json", analysis_stage.metrics)
         _write_jsonl(analysis_dir / "reflection_results.jsonl", analysis_stage.reflection_results)
+        _write_jsonl(analysis_dir / "semantic_patch_drafts.jsonl", getattr(analysis_stage, "semantic_patch_drafts", []))
+        _write_jsonl(analysis_dir / "translated_patches.jsonl", getattr(analysis_stage, "translated_patches", []))
+        _write_jsonl(analysis_dir / "model_output_repairs.jsonl", getattr(analysis_stage, "model_output_repairs", []))
         _write_jsonl(analysis_dir / "draft_patches.jsonl", analysis_stage.draft_patches)
         _write_jsonl(analysis_dir / "validated_patches.jsonl", getattr(analysis_stage, "validated_patches", []))
         _write_jsonl(analysis_dir / "rejected_patches.jsonl", getattr(analysis_stage, "rejected_patches", []))
+        _annotate_merge_report(analysis_stage.initial_merge_report)
+        _annotate_merge_report(analysis_stage.final_merge_report)
+
         if analysis_stage.initial_merge_report is not None:
             _write_json(analysis_dir / "initial_merge_report.json", analysis_stage.initial_merge_report)
         if getattr(analysis_stage, "patched_prompt", None) is not None:
@@ -503,6 +634,12 @@ class PromptOptimizationPhase:
         # PR3: Analysis 阶段新增 artifact
         if getattr(analysis_stage, "transition_report", None) is not None:
             _write_json(analysis_dir / "transition_report.json", analysis_stage.transition_report)
+        if getattr(analysis_stage, "candidate_validation_report", None) is not None:
+            _write_json(analysis_dir / "candidate_validation_report.json", analysis_stage.candidate_validation_report)
+            _write_jsonl(
+                analysis_dir / "candidate_patch_sets.jsonl",
+                analysis_stage.candidate_validation_report.candidates,
+            )
         _write_jsonl(analysis_dir / "ineffective_patches.jsonl", getattr(analysis_stage, "ineffective_patches", []))
         if getattr(analysis_stage, "toxicity_report", None) is not None:
             _write_json(analysis_dir / "toxicity_report.json", analysis_stage.toxicity_report)
@@ -511,6 +648,8 @@ class PromptOptimizationPhase:
         if getattr(analysis_stage, "final_merge_report", None) is not None:
             _write_json(analysis_dir / "final_merge_report.json", analysis_stage.final_merge_report)
         _write_jsonl(analysis_dir / "final_merged_patches.jsonl", getattr(analysis_stage, "final_merged_patches", []))
+        _write_jsonl(analysis_dir / "success_memory_items.jsonl", _success_memory_items(analysis_stage.base_analysis_results, "analysis"))
+        _write_jsonl(analysis_dir / "patch_lifecycle.jsonl", _patch_lifecycle(analysis_stage, "analysis"))
         if getattr(analysis_stage, "toxicity_report", None) is not None:
             _write_jsonl(
                 analysis_dir / "patch_test_records.jsonl",

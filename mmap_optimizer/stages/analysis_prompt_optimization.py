@@ -5,7 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from ..patch.types import AnalysisPatch, CompressionReport, PatchMergeReport, ToxicityReport
+from ..patch.types import (
+    AnalysisPatch,
+    CandidateValidationReport,
+    CompressionReport,
+    PatchMergeReport,
+    SemanticPatchDraft,
+    ToxicityReport,
+)
 from ..data.sample import SampleBatch, SampleSet, SampleTrace
 from ..prompt.structured_prompt import StructuredPrompt
 from ..prompt.section_contribution import SectionContributionTracker
@@ -84,6 +91,10 @@ class AnalysisPromptOptimizationStage:
         char_limit: int = 16000,
         compression_enabled: bool = True,
         ema_alpha: float = 0.3,
+        candidate_selection_enabled: bool = False,
+        candidate_count: int = 3,
+        candidate_min_gain: float = 0.0,
+        candidate_reject_on_any_broken: bool = True,
     ):
         self.analysis_prompt = analysis_prompt
         self.extraction_results = extraction_results
@@ -102,6 +113,10 @@ class AnalysisPromptOptimizationStage:
         self.char_limit = char_limit
         self.compression_enabled = compression_enabled
         self.ema_alpha = ema_alpha
+        self.candidate_selection_enabled = candidate_selection_enabled
+        self.candidate_count = candidate_count
+        self.candidate_min_gain = candidate_min_gain
+        self.candidate_reject_on_any_broken = candidate_reject_on_any_broken
 
         self.reflection_results: list[ReflectionResult] = []
         self.draft_patches: list[AnalysisPatch] = []
@@ -128,7 +143,11 @@ class AnalysisPromptOptimizationStage:
         self.final_merge_report: PatchMergeReport | None = None
         self.toxicity_report: ToxicityReport | None = None
         self.compression_report: CompressionReport | None = None
+        self.candidate_validation_report: CandidateValidationReport | None = None
         self.transition_report: dict[str, Any] | None = None
+        self.semantic_patch_drafts: list[SemanticPatchDraft] = []
+        self.translated_patches: list[AnalysisPatch] = []
+        self.model_output_repairs: list[dict[str, Any]] = []
 
         # Section 贡献度追踪（EMA）
         self.contribution_tracker = SectionContributionTracker(alpha=0.3)
@@ -193,6 +212,9 @@ class AnalysisPromptOptimizationStage:
 
     def _step2_reflect_on_errors(self) -> None:
         """Step 2: 对分析错误样本反思。"""
+        if self.analysis_executor is not None and hasattr(self.analysis_executor, "model_output_repairs"):
+            self.analysis_executor.model_output_repairs = []
+
         wrong_analysis_ids = [
             r.sample_id for r in self.base_analysis_results
             if not r.analysis_correct
@@ -242,6 +264,10 @@ class AnalysisPromptOptimizationStage:
                 if trace.sample_id == sample_id:
                     trace.reflection_result_id = reflection.sample_id
                     trace.reflection_success = reflection.reflection_success
+        if self.analysis_executor is not None:
+            self.model_output_repairs.extend(getattr(
+                self.analysis_executor, "model_output_repairs", []
+            ))
 
     def _step3_generate_patches(self) -> None:
         """Step 3: 生成 analysis prompt patch。"""
@@ -256,6 +282,15 @@ class AnalysisPromptOptimizationStage:
             self.draft_patches = draft_patches
             self.validated_patches = validated_patches
             self.rejected_patches = rejected_patches
+            self.semantic_patch_drafts = list(getattr(
+                self.patch_generation_executor, "semantic_patch_drafts", []
+            ))
+            self.translated_patches = list(getattr(
+                self.patch_generation_executor, "translated_patches", []
+            ))
+            self.model_output_repairs.extend(getattr(
+                self.patch_generation_executor, "model_output_repairs", []
+            ))
 
             traces = self.sample_set.get_traces_for_iteration("prompt_optimization", self.iteration)
             for patch in self.draft_patches:
@@ -334,6 +369,18 @@ class AnalysisPromptOptimizationStage:
 
     def _step5_apply_and_test(self) -> None:
         """Step 5: 应用 analysis patch 并回归测试。"""
+        if (
+            self.candidate_selection_enabled
+            and self.patch_apply_executor is not None
+            and self.initial_merged_patches
+        ):
+            selected_patches = self._select_candidate_patch_set()
+            if not selected_patches:
+                self.initial_merged_patches = []
+                self.metrics.no_progress = True
+                return
+            self.initial_merged_patches = selected_patches
+
         if self.patch_apply_executor is not None and self.initial_merged_patches:
             trial_prompt, apply_report = self.patch_apply_executor.apply(
                 self.analysis_prompt, self.initial_merged_patches
@@ -366,6 +413,91 @@ class AnalysisPromptOptimizationStage:
                 analysis_correct=True,
             )
             self.patched_analysis_results.append(analysis_result)
+
+    def _select_candidate_patch_set(self) -> list[AnalysisPatch]:
+        """选择 validation score 最高的 analysis patch set。"""
+        candidates = self._build_candidate_patch_sets()
+        base_map = {r.sample_id: r for r in self.base_analysis_results}
+        baseline_correct_count = sum(
+            1 for sample_id in self.batch.sample_ids
+            if base_map.get(sample_id) is not None
+            and base_map[sample_id].analysis_correct
+        )
+        records: list[dict[str, Any]] = []
+        best_record: dict[str, Any] | None = None
+        best_patches: list[AnalysisPatch] = []
+
+        for idx, patches in enumerate(candidates, start=1):
+            candidate_id = f"candidate_{idx}"
+            prompt, apply_report = self.patch_apply_executor.apply(
+                self.analysis_prompt, patches
+            )
+            fixed_ids: list[str] = []
+            broken_ids: list[str] = []
+            unchanged_wrong_ids: list[str] = []
+            unchanged_correct_ids: list[str] = []
+            if apply_report.changed and self.analysis_executor is not None:
+                results = self.analysis_executor.execute_batch(
+                    analysis_prompt=prompt,
+                    extraction_prompt=self.extraction_prompt,
+                    extraction_results=self.extraction_results,
+                    sample_set=self.sample_set,
+                )
+                result_map = {r.sample_id: r for r in results}
+                for sample_id in self.batch.sample_ids:
+                    base = base_map.get(sample_id)
+                    patched = result_map.get(sample_id)
+                    if base is None or patched is None:
+                        continue
+                    if not base.analysis_correct and patched.analysis_correct:
+                        fixed_ids.append(sample_id)
+                    elif base.analysis_correct and not patched.analysis_correct:
+                        broken_ids.append(sample_id)
+                    elif not base.analysis_correct and not patched.analysis_correct:
+                        unchanged_wrong_ids.append(sample_id)
+                    else:
+                        unchanged_correct_ids.append(sample_id)
+            score = len(fixed_ids) - 2 * len(broken_ids) + 0.25 * len(unchanged_correct_ids)
+            accepted = score >= self.candidate_min_gain
+            if self.candidate_reject_on_any_broken and broken_ids:
+                accepted = False
+            record = {
+                "candidate_id": candidate_id,
+                "patch_ids": [p.id for p in patches],
+                "fixed_sample_ids": fixed_ids,
+                "broken_sample_ids": broken_ids,
+                "unchanged_wrong_ids": unchanged_wrong_ids,
+                "unchanged_correct_ids": unchanged_correct_ids,
+                "score": score,
+                "accepted": accepted,
+            }
+            records.append(record)
+            if accepted and (best_record is None or score > best_record["score"]):
+                best_record = record
+                best_patches = patches
+
+        self.candidate_validation_report = CandidateValidationReport(
+            id=f"candidate_validation_analysis_{self.iteration}",
+            prompt_type="analysis",
+            selected_candidate_id=best_record["candidate_id"] if best_record else None,
+            baseline_correct_count=baseline_correct_count,
+            candidate_count=len(candidates),
+            min_gain=self.candidate_min_gain,
+            reject_on_any_broken=self.candidate_reject_on_any_broken,
+            candidates=records,
+        )
+        return best_patches
+
+    def _build_candidate_patch_sets(self) -> list[list[AnalysisPatch]]:
+        patches = list(self.initial_merged_patches)
+        if not patches:
+            return []
+        candidates: list[list[AnalysisPatch]] = [patches]
+        for patch in patches:
+            if len(candidates) >= max(1, self.candidate_count):
+                break
+            candidates.append([patch])
+        return candidates
 
     def _step6_regression_and_toxicity_test(self) -> None:
         """Step 6: 回归分析、无效剔除与测毒。"""

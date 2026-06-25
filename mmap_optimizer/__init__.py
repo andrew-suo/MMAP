@@ -61,9 +61,11 @@ from .phases.prompt_structuring import (
 )
 
 from .patch.types import (
+    CandidateValidationReport,
     ExtractionPatch,
     AnalysisPatch,
     PatchMergeReport,
+    SemanticPatchDraft,
     ToxicityReport,
 )
 
@@ -144,7 +146,9 @@ __all__ = [
     # Patch
     "ExtractionPatch",
     "AnalysisPatch",
+    "CandidateValidationReport",
     "PatchMergeReport",
+    "SemanticPatchDraft",
     "ToxicityReport",
     # Extraction Prompt Optimization Stage
     "ExtractionResult",

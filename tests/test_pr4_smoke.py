@@ -324,6 +324,33 @@ def test_smoke_run_patch_apply_reports_jsonl_exists(tmp_path):
         assert "stage" in record
 
 
+def test_smoke_run_prompt_memory_and_lifecycle_artifacts_exist(tmp_path):
+    """prompt 优化阶段输出 success memory 和 patch lifecycle artifact。"""
+    runner, output_dir = _run_smoke(tmp_path)
+
+    iter_dir = output_dir / "prompt_optimization" / "iteration_1"
+    for prompt_type in ("extraction", "analysis"):
+        artifact_dir = iter_dir / prompt_type
+        success_memory_file = artifact_dir / "success_memory_items.jsonl"
+        patch_lifecycle_file = artifact_dir / "patch_lifecycle.jsonl"
+
+        assert success_memory_file.exists()
+        assert patch_lifecycle_file.exists()
+
+        for line in success_memory_file.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                item = json.loads(line)
+                assert item["prompt_type"] == prompt_type
+                assert "section_id" in item
+                assert "generalized_lesson" in item
+
+        for line in patch_lifecycle_file.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                item = json.loads(line)
+                assert item["prompt_type"] == prompt_type
+                assert "final_decision" in item
+
+
 # ============================================================
 # CLI 可执行性测试
 # ============================================================

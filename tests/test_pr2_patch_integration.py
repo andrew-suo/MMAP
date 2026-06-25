@@ -25,6 +25,7 @@ from mmap_optimizer.executors.patch_generation_executor import (
     PatchGenerationExecutor,
 )
 from mmap_optimizer.executors.patch_validator import PatchValidator
+from mmap_optimizer.model.client import MockModelClient, ModelResponse
 from mmap_optimizer.patch.types import AnalysisPatch, ExtractionPatch
 from mmap_optimizer.data.sample import (
     SampleBatch,
@@ -192,6 +193,90 @@ def make_batch() -> SampleBatch:
         sampler_name="test",
         sample_ids=["s1"],
     )
+
+
+class RecordingCalibrationClient:
+    """记录校准调用次数的模型替身。"""
+
+    def __init__(self, output: str) -> None:
+        self.output = output
+        self.calls = 0
+
+    def complete(self, messages, model_config=None, response_format=None):
+        self.calls += 1
+        return ModelResponse(raw_output=self.output)
+
+
+def test_patch_validator_calibrates_unknown_section_once_successfully(tmp_path):
+    """UNKNOWN_SECTION 可通过一次校准修复，并记录 repair 元数据。"""
+    calibration_prompt = tmp_path / "patch_calibration.txt"
+    calibration_prompt.write_text("Calibrate patch locations only.", encoding="utf-8")
+    client = MockModelClient(
+        default_output='[{"id":"patch1","target_section":"section_1"}]'
+    )
+    validator = PatchValidator(
+        model_client=client,
+        calibration_prompt_path=str(calibration_prompt),
+    )
+    patch = ExtractionPatch(
+        id="patch1",
+        target_section_id="missing_section",
+        operation_type="append_to_section",
+        content="Add a concrete instruction.",
+        rationale="Valid content, invalid section.",
+        source_sample_ids=["s1"],
+    )
+
+    validated, rejected = validator.validate_batch_with_calibration(
+        [patch],
+        make_extraction_prompt(),
+        make_sample_set(),
+    )
+
+    assert validated == [patch]
+    assert rejected == []
+    assert patch.target_section_id == "section_1"
+    assert patch.status == "candidate"
+    assert patch.metadata["repair_attempted"] is True
+    assert patch.metadata["repair_reason"] == "UNKNOWN_SECTION"
+    assert patch.metadata["original_rejection_reason"] == "VALIDATION_FAILED:UNKNOWN_SECTION"
+    assert patch.metadata["repair_success"] is True
+
+
+def test_patch_validator_runs_single_failed_calibration_pass(tmp_path):
+    """校准失败时只调用一次模型，并保留失败 repair 元数据。"""
+    calibration_prompt = tmp_path / "patch_calibration.txt"
+    calibration_prompt.write_text("Calibrate patch locations only.", encoding="utf-8")
+    client = RecordingCalibrationClient(
+        '[{"id":"patch1","target_section":"still_missing"}]'
+    )
+    validator = PatchValidator(
+        model_client=client,
+        calibration_prompt_path=str(calibration_prompt),
+    )
+    patch = ExtractionPatch(
+        id="patch1",
+        target_section_id="missing_section",
+        operation_type="append_to_section",
+        content="Add a concrete instruction.",
+        rationale="Valid content, invalid section.",
+        source_sample_ids=["s1"],
+    )
+
+    validated, rejected = validator.validate_batch_with_calibration(
+        [patch],
+        make_extraction_prompt(),
+        make_sample_set(),
+    )
+
+    assert validated == []
+    assert rejected == [patch]
+    assert client.calls == 1
+    assert patch.status == "rejected"
+    assert patch.rejection_reason == "VALIDATION_FAILED:UNKNOWN_SECTION"
+    assert patch.metadata["repair_attempted"] is True
+    assert patch.metadata["repair_reason"] == "UNKNOWN_SECTION"
+    assert patch.metadata["repair_success"] is False
 
 
 # ---------------------------------------------------------------------------

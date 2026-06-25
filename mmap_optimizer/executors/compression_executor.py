@@ -24,6 +24,7 @@ from typing import Any
 
 from ..patch.types import CompressionReport
 from ..data.sample import SampleBatch, SampleSet
+from ..prompt.output_repair import parse_model_json_output
 from ..prompt.structured_prompt import PromptSection, StructuredPrompt
 from ..prompt.section_contribution import SectionContributionTracker
 
@@ -553,24 +554,14 @@ class CompressionExecutor:
         Returns:
             (valid, reason) 元组，或 None 表示解析失败
         """
-        cleaned = self._strip_markdown(text)
-        # 尝试直接解析
-        try:
-            parsed = json.loads(cleaned)
-            if isinstance(parsed, dict) and "valid" in parsed:
-                return bool(parsed["valid"]), str(parsed.get("reason", ""))
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-        # 尝试提取 JSON 对象
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start != -1 and end != -1 and start < end:
-            try:
-                parsed = json.loads(cleaned[start : end + 1])
-                if isinstance(parsed, dict) and "valid" in parsed:
-                    return bool(parsed["valid"]), str(parsed.get("reason", ""))
-            except (json.JSONDecodeError, TypeError):
-                pass
+        parse_result = parse_model_json_output(
+            text,
+            expected_schema={"valid": bool, "reason": str},
+            model_client=self.model_client,
+            model_config=self.model_config,
+        )
+        parsed = parse_result.parsed
+        if isinstance(parsed, dict) and "valid" in parsed:
+            return bool(parsed["valid"]), str(parsed.get("reason", ""))
 
         return None

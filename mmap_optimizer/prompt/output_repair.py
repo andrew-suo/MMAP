@@ -7,10 +7,120 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..model.client import ModelClient
+
+
+@dataclass
+class ParsedModelOutput:
+    """Structured result for model JSON parsing."""
+
+    parsed: dict[str, Any] | list[Any] | None
+    status: str
+    failure_reason: str | None = None
+    raw_output: str = ""
+    repaired_output: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "parsed": self.parsed,
+            "status": self.status,
+            "failure_reason": self.failure_reason,
+            "raw_output": self.raw_output,
+            "repaired_output": self.repaired_output,
+        }
+
+
+def parse_model_json_output(
+    raw_output: str | None,
+    expected_schema: dict[str, Any] | None = None,
+    model_client: ModelClient | None = None,
+    model_config: dict[str, Any] | None = None,
+    repair_prompt_path: str = "prompts/output_repair.txt",
+) -> ParsedModelOutput:
+    """Parse model JSON with one optional reformat-only model repair pass."""
+    raw = raw_output or ""
+    if not raw.strip():
+        return ParsedModelOutput(
+            parsed=None,
+            status="failed",
+            failure_reason="empty_output",
+            raw_output=raw,
+        )
+
+    cleaned = _clean_markdown(raw)
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, (dict, list)):
+            return ParsedModelOutput(parsed=parsed, status="parsed", raw_output=raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        direct_error = str(exc)
+    else:
+        direct_error = "parsed_non_object_or_array"
+
+    fixed = _fix_common_json_issues(cleaned)
+    if fixed != cleaned:
+        try:
+            parsed = json.loads(fixed)
+            if isinstance(parsed, (dict, list)):
+                return ParsedModelOutput(
+                    parsed=parsed,
+                    status="locally_repaired",
+                    raw_output=raw,
+                    repaired_output=fixed,
+                )
+        except (json.JSONDecodeError, TypeError) as exc:
+            direct_error = str(exc)
+
+    locally_extracted = _parse_repaired_output(cleaned)
+    if locally_extracted[0] is not None:
+        return ParsedModelOutput(
+            parsed=locally_extracted[0],
+            status="locally_repaired",
+            raw_output=raw,
+        )
+
+    if model_client is None:
+        return ParsedModelOutput(
+            parsed=None,
+            status="failed",
+            failure_reason=direct_error,
+            raw_output=raw,
+        )
+
+    try:
+        repair_prompt = Path(repair_prompt_path).read_text(encoding="utf-8")
+        messages = [
+            {"role": "system", "content": repair_prompt},
+            {"role": "user", "content": _build_repair_message(raw, expected_schema)},
+        ]
+        response = model_client.complete(messages, model_config=model_config)
+        repaired_output = response.raw_output.strip()
+        parsed, repair_status = _parse_repaired_output(repaired_output)
+        if parsed is not None:
+            return ParsedModelOutput(
+                parsed=parsed,
+                status="model_repaired",
+                raw_output=raw,
+                repaired_output=repaired_output,
+            )
+        return ParsedModelOutput(
+            parsed=None,
+            status="failed",
+            failure_reason=repair_status,
+            raw_output=raw,
+            repaired_output=repaired_output,
+        )
+    except Exception as exc:
+        return ParsedModelOutput(
+            parsed=None,
+            status="failed",
+            failure_reason=str(exc),
+            raw_output=raw,
+        )
 
 
 def repair_json_output(
@@ -40,33 +150,18 @@ def repair_json_output(
         - "unrepairable": 无法修复（如输出完全不是 JSON）
         - "skipped": 未尝试修复（model_client 为 None）
     """
-    # 检查 model_client 是否可用
-    if model_client is None:
-        return None, "skipped"
-
-    try:
-        # 加载修复 prompt
-        repair_prompt = Path(repair_prompt_path).read_text(encoding="utf-8")
-
-        # 构建用户消息
-        user_message = _build_repair_message(raw_output, expected_schema)
-
-        # 构建完整消息
-        messages = [
-            {"role": "system", "content": repair_prompt},
-            {"role": "user", "content": user_message},
-        ]
-
-        # 调用模型
-        response = model_client.complete(messages, model_config=model_config)
-        repaired_output = response.raw_output.strip()
-
-        # 尝试解析修复后的输出
-        return _parse_repaired_output(repaired_output)
-
-    except Exception:
-        # 任何异常都视为无法修复
-        return None, "unrepairable"
+    result = parse_model_json_output(
+        raw_output=raw_output,
+        expected_schema=expected_schema,
+        model_client=model_client,
+        model_config=model_config,
+        repair_prompt_path=repair_prompt_path,
+    )
+    if result.parsed is None:
+        return None, "skipped" if model_client is None else "unrepairable"
+    if result.status == "parsed":
+        return result.parsed, "repaired"
+    return result.parsed, "repaired"
 
 
 def _build_repair_message(
@@ -259,4 +354,4 @@ def _extract_json_array(text: str) -> str | None:
     return text[start : end + 1]
 
 
-__all__ = ["repair_json_output"]
+__all__ = ["ParsedModelOutput", "parse_model_json_output", "repair_json_output"]

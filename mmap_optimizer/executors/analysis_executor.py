@@ -16,7 +16,7 @@ from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionRe
 from ..data.sample import SampleAsset, SampleSet, SampleSpec
 from ..prompt.structured_prompt import StructuredPrompt, StructuredPromptRenderer
 from ..prompt.prompt_manager import render_prompt
-from ..prompt.output_repair import repair_json_output
+from ..prompt.output_repair import parse_model_json_output
 from .evaluation_executor import normalize_label
 
 
@@ -43,6 +43,8 @@ class AnalysisExecutor:
         self.label_mapping = label_mapping
         self.renderer = StructuredPromptRenderer()
         self.analysis_reflection_template_path = analysis_reflection_template_path
+        self.model_output_repairs: list[dict[str, Any]] = []
+        self._last_parse_record: dict[str, Any] | None = None
 
     def execute(
         self,
@@ -59,6 +61,11 @@ class AnalysisExecutor:
             messages, assets=assets, model_config=self.model_config
         )
         judgement = self._parse_judgement(response.raw_output)
+        if self._last_parse_record is not None:
+            record = dict(self._last_parse_record)
+            record["sample_id"] = extraction_result.sample_id
+            record["executor"] = "analysis"
+            self.model_output_repairs.append(record)
 
         actual_correct = self._compute_actual_correct(
             extraction_result, sample_spec.ground_truth
@@ -118,6 +125,11 @@ class AnalysisExecutor:
             messages, assets=assets, model_config=self.model_config
         )
         parsed = self._parse_judgement(response.raw_output)
+        if self._last_parse_record is not None:
+            record = dict(self._last_parse_record)
+            record["sample_id"] = extraction_result.sample_id
+            record["executor"] = "analysis_reflection"
+            self.model_output_repairs.append(record)
 
         error_reason = (
             self._extract_error_reason(parsed)
@@ -284,32 +296,27 @@ class AnalysisExecutor:
         if not raw_output:
             return {}
 
-        try:
-            parsed = json.loads(raw_output)
-        except (json.JSONDecodeError, TypeError):
-            parsed = None
-
-        if parsed is not None and isinstance(parsed, dict):
-            return parsed
-
-        if self.model_client is not None:
-            expected_schema = {
-                "reason": str,
-                "status": str,
-                "judgement": dict,
-                "confirmed_facts": list,
-                "hypothesized_error_causes": list,
-                "error_reason": str | None,
-            }
-            repaired, repair_status = repair_json_output(
-                raw_output=raw_output,
-                expected_schema=expected_schema,
-                model_client=self.model_client,
-                model_config=self.model_config,
-            )
-            if repair_status == "repaired" and isinstance(repaired, dict):
-                return repaired
-
+        expected_schema = {
+            "reason": str,
+            "status": str,
+            "judgement": dict,
+            "confirmed_facts": list,
+            "hypothesized_error_causes": list,
+            "error_reason": str | None,
+        }
+        parse_result = parse_model_json_output(
+            raw_output=raw_output,
+            expected_schema=expected_schema,
+            model_client=self.model_client,
+            model_config=self.model_config,
+        )
+        self._last_parse_record = {
+            "status": parse_result.status,
+            "failure_reason": parse_result.failure_reason,
+            "raw_output_preview": raw_output[:500],
+        }
+        if isinstance(parse_result.parsed, dict):
+            return parse_result.parsed
         return {}
 
     def _compute_actual_correct(

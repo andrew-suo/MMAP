@@ -13,11 +13,13 @@ from typing import Any
 
 from ..patch.types import AnalysisPatch, ExtractionPatch
 from ..data.sample import SampleSet
+from ..prompt.output_repair import parse_model_json_output
 from ..prompt.structured_prompt import PromptSection, StructuredPrompt
 
 
 # 可校准的 rejection reason（定位文本匹配失败）
 _CALIBRABLE_REASONS: frozenset[str] = frozenset({
+    "UNKNOWN_SECTION",
     "TARGET_TEXT_NOT_FOUND",
     "OLD_TEXT_NOT_FOUND",
 })
@@ -218,39 +220,22 @@ class PatchValidator:
         if not calibrable:
             return validated, rejected
 
-        # 3. 首次校准
+        # 3. 首次校准（唯一一次 repair pass）
+        for patch in calibrable:
+            reason = self._extract_rejection_reason(patch)
+            patch.metadata["repair_attempted"] = True
+            patch.metadata["repair_reason"] = reason
+            patch.metadata["original_rejection_reason"] = patch.rejection_reason
+
         calibrated = self._calibrate_patches(calibrable, prompt, failure_info="")
 
         # 4. 重新校验校准后的 patch
         re_validated, still_rejected = self.validate_batch(calibrated, prompt, sample_set)
-
-        # 5. 对仍失败的 patch 进行一次重试（带 failure_info）
-        retry_calibrable: list[ExtractionPatch | AnalysisPatch] = []
+        for patch in re_validated:
+            patch.metadata["repair_success"] = True
         for patch in still_rejected:
-            reason = self._extract_rejection_reason(patch)
-            if reason in _CALIBRABLE_REASONS:
-                retry_calibrable.append(patch)
-
-        if retry_calibrable:
-            # 构建失败信息
-            failure_parts: list[str] = []
-            for patch in retry_calibrable:
-                reason = self._extract_rejection_reason(patch)
-                failure_parts.append(
-                    f"Patch {patch.id} failed: {reason}"
-                )
-            failure_info = "; ".join(failure_parts)
-
-            retry_calibrated = self._calibrate_patches(
-                retry_calibrable, prompt, failure_info=failure_info
-            )
-            retry_validated, retry_rejected = self.validate_batch(
-                retry_calibrated, prompt, sample_set
-            )
-            re_validated.extend(retry_validated)
-            not_calibrable.extend(retry_rejected)
-        else:
-            not_calibrable.extend(still_rejected)
+            patch.metadata["repair_success"] = False
+        not_calibrable.extend(still_rejected)
 
         validated.extend(re_validated)
         return validated, not_calibrable
@@ -387,34 +372,17 @@ class PatchValidator:
         Returns:
             校准后的 patch 字典列表，或 None（解析失败）。
         """
-        import re
-
-        # 移除 markdown 代码块标记
-        cleaned = re.sub(r"^```json\s*\n?", "", raw_output, flags=re.MULTILINE)
-        cleaned = re.sub(r"\n?```\s*$", "", cleaned, flags=re.MULTILINE)
-        cleaned = re.sub(r"^```\s*\n?", "", cleaned, flags=re.MULTILINE)
-        cleaned = cleaned.strip()
-
-        # 尝试直接解析
-        try:
-            parsed = json.loads(cleaned)
-            if isinstance(parsed, list):
-                return parsed
-            if isinstance(parsed, dict) and "patches" in parsed:
-                return parsed["patches"]
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-        # 尝试提取 JSON 数组
-        start = cleaned.find("[")
-        end = cleaned.rfind("]")
-        if start != -1 and end != -1 and start < end:
-            try:
-                parsed = json.loads(cleaned[start : end + 1])
-                if isinstance(parsed, list):
-                    return parsed
-            except (json.JSONDecodeError, TypeError):
-                pass
+        parse_result = parse_model_json_output(
+            raw_output,
+            expected_schema={"patches": []},
+            model_client=self.model_client,
+            model_config=self.model_config,
+        )
+        parsed = parse_result.parsed
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+        if isinstance(parsed, dict) and isinstance(parsed.get("patches"), list):
+            return [item for item in parsed["patches"] if isinstance(item, dict)]
 
         return None
 

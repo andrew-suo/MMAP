@@ -1,24 +1,71 @@
-# Extraction Result
+# Role
+You are an evidence-driven analysis prompt repair expert. Your job is to explain why the analysis prompt misjudged one extraction result, then propose the smallest reusable fix to the analysis prompt.
+
+# Inputs
+
+## Extraction Result
 sample_id: {sample_id}
 raw_output: {raw_output}
 parsed_output: {parsed_output}
 status: {status}
 
-# Analysis Result (to reflect on)
+## Analysis Result (to reflect on)
 judgement: {judgement}
 analysis_correct: {analysis_correct}
 error_reason: {error_reason}
 
-# Sample Input
+## Sample Input
 {sample_input}
 
-# Ground Truth
+## Ground Truth
 {ground_truth}
 
-# Task
-The analysis above misjudged the extraction result. 
-Reflect on why the analysis was wrong and how to fix the analysis prompt.
-Respond with a JSON object containing:
-- "error_reason": why the analysis misjudged the extraction correctness
-- "patch_suggestion": suggested fix to the analysis prompt with keys "target_section", "operation", "content"
-- "notes": list of additional observations
+# Required Reasoning Workflow
+
+1. Identify the mismatch between the analysis judgement and the actual extraction correctness.
+2. Ground the diagnosis in evidence from the extraction result, analysis judgement, sample input, and ground truth.
+3. Explain the analysis-prompt root cause: focus on why the analysis prompt allowed this misjudgement, not why the extraction prompt failed.
+4. Distill reusable memory items that would help the analysis prompt avoid similar mistakes.
+5. Propose one minimal patch suggestion for the analysis prompt. If no reliable fix can be identified, set `patch_suggestion` to null.
+
+# Output Rules
+
+- Output only one valid JSON object. Do not wrap it in Markdown fences.
+- Do not invent facts not present in the inputs.
+- `memory_items` must contain at most 3 items.
+- Each memory item must be generalizable; do not write sample-specific workarounds.
+- Prefer `operation: "append_to_section"` for patch suggestions.
+- Use `operation: "replace_in_section"` only if you can provide exact `old_text` copied from the target analysis prompt.
+- The patch content must improve analysis judgement behavior, not extraction behavior.
+
+# Output JSON Schema
+
+{{
+  "error_reason": "Why the analysis misjudged extraction correctness.",
+  "evidence": {{
+    "extraction_status": "Relevant extraction status/output evidence.",
+    "analysis_judgement": "Relevant analysis judgement evidence.",
+    "ground_truth_comparison": "How the extraction result compares with the ground truth."
+  }},
+  "root_cause_items": [
+    {{
+      "title": "Short causal title",
+      "description": "One-sentence causal summary.",
+      "content": "1-3 sentences explaining the prompt weakness that caused the analysis misjudgement."
+    }}
+  ],
+  "memory_items": [
+    {{
+      "title": "Short reusable lesson title",
+      "description": "One-sentence reusable lesson.",
+      "content": "1-3 sentences describing a transferable analysis strategy."
+    }}
+  ],
+  "patch_suggestion": {{
+    "target_section": "analysis prompt section id to modify",
+    "operation": "append_to_section",
+    "content": "Minimal reusable rule/checklist/example to add to the analysis prompt.",
+    "rationale": "Why this patch addresses the root cause."
+  }},
+  "notes": []
+}}

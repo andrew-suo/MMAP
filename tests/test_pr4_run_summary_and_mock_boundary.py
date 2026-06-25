@@ -21,7 +21,10 @@ from pathlib import Path
 import pytest
 
 from mmap_optimizer.core.config import RefactoredConfig, RunConfig, load_config
+from mmap_optimizer.data.sample import SampleAsset, SampleSpec
+from mmap_optimizer.executors.analysis_executor import AnalysisExecutor
 from mmap_optimizer.executors.factory import create_executors
+from mmap_optimizer.model.openai_compatible import OpenAICompatibleClient
 from mmap_optimizer.core.runner import (
     AnalysisPromptSummary,
     FewshotOptimizationSummary,
@@ -282,6 +285,77 @@ def test_create_executors_use_mock_none_falls_back_to_mock():
     from mmap_optimizer.executors.factory import _MockExtractionExecutor
     assert isinstance(executors["extraction"], _MockExtractionExecutor)
     assert executors["model_client"] is None
+
+
+def test_create_executors_use_mock_none_with_invalid_model_config_raises():
+    """use_mock=None 且显式配置了无效真实模型时，不应静默降级到 mock。"""
+    config = {
+        "models": {
+            "extraction": {
+                "provider": "openai_compatible",
+                "model": "test-model",
+            }
+        }
+    }
+    with pytest.raises(RuntimeError, match="model_client 构建失败"):
+        create_executors(config, use_mock=None)
+
+
+def test_create_executors_use_mock_true_ignores_invalid_model_config():
+    """use_mock=True 强制 mock，不要求真实模型配置可用。"""
+    config = {
+        "models": {
+            "extraction": {
+                "provider": "openai_compatible",
+                "model": "test-model",
+            }
+        }
+    }
+    executors = create_executors(config, use_mock=True)
+    from mmap_optimizer.executors.factory import _MockExtractionExecutor
+    assert isinstance(executors["extraction"], _MockExtractionExecutor)
+    assert executors["model_client"] is None
+
+
+def test_create_executors_shares_calibrated_patch_validator():
+    """patch_generation 和 merge 共用带模型配置的 PatchValidator。"""
+    config = {
+        "models": {"optimizer": {"provider": "mock"}},
+        "prompts": {"patch_calibration": "prompts/patch_calibration.txt"},
+    }
+    executors = create_executors(config, use_mock=None)
+
+    validator = executors["patch_validator"]
+    assert executors["patch_generation"].patch_validator is validator
+    assert executors["merge"].patch_validator is validator
+    assert validator.model_client is executors["model_client"]
+    assert validator.calibration_prompt_path == "prompts/patch_calibration.txt"
+
+
+def test_analysis_executor_builds_sample_assets_for_multimodal_client():
+    """AnalysisExecutor 传递 SampleAsset，避免 OpenAI 兼容客户端二次转换报错。"""
+    sample = SampleSpec(
+        id="s1",
+        input={},
+        ground_truth={},
+        assets=[
+            SampleAsset(
+                id="a1",
+                sample_id="s1",
+                uri="https://example.test/image.png",
+                mime_type="image/png",
+            )
+        ],
+    )
+    assets = AnalysisExecutor(model_client=None)._build_assets(sample)
+    assert assets == sample.assets
+
+    client = OpenAICompatibleClient(base_url="https://example.test")
+    messages = client._messages_with_assets(
+        [{"role": "user", "content": "analyze"}],
+        assets,
+    )
+    assert messages[0]["content"][1]["type"] == "image_url"
 
 
 def test_runner_use_mock_false_without_model_client_raises(tmp_path):

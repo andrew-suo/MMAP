@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from ..stages.extraction_prompt_optimization import (
@@ -196,27 +195,15 @@ class _MockFewshotExecutor:
 def _build_model_client(model_config: dict[str, Any] | None) -> Any:
     """根据 model 配置构建 ModelClient。
 
-    第一版仅返回 None，后续 PR 接入真实 ModelClient。
+    无配置时返回 None；有配置但构建失败时向上抛出，避免自动模式静默降级。
     """
-    logger = logging.getLogger(__name__)
     if not model_config:
         return None
-    try:
-        from ..core.config import ModelConfig, model_config_from_mapping
-        from ..model.factory import build_model_client
-    except Exception as e:
-        logger.warning(
-            "model_client 构建失败（导入异常）: %s。将回退到 mock executor。", e
-        )
-        return None
-    try:
-        config = model_config_from_mapping(model_config)
-        return build_model_client(config)
-    except Exception as e:
-        logger.warning(
-            "model_client 构建失败（配置或初始化异常）: %s。将回退到 mock executor。", e
-        )
-        return None
+    from ..core.config import model_config_from_mapping
+    from ..model.factory import build_model_client
+
+    config = model_config_from_mapping(model_config)
+    return build_model_client(config)
 
 
 def create_executors(
@@ -251,7 +238,13 @@ def create_executors(
     extraction_model_config = models_config.get("extraction") if isinstance(models_config, dict) else None
     optimizer_model_config = models_config.get("optimizer") if isinstance(models_config, dict) else None
 
-    model_client = _build_model_client(extraction_model_config or optimizer_model_config)
+    selected_model_config = extraction_model_config or optimizer_model_config
+    model_client = None
+    if use_mock is not True and selected_model_config:
+        try:
+            model_client = _build_model_client(selected_model_config)
+        except Exception as e:
+            raise RuntimeError(f"model_client 构建失败: {e}") from e
 
     # PR4: 根据 use_mock 决定是否使用真实 executor
     # use_mock=False 且 model_client 不可用时，直接报错（不允许 fallback 到 mock）
@@ -291,10 +284,17 @@ def create_executors(
         analysis_executor = _MockAnalysisExecutor()
         fewshot_executor = _MockFewshotExecutor()
 
+    shared_patch_validator = PatchValidator(
+        model_client=model_client,
+        model_config=optimizer_model_config,
+        calibration_prompt_path=patch_calibration_prompt_path,
+    )
+
     patch_generation_executor: Any = PatchGenerationExecutor(
         model_client=model_client,
         model_config=optimizer_model_config,
         patch_generation_prompt_path=patch_generation_prompt_path,
+        patch_validator=shared_patch_validator,
     )
 
     return {
@@ -307,12 +307,9 @@ def create_executors(
             model_config=optimizer_model_config,
             text_match_prompt_path=patch_text_match_prompt_path,
         ),
-        "patch_validator": PatchValidator(
-            model_client=model_client,
-            model_config=optimizer_model_config,
-            calibration_prompt_path=patch_calibration_prompt_path,
-        ),
+        "patch_validator": shared_patch_validator,
         "merge": MergeExecutor(
+            patch_validator=shared_patch_validator,
             model_client=model_client,
             model_config=optimizer_model_config,
             merge_prompt_path=patch_merge_prompt_path,

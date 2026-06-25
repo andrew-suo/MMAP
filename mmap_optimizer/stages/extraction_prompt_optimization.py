@@ -38,6 +38,7 @@ class AnalysisResult:
     judgement: dict[str, Any]
     analysis_correct: bool
     error_reason: str | None = None
+    patch_suggestion: dict[str, Any] | None = None
     confirmed_facts: list[str] = field(default_factory=list)
     hypothesized_error_causes: list[str] = field(default_factory=list)
 
@@ -48,6 +49,7 @@ class AnalysisResult:
             "judgement": self.judgement,
             "analysis_correct": self.analysis_correct,
             "error_reason": self.error_reason,
+            "patch_suggestion": self.patch_suggestion,
             "confirmed_facts": list(self.confirmed_facts),
             "hypothesized_error_causes": list(self.hypothesized_error_causes),
         }

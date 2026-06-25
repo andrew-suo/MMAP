@@ -419,25 +419,34 @@ class PatchGenerationExecutor:
             if extraction_correct:
                 continue
 
-            error_reason = analysis_result.error_reason or ""
-            confirmed_facts = analysis_result.confirmed_facts
-            hypothesized_error_causes = analysis_result.hypothesized_error_causes
+            if analysis_result.patch_suggestion is not None:
+                suggestion = dict(analysis_result.patch_suggestion)
+                if "operation" in suggestion:
+                    suggestion["op"] = suggestion.pop("operation")
+                if "rationale" in suggestion:
+                    suggestion["reasoning"] = suggestion.pop("rationale")
+                if "op" not in suggestion:
+                    suggestion["op"] = "append_to_section"
+            else:
+                error_reason = analysis_result.error_reason or ""
+                confirmed_facts = analysis_result.confirmed_facts
+                hypothesized_error_causes = analysis_result.hypothesized_error_causes
 
-            content, rationale = self._compose_extraction_patch_content(
-                error_reason=error_reason,
-                confirmed_facts=confirmed_facts,
-                hypothesized_error_causes=hypothesized_error_causes,
-            )
+                content, rationale = self._compose_extraction_patch_content(
+                    error_reason=error_reason,
+                    confirmed_facts=confirmed_facts,
+                    hypothesized_error_causes=hypothesized_error_causes,
+                )
 
-            if not content:
-                continue
+                if not content:
+                    continue
 
-            suggestion = {
-                "target_section": default_section_id,
-                "op": "append_to_section",
-                "content": content,
-                "reasoning": rationale,
-            }
+                suggestion = {
+                    "target_section": default_section_id,
+                    "op": "append_to_section",
+                    "content": content,
+                    "reasoning": rationale,
+                }
 
             patch = self._build_patch_from_suggestion(
                 sample_id=sample_id,
@@ -540,7 +549,7 @@ class PatchGenerationExecutor:
     ) -> ExtractionPatch | AnalysisPatch:
         """从 patch suggestion 构建 patch 对象。"""
         target_section_id = suggestion.get("target_section", "section_1")
-        operation_type = suggestion.get("op", "append_to_section")
+        operation_type = self._normalize_operation(suggestion.get("op", "append_to_section"))
         content = suggestion.get("content", "")
         rationale = suggestion.get("reasoning", "")
         target_text = suggestion.get("target_text")
@@ -566,6 +575,22 @@ class PatchGenerationExecutor:
             new_header=new_header,
             metadata=metadata,
         )
+
+    def _normalize_operation(self, operation: Any) -> str:
+        """Normalize legacy suggestion operation names to patch operation types."""
+        aliases = {
+            "append": "append_to_section",
+            "append_to_section": "append_to_section",
+            "insert_after": "insert_after",
+            "insert_before": "insert_before",
+            "replace": "replace_section",
+            "replace_section": "replace_section",
+            "replace_in_section": "replace_in_section",
+            "add_after_section": "add_after_section",
+            "delete": "delete_section",
+            "delete_section": "delete_section",
+        }
+        return aliases.get(str(operation), "append_to_section")
 
     def _get_mutable_section_ids(self, prompt: StructuredPrompt) -> list[str]:
         """获取 prompt 中所有 mutable section 的 id（递归 children）。"""

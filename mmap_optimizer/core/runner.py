@@ -393,6 +393,11 @@ class MMAPRunner:
                 yaml.dump(self.config.to_dict(), allow_unicode=True),
                 encoding="utf-8",
             )
+        else:
+            (self.output_dir / "run_config.yaml").write_text(
+                config_json,
+                encoding="utf-8",
+            )
         (self.output_dir / "run_config.json").write_text(config_json, encoding="utf-8")
 
         # 保存 Run Plan

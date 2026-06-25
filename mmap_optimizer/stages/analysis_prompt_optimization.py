@@ -95,6 +95,8 @@ class AnalysisPromptOptimizationStage:
         candidate_count: int = 3,
         candidate_min_gain: float = 0.0,
         candidate_reject_on_any_broken: bool = True,
+        validation_batch: SampleBatch | None = None,
+        candidate_batches: list[SampleBatch] | None = None,
     ):
         self.analysis_prompt = analysis_prompt
         self.extraction_results = extraction_results
@@ -117,6 +119,8 @@ class AnalysisPromptOptimizationStage:
         self.candidate_count = candidate_count
         self.candidate_min_gain = candidate_min_gain
         self.candidate_reject_on_any_broken = candidate_reject_on_any_broken
+        self.validation_batch = validation_batch
+        self.candidate_batches = candidate_batches or []
 
         self.reflection_results: list[ReflectionResult] = []
         self.draft_patches: list[AnalysisPatch] = []
@@ -144,6 +148,7 @@ class AnalysisPromptOptimizationStage:
         self.toxicity_report: ToxicityReport | None = None
         self.compression_report: CompressionReport | None = None
         self.candidate_validation_report: CandidateValidationReport | None = None
+        self.candidate_patch_sets: list[list[AnalysisPatch]] = []
         self.transition_report: dict[str, Any] | None = None
         self.semantic_patch_drafts: list[SemanticPatchDraft] = []
         self.translated_patches: list[AnalysisPatch] = []
@@ -331,6 +336,7 @@ class AnalysisPromptOptimizationStage:
             )
             self.initial_merged_patches = merged_patches
             self.initial_merge_report = merge_report
+            self._generate_multi_seed_candidate_patch_sets()
             return
 
         if self.patch_generation_executor is not None:
@@ -344,6 +350,7 @@ class AnalysisPromptOptimizationStage:
                 merged_patches=[p.to_dict() for p in self.initial_merged_patches],
                 metadata={"merge_strategy": "passthrough"},
             )
+            self._generate_multi_seed_candidate_patch_sets()
             return
 
         if not self.draft_patches:
@@ -366,6 +373,68 @@ class AnalysisPromptOptimizationStage:
             conflict_count=0,
             merged_patches=[p.to_dict() for p in self.initial_merged_patches],
         )
+        self._generate_multi_seed_candidate_patch_sets()
+
+    def _generate_multi_seed_candidate_patch_sets(self) -> None:
+        """为 multi-seed candidate batches 生成 analysis patch set。"""
+        if (
+            not self.candidate_batches
+            or self.analysis_executor is None
+            or self.patch_generation_executor is None
+        ):
+            return
+
+        extraction_result_map = {r.sample_id: r for r in self.extraction_results}
+        for candidate_batch in self.candidate_batches:
+            batch_extraction_results = [
+                extraction_result_map[sid]
+                for sid in candidate_batch.sample_ids
+                if sid in extraction_result_map
+            ]
+            if not batch_extraction_results:
+                continue
+            analysis_results = self.analysis_executor.execute_batch(
+                analysis_prompt=self.analysis_prompt,
+                extraction_prompt=self.extraction_prompt,
+                extraction_results=batch_extraction_results,
+                sample_set=self.sample_set,
+            )
+            reflection_results: list[ReflectionResult] = []
+            for analysis_result in analysis_results:
+                if analysis_result.analysis_correct:
+                    continue
+                extraction_result = extraction_result_map.get(analysis_result.sample_id)
+                sample_spec = self.sample_set.specs.get(analysis_result.sample_id)
+                if extraction_result is None or sample_spec is None:
+                    continue
+                reflection_results.append(
+                    self.analysis_executor.reflect(
+                        self.analysis_prompt,
+                        extraction_result,
+                        analysis_result,
+                        sample_spec,
+                    )
+                )
+            _, validated_patches, _ = self.patch_generation_executor.generate_analysis_patches(
+                reflection_results=reflection_results,
+                analysis_prompt=self.analysis_prompt,
+                sample_set=self.sample_set,
+            )
+            if not validated_patches:
+                continue
+            if self.merge_executor is not None:
+                merged_patches, _ = self.merge_executor.merge(
+                    patches=validated_patches,
+                    prompt=self.analysis_prompt,
+                    merge_strategy="tree_merge",
+                    sample_set=self.sample_set,
+                )
+            else:
+                merged_patches = list(validated_patches)
+            for patch in merged_patches:
+                patch.metadata["candidate_batch_id"] = candidate_batch.id
+                patch.metadata["seed_index"] = candidate_batch.metadata.get("seed_index")
+            self.candidate_patch_sets.append(merged_patches)
 
     def _step5_apply_and_test(self) -> None:
         """Step 5: 应用 analysis patch 并回归测试。"""
@@ -417,9 +486,23 @@ class AnalysisPromptOptimizationStage:
     def _select_candidate_patch_set(self) -> list[AnalysisPatch]:
         """选择 validation score 最高的 analysis patch set。"""
         candidates = self._build_candidate_patch_sets()
-        base_map = {r.sample_id: r for r in self.base_analysis_results}
+        eval_batch = self.validation_batch or self.batch
+        if self.validation_batch is not None and self.analysis_executor is not None:
+            extraction_map = {r.sample_id: r for r in self.extraction_results}
+            validation_extraction_results = [
+                extraction_map[sid] for sid in eval_batch.sample_ids if sid in extraction_map
+            ]
+            base_results = self.analysis_executor.execute_batch(
+                analysis_prompt=self.analysis_prompt,
+                extraction_prompt=self.extraction_prompt,
+                extraction_results=validation_extraction_results,
+                sample_set=self.sample_set,
+            )
+        else:
+            base_results = self.base_analysis_results
+        base_map = {r.sample_id: r for r in base_results}
         baseline_correct_count = sum(
-            1 for sample_id in self.batch.sample_ids
+            1 for sample_id in eval_batch.sample_ids
             if base_map.get(sample_id) is not None
             and base_map[sample_id].analysis_correct
         )
@@ -440,11 +523,13 @@ class AnalysisPromptOptimizationStage:
                 results = self.analysis_executor.execute_batch(
                     analysis_prompt=prompt,
                     extraction_prompt=self.extraction_prompt,
-                    extraction_results=self.extraction_results,
+                    extraction_results=[
+                        r for r in self.extraction_results if r.sample_id in eval_batch.sample_ids
+                    ],
                     sample_set=self.sample_set,
                 )
                 result_map = {r.sample_id: r for r in results}
-                for sample_id in self.batch.sample_ids:
+                for sample_id in eval_batch.sample_ids:
                     base = base_map.get(sample_id)
                     patched = result_map.get(sample_id)
                     if base is None or patched is None:
@@ -486,6 +571,11 @@ class AnalysisPromptOptimizationStage:
             reject_on_any_broken=self.candidate_reject_on_any_broken,
             candidates=records,
         )
+        self.candidate_validation_report.metadata = {
+            "validation_sample_ids": list(eval_batch.sample_ids),
+            "validation_sampler_name": eval_batch.sampler_name,
+            "validation_pool_fallback_used": eval_batch.metadata.get("validation_pool_fallback_used", False),
+        }
         return best_patches
 
     def _build_candidate_patch_sets(self) -> list[list[AnalysisPatch]]:
@@ -493,6 +583,7 @@ class AnalysisPromptOptimizationStage:
         if not patches:
             return []
         candidates: list[list[AnalysisPatch]] = [patches]
+        candidates.extend(self.candidate_patch_sets)
         for patch in patches:
             if len(candidates) >= max(1, self.candidate_count):
                 break

@@ -146,6 +146,8 @@ class ExtractionPromptOptimizationStage:
         candidate_count: int = 3,
         candidate_min_gain: float = 0.0,
         candidate_reject_on_any_broken: bool = True,
+        validation_batch: SampleBatch | None = None,
+        candidate_batches: list[SampleBatch] | None = None,
     ):
         self.extraction_prompt = extraction_prompt
         self.analysis_prompt = analysis_prompt
@@ -169,6 +171,8 @@ class ExtractionPromptOptimizationStage:
         self.candidate_count = candidate_count
         self.candidate_min_gain = candidate_min_gain
         self.candidate_reject_on_any_broken = candidate_reject_on_any_broken
+        self.validation_batch = validation_batch
+        self.candidate_batches = candidate_batches or []
 
         self.base_extraction_results: list[ExtractionResult] = []
         self.base_eval_records: list[EvalRecord] = []
@@ -199,6 +203,7 @@ class ExtractionPromptOptimizationStage:
         self.toxicity_report: ToxicityReport | None = None
         self.compression_report: CompressionReport | None = None
         self.candidate_validation_report: CandidateValidationReport | None = None
+        self.candidate_patch_sets: list[list[ExtractionPatch]] = []
         self.transition_report: dict[str, Any] | None = None
         self.patch_apply_report = None
         self.semantic_patch_drafts: list[SemanticPatchDraft] = []
@@ -468,6 +473,7 @@ class ExtractionPromptOptimizationStage:
             )
             self.initial_merged_patches = merged_patches
             self.initial_merge_report = merge_report
+            self._generate_multi_seed_candidate_patch_sets()
             return
 
         if self.patch_generation_executor is not None:
@@ -481,6 +487,7 @@ class ExtractionPromptOptimizationStage:
                 merged_patches=[p.to_dict() for p in self.initial_merged_patches],
                 metadata={"merge_strategy": "passthrough"},
             )
+            self._generate_multi_seed_candidate_patch_sets()
             return
 
         if not self.draft_patches:
@@ -503,6 +510,53 @@ class ExtractionPromptOptimizationStage:
             conflict_count=0,
             merged_patches=[p.to_dict() for p in self.initial_merged_patches],
         )
+        self._generate_multi_seed_candidate_patch_sets()
+
+    def _generate_multi_seed_candidate_patch_sets(self) -> None:
+        """为 multi-seed candidate batches 生成候选 patch set。"""
+        if (
+            not self.candidate_batches
+            or self.extraction_executor is None
+            or self.evaluation_executor is None
+            or self.analysis_executor is None
+            or self.patch_generation_executor is None
+        ):
+            return
+
+        for candidate_batch in self.candidate_batches:
+            extraction_results = self.extraction_executor.execute(
+                prompt=self.extraction_prompt,
+                batch=candidate_batch,
+                sample_set=self.sample_set,
+            )
+            self.evaluation_executor.evaluate_batch(extraction_results, self.sample_set)
+            analysis_results = self.analysis_executor.execute_batch(
+                analysis_prompt=self.analysis_prompt,
+                extraction_prompt=self.extraction_prompt,
+                extraction_results=extraction_results,
+                sample_set=self.sample_set,
+            )
+            _, validated_patches, _ = self.patch_generation_executor.generate_extraction_patches(
+                analysis_results=analysis_results,
+                extraction_results=extraction_results,
+                extraction_prompt=self.extraction_prompt,
+                sample_set=self.sample_set,
+            )
+            if not validated_patches:
+                continue
+            if self.merge_executor is not None:
+                merged_patches, _ = self.merge_executor.merge(
+                    patches=validated_patches,
+                    prompt=self.extraction_prompt,
+                    merge_strategy="tree_merge",
+                    sample_set=self.sample_set,
+                )
+            else:
+                merged_patches = list(validated_patches)
+            for patch in merged_patches:
+                patch.metadata["candidate_batch_id"] = candidate_batch.id
+                patch.metadata["seed_index"] = candidate_batch.metadata.get("seed_index")
+            self.candidate_patch_sets.append(merged_patches)
 
     def _step6_apply_and_test(self) -> None:
         """Step 6: 应用初始 merged patch 并回归测试。"""
@@ -558,9 +612,19 @@ class ExtractionPromptOptimizationStage:
     def _select_candidate_patch_set(self) -> list[ExtractionPatch]:
         """选择 validation score 最高的候选 patch set。"""
         candidates = self._build_candidate_patch_sets()
-        base_eval_map = {r.sample_id: r for r in self.base_eval_records}
+        eval_batch = self.validation_batch or self.batch
+        if self.validation_batch is not None and self.extraction_executor is not None and self.evaluation_executor is not None:
+            base_results = self.extraction_executor.execute(
+                prompt=self.extraction_prompt,
+                batch=eval_batch,
+                sample_set=self.sample_set,
+            )
+            base_eval_records = self.evaluation_executor.evaluate_batch(base_results, self.sample_set)
+        else:
+            base_eval_records = self.base_eval_records
+        base_eval_map = {r.sample_id: r for r in base_eval_records}
         baseline_correct_count = sum(
-            1 for sample_id in self.batch.sample_ids
+            1 for sample_id in eval_batch.sample_ids
             if base_eval_map.get(sample_id) is not None
             and base_eval_map[sample_id].status == "correct"
         )
@@ -584,12 +648,12 @@ class ExtractionPromptOptimizationStage:
             ):
                 results = self.extraction_executor.execute(
                     prompt=prompt,
-                    batch=self.batch,
+                    batch=eval_batch,
                     sample_set=self.sample_set,
                 )
                 evals = self.evaluation_executor.evaluate_batch(results, self.sample_set)
                 eval_map = {r.sample_id: r for r in evals}
-                for sample_id in self.batch.sample_ids:
+                for sample_id in eval_batch.sample_ids:
                     base = base_eval_map.get(sample_id)
                     patched = eval_map.get(sample_id)
                     if base is None or patched is None:
@@ -633,6 +697,11 @@ class ExtractionPromptOptimizationStage:
             reject_on_any_broken=self.candidate_reject_on_any_broken,
             candidates=records,
         )
+        self.candidate_validation_report.metadata = {
+            "validation_sample_ids": list(eval_batch.sample_ids),
+            "validation_sampler_name": eval_batch.sampler_name,
+            "validation_pool_fallback_used": eval_batch.metadata.get("validation_pool_fallback_used", False),
+        }
         return best_patches
 
     def _build_candidate_patch_sets(self) -> list[list[ExtractionPatch]]:
@@ -640,6 +709,7 @@ class ExtractionPromptOptimizationStage:
         if not patches:
             return []
         candidates: list[list[ExtractionPatch]] = [patches]
+        candidates.extend(self.candidate_patch_sets)
         for patch in patches:
             if len(candidates) >= max(1, self.candidate_count):
                 break

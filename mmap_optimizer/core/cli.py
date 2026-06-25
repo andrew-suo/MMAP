@@ -57,12 +57,6 @@ def main() -> None:
         help="Analysis prompt 文件路径 (默认: prompts/analysis.txt)",
     )
     run_parser.add_argument(
-        "--analysis-task-prompt",
-        type=str,
-        default="prompts/analysis_task.txt",
-        help="Analysis task 消息模板文件路径 (默认: prompts/analysis_task.txt)",
-    )
-    run_parser.add_argument(
         "--analysis-reflection-prompt",
         type=str,
         default="prompts/analysis_reflection.txt",
@@ -79,6 +73,30 @@ def main() -> None:
         type=str,
         default="prompts/patch_generation.txt",
         help="Patch 生成模板文件路径 (默认: prompts/patch_generation.txt)",
+    )
+    run_parser.add_argument(
+        "--patch-calibration-prompt",
+        type=str,
+        default="prompts/patch_calibration.txt",
+        help="Patch 校准模板文件路径 (默认: prompts/patch_calibration.txt)",
+    )
+    run_parser.add_argument(
+        "--patch-merge-prompt",
+        type=str,
+        default="prompts/patch_merge.txt",
+        help="Patch 合并模板文件路径 (默认: prompts/patch_merge.txt)",
+    )
+    run_parser.add_argument(
+        "--patch-root-merge-prompt",
+        type=str,
+        default="prompts/patch_root_merge.txt",
+        help="Patch Root Merge 模板文件路径 (默认: prompts/patch_root_merge.txt)",
+    )
+    run_parser.add_argument(
+        "--patch-text-match-prompt",
+        type=str,
+        default="prompts/patch_text_match.txt",
+        help="Patch 文本匹配模板文件路径 (默认: prompts/patch_text_match.txt)",
     )
     run_parser.add_argument(
         "--output-dir",
@@ -149,10 +167,13 @@ def run_command(args: argparse.Namespace) -> None:
     # 检查 prompt 文件
     extraction_prompt_path = Path(args.extraction_prompt)
     analysis_prompt_path = Path(args.analysis_prompt)
-    analysis_task_prompt_path = Path(args.analysis_task_prompt)
     analysis_reflection_prompt_path = Path(args.analysis_reflection_prompt)
     prompt_standardization_path = Path(args.prompt_standardization)
     patch_generation_prompt_path = Path(args.patch_generation_prompt)
+    patch_calibration_prompt_path = Path(args.patch_calibration_prompt)
+    patch_merge_prompt_path = Path(args.patch_merge_prompt)
+    patch_root_merge_prompt_path = Path(args.patch_root_merge_prompt)
+    patch_text_match_prompt_path = Path(args.patch_text_match_prompt)
 
     if not extraction_prompt_path.exists():
         print(f"错误: Extraction prompt 文件不存在: {extraction_prompt_path}")
@@ -160,10 +181,6 @@ def run_command(args: argparse.Namespace) -> None:
 
     if not analysis_prompt_path.exists():
         print(f"错误: Analysis prompt 文件不存在: {analysis_prompt_path}")
-        return
-
-    if not analysis_task_prompt_path.exists():
-        print(f"错误: Analysis task prompt 文件不存在: {analysis_task_prompt_path}")
         return
 
     if not analysis_reflection_prompt_path.exists():
@@ -178,21 +195,43 @@ def run_command(args: argparse.Namespace) -> None:
         print(f"错误: Patch generation prompt 文件不存在: {patch_generation_prompt_path}")
         return
 
+    if not patch_calibration_prompt_path.exists():
+        print(f"错误: Patch calibration prompt 文件不存在: {patch_calibration_prompt_path}")
+        return
+
+    if not patch_merge_prompt_path.exists():
+        print(f"错误: Patch merge prompt 文件不存在: {patch_merge_prompt_path}")
+        return
+
+    if not patch_root_merge_prompt_path.exists():
+        print(f"错误: Patch root merge prompt 文件不存在: {patch_root_merge_prompt_path}")
+        return
+
+    if not patch_text_match_prompt_path.exists():
+        print(f"错误: Patch text match prompt 文件不存在: {patch_text_match_prompt_path}")
+        return
+
     # 更新配置中的 prompt 路径
     config.prompts.extraction = str(extraction_prompt_path)
     config.prompts.analysis = str(analysis_prompt_path)
-    config.prompts.analysis_task = str(analysis_task_prompt_path)
     config.prompts.analysis_reflection = str(analysis_reflection_prompt_path)
     config.prompts.prompt_standardization = str(prompt_standardization_path)
     config.prompts.patch_generation = str(patch_generation_prompt_path)
+    config.prompts.patch_calibration = str(patch_calibration_prompt_path)
+    config.prompts.patch_merge = str(patch_merge_prompt_path)
+    config.prompts.patch_root_merge = str(patch_root_merge_prompt_path)
+    config.prompts.patch_text_match = str(patch_text_match_prompt_path)
     config.prompt_structuring.standardization_prompt_path = str(prompt_standardization_path)
 
     print(f"Extraction prompt: {extraction_prompt_path}")
     print(f"Analysis prompt: {analysis_prompt_path}")
-    print(f"Analysis task prompt: {analysis_task_prompt_path}")
     print(f"Analysis reflection prompt: {analysis_reflection_prompt_path}")
     print(f"Prompt standardization: {prompt_standardization_path}")
     print(f"Patch generation prompt: {patch_generation_prompt_path}")
+    print(f"Patch calibration prompt: {patch_calibration_prompt_path}")
+    print(f"Patch merge prompt: {patch_merge_prompt_path}")
+    print(f"Patch root merge prompt: {patch_root_merge_prompt_path}")
+    print(f"Patch text match prompt: {patch_text_match_prompt_path}")
     print(f"输出目录: {config.run.output_dir}")
 
     # PR4: 解析 use_mock 标志

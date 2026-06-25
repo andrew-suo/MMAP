@@ -16,7 +16,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from mmap_optimizer.extraction_prompt_optimization_stage import (
+from mmap_optimizer.stages.extraction_prompt_optimization import (
     AnalysisResult,
     EvalRecord,
     ExtractionResult,
@@ -28,12 +28,12 @@ from mmap_optimizer.prompt_optimization_phase import (
     PromptOptimizationConfig,
     PromptOptimizationPhase,
 )
-from mmap_optimizer.sample import (
+from mmap_optimizer.data.sample import (
     SampleSet,
     SampleSpec,
     SampleState,
 )
-from mmap_optimizer.structured_prompt import (
+from mmap_optimizer.prompt.structured_prompt import (
     PromptSection,
     StructuredPrompt,
 )
@@ -143,7 +143,7 @@ class ContentAwareMockAnalysisExecutor:
         )
 
     def reflect(self, analysis_prompt, extraction_result, analysis_result, sample_spec):
-        from mmap_optimizer.analysis_prompt_optimization_stage import (
+        from mmap_optimizer.stages.analysis_prompt_optimization import (
             ReflectionResult,
         )
 

@@ -177,14 +177,34 @@ class ExtractionPromptOptimizationStage:
 
     def run(self) -> ExtractionMetrics:
         """执行完整的 Extraction Prompt Optimization Stage。"""
+        print("  [Step 1/9] 抽取样本...")
         self._step1_execute_extraction()
+
         self._step2_compute_base_metrics()
+        if self.metrics.base_accuracy is not None:
+            print(f"  [Step 2/9] 基础评估完成，准确率: {self.metrics.base_accuracy:.2%}")
+        else:
+            print("  [Step 2/9] 基础评估完成")
+
+        print("  [Step 3/9] 分析抽取结果...")
         self._step3_analyze_results()
+
         self._step4_generate_patches()
+        print(f"  [Step 4/9] 生成 patch（{len(self.draft_patches)} 个）...")
+
         self._step5_initial_merge()
+        print(f"  [Step 5/9] 合并 patch（{len(self.initial_merged_patches)} 个）...")
+
+        print("  [Step 6/9] 应用 patch 并重新评估...")
         self._step6_apply_and_test()
+
+        print("  [Step 7/9] 测毒验证...")
         self._step7_regression_and_toxicity_test()
+
+        print("  [Step 8/9] 压缩 prompt...")
         self._step8_compress_if_needed()
+
+        print("  [Step 9/9] 生成结果...")
         self._step9_final_test_and_metrics()
 
         return self.metrics
@@ -346,7 +366,7 @@ class ExtractionPromptOptimizationStage:
             patch = ExtractionPatch(
                 id=f"patch_extraction_{analysis_result.sample_id}",
                 target_section_id="section_1",
-                operation_type="replace",
+                operation_type="replace_section",
                 content="Mock patch content",
                 rationale="Mock rationale",
                 source_sample_ids=[analysis_result.sample_id],

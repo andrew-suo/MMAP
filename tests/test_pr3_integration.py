@@ -16,11 +16,11 @@
 
 from __future__ import annotations
 
-from mmap_optimizer.analysis_prompt_optimization_stage import (
+from mmap_optimizer.stages.analysis_prompt_optimization import (
     AnalysisPromptOptimizationStage,
     ReflectionResult,
 )
-from mmap_optimizer.extraction_prompt_optimization_stage import (
+from mmap_optimizer.stages.extraction_prompt_optimization import (
     AnalysisResult,
     EvalRecord,
     ExtractionPromptOptimizationStage,
@@ -33,13 +33,13 @@ from mmap_optimizer.executors.patch_generation_executor import (
 )
 from mmap_optimizer.executors.patch_validator import PatchValidator
 from mmap_optimizer.executors.toxicity_executor import ToxicityTestExecutor
-from mmap_optimizer.sample import (
+from mmap_optimizer.data.sample import (
     SampleBatch,
     SampleSet,
     SampleSpec,
     SampleState,
 )
-from mmap_optimizer.structured_prompt import (
+from mmap_optimizer.prompt.structured_prompt import (
     PromptSection,
     StructuredPrompt,
 )

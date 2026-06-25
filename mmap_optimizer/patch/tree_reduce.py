@@ -1,158 +1,442 @@
+"""基于 LLM 的并行 Patch 合并。
+
+通过分层（layer）迭代的方式合并 patch 列表：
+- L0 处理原始生成的 patch（raw_patches），侧重清洗与校准；
+- L1+ 处理已合并的 JSON patch（json_patches），侧重逻辑去重与冲突消解。
+每轮先经 ``deterministic_guardrail`` 确定性前筛，再按 section 分组后
+使用 ``ThreadPoolExecutor`` 并行调用 LLM 合并。当失败率超过阈值时触发
+全局回退，将所有剩余 patch 作为单个分组一次性合并。最后对多组结果执行
+Root Merge 进行跨 section 一致性审查。
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import logging
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any
 
-from .clusterer import PatchCluster, cluster_patches
-from .conflict import PatchConflict, detect_patch_conflicts
-from .deduplicate import is_duplicate_patch, is_subsumed_patch, merge_trace, normalize_patch_text
-from .merge_report import PatchMergeReport
-from .schema import Patch
+from .clusterer import categorize_by_section
+from .conflict import deterministic_guardrail
 
-_RISK_RANK = {"unknown": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+logger = logging.getLogger(__name__)
 
 
-@dataclass
-class TreeReduceMergeResult:
-    final_patches: list[Patch]
-    rejected_patches: list[Patch]
-    merge_report: PatchMergeReport
+class ParallelPatchMerger:
+    """基于 LLM 的并行 Patch 合并器。
 
+    通过分层（layer）迭代的方式合并 patch 列表：
+    - L0 处理原始生成的 patch（raw_patches），侧重清洗与校准；
+    - L1+ 处理已合并的 JSON patch（json_patches），侧重逻辑去重与冲突消解。
+    每一轮先经 ``deterministic_guardrail`` 确定性前筛，再按 section 分组后
+    使用 ``ThreadPoolExecutor`` 并行调用 LLM 合并。当失败率超过阈值时触发
+    全局回退，将所有剩余 patch 作为单个分组一次性合并。最后对多组结果执行
+    Root Merge 进行跨 section 一致性审查。
+    """
 
-class TreeReducePatchMerger:
-    def merge(self, *, round_id: str, patches: list[Patch], prompt_ir: Any | None = None) -> TreeReduceMergeResult:
-        report = PatchMergeReport(id=f"patch_merge_{round_id}", round_id=round_id, input_patch_ids=[patch.id for patch in patches])
-        final_patches: list[Patch] = []
-        rejected_patches: list[Patch] = []
-        clusters = cluster_patches(patches)
-        report.cluster_count = len(clusters)
-        for cluster in clusters:
-            cluster_final, cluster_rejected, cluster_info = self._merge_cluster(round_id, cluster, prompt_ir)
-            final_patches.extend(cluster_final)
-            rejected_patches.extend(cluster_rejected)
-            report.clusters.append(cluster_info)
-            report.duplicate_patch_ids.extend(cluster_info.get("duplicate_patch_ids", []))
-            report.subsumed_patch_ids.extend(cluster_info.get("subsumed_patch_ids", []))
-            report.conflict_patch_ids.extend(cluster_info.get("conflict_patch_ids", []))
-            report.merged_patch_ids.extend(cluster_info.get("merged_patch_ids", []))
-        report.final_patch_ids = [patch.id for patch in final_patches]
-        report.duplicate_patch_ids = sorted(set(report.duplicate_patch_ids))
-        report.subsumed_patch_ids = sorted(set(report.subsumed_patch_ids))
-        report.conflict_patch_ids = sorted(set(report.conflict_patch_ids))
-        report.merged_patch_ids = sorted(set(report.merged_patch_ids))
-        return TreeReduceMergeResult(final_patches=final_patches, rejected_patches=rejected_patches, merge_report=report)
+    # input_type 对应的处理指引
+    _INPUT_TYPE_INSTRUCTIONS = {
+        "raw_patches": "输入为原始生成的 patch，可能包含格式不规范、定位字段模糊等问题。请先进行清洗和校准，再进行合并。",
+        "json_patches": "输入为已经过初步合并的 JSON patch，格式规范。请直接进行逻辑去重和冲突消解。",
+    }
 
-    def _merge_cluster(self, round_id: str, cluster: PatchCluster, prompt_ir: Any | None) -> tuple[list[Patch], list[Patch], dict]:
-        info = {
-            "cluster_id": cluster.id,
-            "input_patch_ids": cluster.patch_ids,
-            "output_patch_ids": [],
-            "rejected_patch_ids": [],
-            "duplicate_patch_ids": [],
-            "subsumed_patch_ids": [],
-            "conflict_patch_ids": [],
-            "merged_patch_ids": [],
-            "conflicts": [],
-            "merge_operation": "tree_reduce",
-        }
-        conflicts = detect_patch_conflicts(cluster.patches, prompt_ir)
-        conflict_ids = {patch_id for conflict in conflicts for patch_id in conflict.patch_ids}
-        conflict_patches = [patch for patch in cluster.patches if patch.id in conflict_ids]
-        for patch in conflict_patches:
-            patch.status = "rejected"
-            patch.rejection_reason = "PATCH_CONFLICT"
-        non_conflict = [patch for patch in cluster.patches if patch.id not in conflict_ids]
-        if conflicts:
-            info["conflicts"] = [self._conflict_to_dict(conflict) for conflict in conflicts]
-            info["conflict_patch_ids"] = sorted(conflict_ids)
-            info["rejected_patch_ids"].extend(sorted(conflict_ids))
+    def __init__(
+        self,
+        model_client,          # ModelClient 实例或 None
+        model_config,          # ModelConfig 实例或 None
+        merge_prompt_path: str,    # prompts/patch_merge.txt 路径
+        root_merge_prompt_path: str,  # prompts/patch_root_merge.txt 路径
+        branch_factor: int = 8,
+        max_layers: int = 10,
+        max_retries: int = 2,
+        fallback_threshold: float = 0.5,
+    ):
+        self.model_client = model_client
+        self.model_config = model_config
+        self.merge_prompt_path = merge_prompt_path
+        self.root_merge_prompt_path = root_merge_prompt_path
+        self.branch_factor = branch_factor
+        self.max_layers = max_layers
+        self.max_retries = max_retries
+        self.fallback_threshold = fallback_threshold
 
-        reduced: list[Patch] = []
-        for patch in non_conflict:
-            duplicate_target = next((existing for existing in reduced if is_duplicate_patch(patch, existing)), None)
-            if duplicate_target is not None:
-                merge_trace(duplicate_target, patch)
-                patch.status = "rejected"
-                patch.rejection_reason = "DUPLICATE_PATCH"
-                info["duplicate_patch_ids"].append(patch.id)
-                info["rejected_patch_ids"].append(patch.id)
-                continue
-            subsuming_target = next((existing for existing in reduced if is_subsumed_patch(patch, existing)), None)
-            if subsuming_target is not None:
-                merge_trace(subsuming_target, patch)
-                patch.status = "rejected"
-                patch.rejection_reason = "SUBSUMED_PATCH"
-                info["subsumed_patch_ids"].append(patch.id)
-                info["rejected_patch_ids"].append(patch.id)
-                continue
-            subsumed_existing = [existing for existing in reduced if is_subsumed_patch(existing, patch)]
-            for existing in subsumed_existing:
-                merge_trace(patch, existing)
-                reduced.remove(existing)
-                existing.status = "rejected"
-                existing.rejection_reason = "SUBSUMED_PATCH"
-                info["subsumed_patch_ids"].append(existing.id)
-                info["rejected_patch_ids"].append(existing.id)
-            reduced.append(patch)
+    # ------------------------------------------------------------------
+    # 主入口
+    # ------------------------------------------------------------------
 
-        if not reduced:
-            return [], [*conflict_patches, *[patch for patch in non_conflict if patch.status == "rejected"]], info
-        if len(reduced) == 1:
-            reduced[0].status = "accepted"
-            info["output_patch_ids"].append(reduced[0].id)
-            return [reduced[0]], [*conflict_patches, *[patch for patch in non_conflict if patch.status == "rejected"]], info
+    def merge(self, patches: list[dict], prompt_structure: str) -> list[dict]:
+        """主入口：合并 patch 列表。
 
-        merged_patch = self._merge_many(round_id, cluster, reduced)
-        info["merged_patch_ids"].append(merged_patch.id)
-        info["output_patch_ids"].append(merged_patch.id)
-        return [merged_patch], [*conflict_patches, *[patch for patch in non_conflict if patch.status == "rejected"]], info
+        流程：
+        1. 如果 model_client 不可用，直接返回原 patches（passthrough）
+        2. L0: 解析 + 分组 + 并行合并
+        3. L1+: deterministic_guardrail → section_aware_grouping → 并行合并
+        4. 终止条件检查（patch 数量不再减少 或 仅剩 1 个 或 达到 max_layers）
+        5. Root Merge（如果有多组结果）
+        """
+        # 1. model_client 不可用时直接 passthrough
+        if self.model_client is None:
+            logger.info("model_client 不可用，直接返回原 patches（passthrough）")
+            return list(patches)
 
-    def _merge_many(self, round_id: str, cluster: PatchCluster, patches: list[Patch]) -> Patch:
-        first = patches[0]
-        seen_texts: set[str] = set()
-        text_lines = []
-        for patch in patches:
-            patch.status = "superseded"
-            line = patch.patch_text.strip()
-            # Deduplicate: skip patch_text that is identical after normalization
-            normalized = normalize_patch_text(line)
-            if normalized in seen_texts:
-                continue
-            seen_texts.add(normalized)
-            # Structured format: preserve intent_name for downstream semantic merge
-            text_lines.append(f"[{patch.intent_name}] {line}")
-        merged_id = f"merge_{round_id}_{cluster.target_prompt_type}_{cluster.section_id}_{cluster.operation_type}"
-        intent_descriptions = "; ".join(
-            f"{patch.intent_name}: {patch.intent_description}" for patch in patches
+        if not patches:
+            return []
+
+        current = list(patches)
+        prev_count = len(current)
+
+        # 2-4. 分层迭代合并
+        for layer in range(self.max_layers):
+            merged, failure_count = self._run_parallel_merge(current, prompt_structure, layer)
+
+            logger.info(
+                "Layer %d 完成: 输入=%d, 输出=%d, 失败分组=%d",
+                layer, len(current), len(merged), failure_count,
+            )
+
+            # 终止条件：仅剩 1 个 patch
+            if len(merged) <= 1:
+                current = merged
+                break
+            # 终止条件：patch 数量不再减少（与上一轮相同或更多）
+            if len(merged) >= prev_count:
+                logger.info(
+                    "Layer %d: patch 数量不再减少 (prev=%d, curr=%d)，终止合并",
+                    layer, prev_count, len(merged),
+                )
+                current = merged
+                break
+
+            prev_count = len(current)
+            current = merged
+        else:
+            logger.info("达到 max_layers=%d，终止合并", self.max_layers)
+
+        # 5. Root Merge：如果有多组结果则进行跨 section 一致性审查
+        if len(current) > 1:
+            current = self._root_merge(current, prompt_structure)
+
+        return current
+
+    # ------------------------------------------------------------------
+    # 单轮并行合并
+    # ------------------------------------------------------------------
+
+    def _run_parallel_merge(
+        self, patches: list[dict], prompt_structure: str, layer: int
+    ) -> tuple[list[dict], int]:
+        """执行一轮并行合并。
+
+        1. deterministic_guardrail 前筛
+        2. categorize_by_section 分组
+        3. groupable 组用 ThreadPoolExecutor 并行 LLM 合并
+        4. single_pass 直接传递
+        5. 合并结果
+        6. 检查失败率，超过 fallback_threshold 则全局回退
+
+        Returns: (merged_patches, failure_count)
+        """
+        # 1. 确定性前筛
+        cleaned, guardrail_messages = deterministic_guardrail(patches)
+        for msg in guardrail_messages:
+            logger.info("deterministic_guardrail (layer=%d): %s", layer, msg)
+
+        # 2. Section-Aware 分组
+        groupable_groups, single_pass = categorize_by_section(cleaned, self.branch_factor)
+
+        # 3. 并行 LLM 合并 groupable 组
+        merged_results: list[dict] = []
+        failure_count = 0
+
+        if groupable_groups:
+            max_workers = min(len(groupable_groups), 4)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_group = {
+                    executor.submit(self._merge_single_group, group, prompt_structure, layer): group
+                    for group in groupable_groups
+                }
+                for future in as_completed(future_to_group):
+                    group = future_to_group[future]
+                    try:
+                        result = future.result()
+                        merged_results.extend(result)
+                    except Exception as exc:
+                        failure_count += 1
+                        logger.warning(
+                            "分组合并失败 (layer=%d, group_size=%d): %s",
+                            layer, len(group), exc,
+                        )
+                        # 回退：直接使用原始分组
+                        merged_results.extend(group)
+
+        # 4. single_pass 直接传递
+        merged_results.extend(single_pass)
+
+        # 5. 检查失败率，超过阈值则全局回退
+        total_groups = len(groupable_groups)
+        if total_groups > 0:
+            failure_rate = failure_count / total_groups
+            if failure_rate > self.fallback_threshold:
+                logger.warning(
+                    "Layer %d 失败率 %.2f 超过阈值 %.2f，执行全局回退",
+                    layer, failure_rate, self.fallback_threshold,
+                )
+                try:
+                    fallback_result = self._merge_single_group(
+                        merged_results, prompt_structure, layer
+                    )
+                    return fallback_result, failure_count
+                except Exception as exc:
+                    logger.error("全局回退也失败: %s", exc)
+                    return merged_results, failure_count
+
+        return merged_results, failure_count
+
+    # ------------------------------------------------------------------
+    # 单分组合并
+    # ------------------------------------------------------------------
+
+    def _merge_single_group(
+        self, group: list[dict], prompt_structure: str, layer: int
+    ) -> list[dict]:
+        """调用 LLM 合并单个分组。
+
+        1. 读取 merge_prompt 模板
+        2. 填充占位符：{prompt_structure}, {input_type}, {input_type_instruction}, {patches_content}
+        3. input_type: layer 0 为 "raw_patches"，layer > 0 为 "json_patches"
+        4. input_type_instruction: 根据 input_type 提供不同处理指引
+        5. 调用 model_client.complete()
+        6. 解析 JSON 输出
+        7. 膨胀检测：如果 output > input，重试（指数退避）
+        8. 返回合并后的 patches
+        """
+        if not group:
+            return []
+
+        # 1. 读取 merge_prompt 模板
+        prompt_template = Path(self.merge_prompt_path).read_text(encoding="utf-8")
+
+        # 2-4. 填充占位符
+        input_type = "raw_patches" if layer == 0 else "json_patches"
+        input_type_instruction = self._INPUT_TYPE_INSTRUCTIONS[input_type]
+        patches_content = json.dumps(group, ensure_ascii=False, indent=2)
+
+        system_prompt = prompt_template.format(
+            prompt_structure=prompt_structure,
+            input_type=input_type,
+            input_type_instruction=input_type_instruction,
+            patches_content=patches_content,
         )
-        return Patch(
-            id=merged_id,
-            type=first.type,
-            status="merged",
-            target_prompt_type=first.target_prompt_type,
-            base_version_id=first.base_version_id,
-            section_id=first.section_id,
-            operation_type=first.operation_type,
-            operation_mode=first.operation_mode,
-            intent_name=f"merged_{cluster.section_id}_{cluster.operation_type}",
-            intent_description=intent_descriptions,
-            patch_text="\n".join(text_lines),
-            rationale="Tree-reduced from: " + ", ".join(f"{patch.intent_name}({patch.id})" for patch in patches),
-            source_sample_ids=sorted({sid for patch in patches for sid in patch.source_sample_ids}),
-            source_analysis_ids=sorted({aid for patch in patches for aid in patch.source_analysis_ids}),
-            risk_level=max((patch.risk_level for patch in patches), key=lambda risk: _RISK_RANK.get(risk, 0), default="unknown"),
-            possible_side_effects=sorted({effect for patch in patches for effect in patch.possible_side_effects}),
-            extra={
-                "merged_from_patch_ids": [patch.id for patch in patches],
-                "original_patch_texts": [patch.patch_text.strip() for patch in patches],
-            },
+
+        # 5-7. 调用 LLM + 解析 + 膨胀检测 + 重试
+        input_count = len(group)
+        last_parsed: list[dict] | None = None
+
+        for attempt in range(self.max_retries + 1):
+            # 5. 调用 LLM
+            try:
+                response = self._call_llm(
+                    system_prompt,
+                    "请按照上述指引合并补丁，直接输出 JSON 数组。",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Layer %d attempt %d: LLM 调用失败: %s", layer, attempt, exc
+                )
+                if attempt < self.max_retries:
+                    time.sleep(2 ** attempt)
+                continue
+
+            # 6. 解析 JSON 输出
+            parsed = self._parse_json_response(response)
+            if parsed is None:
+                logger.warning(
+                    "Layer %d attempt %d: JSON 解析失败", layer, attempt
+                )
+                if attempt < self.max_retries:
+                    time.sleep(2 ** attempt)
+                continue
+
+            # 7. 膨胀检测：output > input 则重试
+            if len(parsed) > input_count:
+                logger.warning(
+                    "Layer %d attempt %d: 膨胀检测 output=%d > input=%d，重试",
+                    layer, attempt, len(parsed), input_count,
+                )
+                last_parsed = parsed
+                if attempt < self.max_retries:
+                    time.sleep(2 ** attempt)
+                continue
+
+            # 成功：输出未膨胀
+            return parsed
+
+        # 8. 重试耗尽
+        if last_parsed is not None:
+            logger.warning(
+                "Layer %d: 重试耗尽，使用最后一次输出（可能膨胀）", layer
+            )
+            return last_parsed
+
+        # 完全失败：从未获得有效输出
+        raise RuntimeError(
+            f"Layer {layer}: 所有重试均失败，无有效 LLM 输出"
         )
 
-    def _conflict_to_dict(self, conflict: PatchConflict) -> dict:
-        return {
-            "id": conflict.id,
-            "patch_ids": conflict.patch_ids,
-            "section_id": conflict.section_id,
-            "conflict_type": conflict.conflict_type,
-            "reason": conflict.reason,
-        }
+    # ------------------------------------------------------------------
+    # Root Merge
+    # ------------------------------------------------------------------
+
+    def _root_merge(self, patches: list[dict], prompt_structure: str) -> list[dict]:
+        """跨 section 一致性审查。
+
+        使用 root_merge_prompt 模板，调用 LLM 进行最终审查。
+        """
+        prompt_template = Path(self.root_merge_prompt_path).read_text(encoding="utf-8")
+        patches_content = json.dumps(patches, ensure_ascii=False, indent=2)
+
+        system_prompt = prompt_template.format(
+            prompt_structure=prompt_structure,
+            patches_content=patches_content,
+        )
+
+        try:
+            response = self._call_llm(
+                system_prompt,
+                "请按照上述指引进行跨 section 一致性审查，直接输出 JSON 数组。",
+            )
+        except Exception as exc:
+            logger.error("Root merge LLM 调用失败: %s", exc)
+            return patches
+
+        parsed = self._parse_json_response(response)
+        if parsed is None:
+            logger.warning("Root merge JSON 解析失败，返回原始 patches")
+            return patches
+
+        return parsed
+
+    # ------------------------------------------------------------------
+    # LLM 调用与 JSON 解析
+    # ------------------------------------------------------------------
+
+    def _call_llm(self, system_prompt: str, user_message: str) -> str:
+        """调用 LLM 并返回原始响应文本。"""
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+        ]
+        if user_message:
+            messages.append({"role": "user", "content": user_message})
+
+        response = self.model_client.complete(messages, model_config=self.model_config)
+        return response.raw_output
+
+    def _parse_json_response(self, response: str) -> list[dict] | None:
+        """解析 LLM 的 JSON 响应，支持容错处理。
+
+        依次尝试：
+        1. 移除 markdown 标记后直接解析
+        2. 修复常见 JSON 问题后解析
+        3. 从文本中提取 JSON 数组后解析
+        4. 从 dict 中提取 list 字段
+        """
+        # 1. 移除 markdown 标记
+        cleaned = self._clean_markdown(response)
+
+        # 直接解析
+        parsed = self._try_parse_list(cleaned)
+        if parsed is not None:
+            return parsed
+
+        # 2. 修复常见 JSON 问题
+        fixed = self._fix_common_json_issues(cleaned)
+        parsed = self._try_parse_list(fixed)
+        if parsed is not None:
+            return parsed
+
+        # 3. 提取 JSON 数组
+        extracted = self._extract_json_array(cleaned)
+        if extracted is not None:
+            parsed = self._try_parse_list(extracted)
+            if parsed is not None:
+                return parsed
+
+        # 4. 尝试从 dict 中提取 list 字段（如 {"patches": [...]}）
+        extracted_obj = self._extract_json_object(cleaned)
+        if extracted_obj is not None:
+            try:
+                obj = json.loads(extracted_obj)
+                if isinstance(obj, dict):
+                    for value in obj.values():
+                        if isinstance(value, list):
+                            return value
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return None
+
+    # ------------------------------------------------------------------
+    # JSON 容错工具函数（参考 output_repair.py 模式）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _try_parse_list(text: str) -> list[dict] | None:
+        """尝试解析文本为 list[dict]，失败返回 None。"""
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if isinstance(parsed, list):
+            # 确保列表元素为 dict
+            return [item for item in parsed if isinstance(item, dict)]
+        return None
+
+    @staticmethod
+    def _clean_markdown(text: str) -> str:
+        """移除 markdown 代码块标记。"""
+        # 移除 ```json 和 ``` 包裹
+        text = re.sub(r"^```json\s*\n?", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
+        # 移除 ``` 包裹
+        text = re.sub(r"^```\s*\n?", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
+        return text.strip()
+
+    @staticmethod
+    def _fix_common_json_issues(text: str) -> str:
+        """修复常见的 JSON 问题。"""
+        result = text
+        # 1. 将单引号替换为双引号
+        result = re.sub(r"'([^']*)':", r'"\1":', result)  # key
+        result = re.sub(r":\s*'([^']*)'", r': "\1"', result)  # string value
+        # 2. 移除尾随逗号
+        result = re.sub(r",\s*([\]}])", r"\1", result)
+        # 3. 移除尾部多余逗号
+        result = re.sub(r",\s*$", "", result)
+        # 4. 修复 unquoted keys
+        result = re.sub(r'([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', result)
+        return result
+
+    @staticmethod
+    def _extract_json_array(text: str) -> str | None:
+        """从文本中提取 JSON 数组。"""
+        start = text.find("[")
+        end = text.rfind("]")
+        if start == -1 or end == -1 or start >= end:
+            return None
+        return text[start : end + 1]
+
+    @staticmethod
+    def _extract_json_object(text: str) -> str | None:
+        """从文本中提取 JSON 对象。"""
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or start >= end:
+            return None
+        return text[start : end + 1]
+
+
+__all__ = ["ParallelPatchMerger"]

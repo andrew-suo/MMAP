@@ -18,7 +18,15 @@ class ExtractionPatch:
     """Extraction Prompt Patch。"""
     id: str
     target_section_id: str
-    operation_type: Literal["replace", "insert_before", "insert_after", "delete"]
+    operation_type: Literal[
+        "append_to_section",
+        "insert_after",
+        "insert_before",
+        "replace_in_section",
+        "replace_section",
+        "add_after_section",
+        "delete_section",
+    ]
     content: str
     rationale: str
     source_sample_ids: list[str] = field(default_factory=list)
@@ -28,6 +36,10 @@ class ExtractionPatch:
     broken_sample_ids: list[str] = field(default_factory=list)
     toxic_sample_ids: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    target_text: str | None = None
+    old_text: str | None = None
+    new_text: str | None = None
+    new_header: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典格式。"""
@@ -44,6 +56,10 @@ class ExtractionPatch:
             "broken_sample_ids": list(self.broken_sample_ids),
             "toxic_sample_ids": list(self.toxic_sample_ids),
             "metadata": dict(self.metadata),
+            "target_text": self.target_text,
+            "old_text": self.old_text,
+            "new_text": self.new_text,
+            "new_header": self.new_header,
         }
 
     @classmethod
@@ -62,6 +78,10 @@ class ExtractionPatch:
             broken_sample_ids=data.get("broken_sample_ids", []),
             toxic_sample_ids=data.get("toxic_sample_ids", []),
             metadata=data.get("metadata", {}),
+            target_text=data.get("target_text"),
+            old_text=data.get("old_text"),
+            new_text=data.get("new_text"),
+            new_header=data.get("new_header"),
         )
 
 
@@ -70,13 +90,25 @@ class AnalysisPatch:
     """Analysis Prompt Patch。"""
     id: str
     target_section_id: str
-    operation_type: Literal["replace", "insert_before", "insert_after", "delete"]
+    operation_type: Literal[
+        "append_to_section",
+        "insert_after",
+        "insert_before",
+        "replace_in_section",
+        "replace_section",
+        "add_after_section",
+        "delete_section",
+    ]
     content: str
     rationale: str
     source_sample_ids: list[str] = field(default_factory=list)
     status: Literal["draft", "merged", "candidate_safe", "accepted", "rejected"] = "draft"
     rejection_reason: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    target_text: str | None = None
+    old_text: str | None = None
+    new_text: str | None = None
+    new_header: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典格式。"""
@@ -90,6 +122,10 @@ class AnalysisPatch:
             "status": self.status,
             "rejection_reason": self.rejection_reason,
             "metadata": dict(self.metadata),
+            "target_text": self.target_text,
+            "old_text": self.old_text,
+            "new_text": self.new_text,
+            "new_header": self.new_header,
         }
 
     @classmethod
@@ -105,6 +141,10 @@ class AnalysisPatch:
             status=data.get("status", "draft"),
             rejection_reason=data.get("rejection_reason"),
             metadata=data.get("metadata", {}),
+            target_text=data.get("target_text"),
+            old_text=data.get("old_text"),
+            new_text=data.get("new_text"),
+            new_header=data.get("new_header"),
         )
 
 

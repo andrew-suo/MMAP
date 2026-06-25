@@ -1,17 +1,25 @@
 """PatchApplyExecutor - Patch 应用执行器。
 
 将 patch 列表应用到 StructuredPrompt，生成新的 prompt 版本。
-支持 replace / append / delete 操作，insert_before / insert_after 暂不支持。
+支持 7 种操作：append_to_section / insert_after / insert_before /
+replace_in_section / replace_section / add_after_section / delete_section。
+
+当 old_text 或 target_text 精确匹配失败时，启用三级降级匹配：
+1. 精确匹配 → 2. difflib 模糊匹配 → 3. LLM 语义匹配。
 """
 
 from __future__ import annotations
 
 import copy
 import hashlib
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..prompt.structured_prompt import PromptSection, StructuredPrompt
+from ..patch.text_matcher import match_text_with_fallback
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -69,17 +77,32 @@ class PatchApplyExecutor:
     """Patch 应用执行器。
 
     将 patch 列表应用到 StructuredPrompt，生成新的 prompt 版本。
-    支持 ``replace`` / ``append`` / ``delete`` 操作，
-    ``insert_before`` / ``insert_after`` 暂不支持（会被拒绝）。
+    支持 7 种操作：``append_to_section`` / ``insert_after`` / ``insert_before`` /
+    ``replace_in_section`` / ``replace_section`` / ``add_after_section`` / ``delete_section``。
     """
 
-    def __init__(self, allow_delete: bool = False) -> None:
+    def __init__(
+        self,
+        allow_delete: bool = False,
+        model_client: Any = None,
+        model_config: Any = None,
+        text_match_prompt_path: str = "prompts/patch_text_match.txt",
+        fuzzy_threshold: float = 0.6,
+    ) -> None:
         """初始化执行器。
 
         Args:
             allow_delete: 是否允许 delete 操作，默认 False。
+            model_client: 模型客户端，用于 LLM 文本匹配降级。
+            model_config: 模型配置。
+            text_match_prompt_path: 文本匹配 LLM prompt 路径。
+            fuzzy_threshold: 模糊匹配相似度阈值。
         """
         self.allow_delete = allow_delete
+        self.model_client = model_client
+        self.model_config = model_config
+        self.text_match_prompt_path = text_match_prompt_path
+        self.fuzzy_threshold = fuzzy_threshold
 
     def apply(
         self,
@@ -142,13 +165,13 @@ class PatchApplyExecutor:
                 )
                 continue
 
-            # 3. 检查 operation_type
+            # 3. 检查 operation_type 并应用
             op = patch.operation_type
-            if op == "replace":
-                section.content = patch.content
-            elif op == "append":
+            if op == "append_to_section":
                 section.content = section.content + "\n" + patch.content
-            elif op == "delete":
+            elif op == "replace_section":
+                section.content = patch.content
+            elif op == "delete_section":
                 if self.allow_delete:
                     section.content = ""
                 else:
@@ -159,14 +182,73 @@ class PatchApplyExecutor:
                         f"Patch {patch.id} rejected: delete operation not allowed"
                     )
                     continue
-            elif op in ("insert_before", "insert_after"):
-                rejected_patch_ids.append(patch.id)
-                patch.status = "rejected"
-                patch.rejection_reason = "UNSUPPORTED_OPERATION"
-                warnings.append(
-                    f"Patch {patch.id} rejected: operation {op} not supported"
+            elif op == "insert_after":
+                target_text = patch.target_text or ""
+                if not target_text or target_text not in section.content:
+                    # 降级匹配：fuzzy → LLM
+                    target_text = self._try_fallback_match(
+                        section.content, target_text, "target_text", patch.id
+                    )
+                if not target_text:
+                    rejected_patch_ids.append(patch.id)
+                    patch.status = "rejected"
+                    patch.rejection_reason = "TARGET_TEXT_NOT_FOUND"
+                    warnings.append(
+                        f"Patch {patch.id} rejected: target_text not found in section (all fallbacks failed)"
+                    )
+                    continue
+                section.content = section.content.replace(
+                    target_text,
+                    target_text + "\n" + patch.content,
+                    1,
                 )
-                continue
+            elif op == "insert_before":
+                target_text = patch.target_text or ""
+                if not target_text or target_text not in section.content:
+                    # 降级匹配：fuzzy → LLM
+                    target_text = self._try_fallback_match(
+                        section.content, target_text, "target_text", patch.id
+                    )
+                if not target_text:
+                    rejected_patch_ids.append(patch.id)
+                    patch.status = "rejected"
+                    patch.rejection_reason = "TARGET_TEXT_NOT_FOUND"
+                    warnings.append(
+                        f"Patch {patch.id} rejected: target_text not found in section (all fallbacks failed)"
+                    )
+                    continue
+                section.content = section.content.replace(
+                    target_text,
+                    patch.content + "\n" + target_text,
+                    1,
+                )
+            elif op == "replace_in_section":
+                old_text = patch.old_text or ""
+                if not old_text or old_text not in section.content:
+                    # 降级匹配：fuzzy → LLM
+                    old_text = self._try_fallback_match(
+                        section.content, old_text, "old_text", patch.id
+                    )
+                if not old_text:
+                    rejected_patch_ids.append(patch.id)
+                    patch.status = "rejected"
+                    patch.rejection_reason = "OLD_TEXT_NOT_FOUND"
+                    warnings.append(
+                        f"Patch {patch.id} rejected: old_text not found in section (all fallbacks failed)"
+                    )
+                    continue
+                section.content = section.content.replace(
+                    old_text, patch.new_text or "", 1
+                )
+            elif op == "add_after_section":
+                new_section = PromptSection(
+                    id=f"{section.id}_patch_{patch.id}",
+                    title=patch.new_header or "New Section",
+                    level=section.level,
+                    content=patch.content,
+                    mutable=True,
+                )
+                self._insert_section_after(new_prompt, section.id, new_section)
             else:
                 rejected_patch_ids.append(patch.id)
                 patch.status = "rejected"
@@ -233,10 +315,85 @@ class PatchApplyExecutor:
                 return found
         return None
 
+    def _insert_section_after(
+        self,
+        prompt: StructuredPrompt,
+        target_section_id: str,
+        new_section: PromptSection,
+    ) -> bool:
+        """在 target_section 之后插入 new_section（递归查找包括 children）。
+
+        Returns:
+            True 如果插入成功，False 如果未找到 target_section。
+        """
+        return self._insert_section_after_recursive(
+            prompt.sections, target_section_id, new_section
+        )
+
+    def _insert_section_after_recursive(
+        self,
+        sections: list,
+        target_section_id: str,
+        new_section: PromptSection,
+    ) -> bool:
+        """递归在 sections 列表中查找并插入。"""
+        for i, section in enumerate(sections):
+            if section.id == target_section_id:
+                sections.insert(i + 1, new_section)
+                return True
+            if self._insert_section_after_recursive(
+                section.children, target_section_id, new_section
+            ):
+                return True
+        return False
+
     def _compute_hash(self, prompt: StructuredPrompt) -> str:
         """计算 prompt 内容 hash（基于 to_markdown() 输出）。"""
         content = prompt.to_markdown()
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    def _try_fallback_match(
+        self,
+        section_content: str,
+        intent_text: str,
+        field_type: str,
+        patch_id: str,
+    ) -> str:
+        """降级匹配：fuzzy match → LLM match。
+
+        当精确匹配失败时调用，依次尝试 difflib 模糊匹配和 LLM 语义匹配。
+
+        Args:
+            section_content: 目标 section 的实际内容。
+            intent_text: 待匹配的文本（可能是模糊引用）。
+            field_type: 字段类型（"old_text" 或 "target_text"）。
+            patch_id: patch ID，用于日志记录。
+
+        Returns:
+            匹配到的原文子串，如果所有降级方案都失败则返回空字符串。
+        """
+        if not intent_text:
+            return ""
+
+        matched = match_text_with_fallback(
+            section_content=section_content,
+            intent_text=intent_text,
+            field_type=field_type,
+            model_client=self.model_client,
+            model_config=self.model_config,
+            prompt_path=self.text_match_prompt_path,
+            fuzzy_threshold=self.fuzzy_threshold,
+        )
+
+        if matched:
+            logger.info(
+                "Patch %s: %s 降级匹配成功，使用实际原文替代",
+                patch_id,
+                field_type,
+            )
+            return matched
+
+        return ""
 
     def _deep_copy_prompt(self, prompt: StructuredPrompt) -> StructuredPrompt:
         """深拷贝 prompt。"""

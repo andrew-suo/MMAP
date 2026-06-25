@@ -145,7 +145,7 @@ class PatchGenerationExecutor:
 
             ground_truth = sample_spec.ground_truth
 
-            suggestions = self._call_patch_generation_model(
+            suggestions, cited_sections = self._call_patch_generation_model(
                 prompt_type="extraction",
                 extraction_result=extraction_result,
                 analysis_result=analysis_result,
@@ -159,6 +159,7 @@ class PatchGenerationExecutor:
                     suggestion=suggestion,
                     patch_class=ExtractionPatch,
                     patch_id_prefix="patch_extraction",
+                    cited_sections=cited_sections,
                 )
                 draft_patches.append(patch)
 
@@ -194,7 +195,7 @@ class PatchGenerationExecutor:
 
             ground_truth = sample_spec.ground_truth
 
-            suggestions = self._call_patch_generation_model(
+            suggestions, cited_sections = self._call_patch_generation_model(
                 prompt_type="analysis",
                 reflection_result=reflection,
                 ground_truth=ground_truth,
@@ -207,6 +208,7 @@ class PatchGenerationExecutor:
                     suggestion=suggestion,
                     patch_class=AnalysisPatch,
                     patch_id_prefix="patch_analysis",
+                    cited_sections=cited_sections,
                 )
                 draft_patches.append(patch)
 
@@ -223,7 +225,7 @@ class PatchGenerationExecutor:
         reflection_result: Any = None,
         ground_truth: dict[str, Any] | None = None,
         current_prompt: StructuredPrompt | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[str]]:
         """调用模型生成 patch suggestions。
 
         Args:
@@ -235,12 +237,12 @@ class PatchGenerationExecutor:
             current_prompt: 当前 prompt。
 
         Returns:
-            patch_suggestions 列表。
+            (patches, cited_sections) 元组。
         """
         try:
             system_content = self._load_patch_generation_prompt()
         except Exception:
-            return []
+            return [], []
 
         user_content = self._build_patch_generation_user_message(
             prompt_type=prompt_type,
@@ -263,23 +265,27 @@ class PatchGenerationExecutor:
             )
             raw_output = response.get("content", "") if isinstance(response, dict) else str(response)
         except Exception:
-            return []
+            return [], []
 
         parsed_output, status = repair_json_output(
             raw_output=raw_output,
-            expected_schema={"patch_suggestions": []},
+            expected_schema={"patches": [], "cited_sections": []},
             model_client=self.model_client,
             model_config=self.model_config,
         )
 
         if parsed_output is None:
-            return []
+            return [], []
 
-        suggestions = parsed_output.get("patch_suggestions", [])
-        if not isinstance(suggestions, list):
-            suggestions = []
+        patches = parsed_output.get("patches", [])
+        if not isinstance(patches, list):
+            patches = []
 
-        return suggestions
+        cited_sections = parsed_output.get("cited_sections", [])
+        if not isinstance(cited_sections, list):
+            cited_sections = []
+
+        return patches, cited_sections
 
     def _load_patch_generation_prompt(self) -> str:
         """加载 patch 生成提示词文件。"""
@@ -300,58 +306,81 @@ class PatchGenerationExecutor:
         """构建 patch 生成的用户消息。"""
         parts: list[str] = []
 
+        # 1. Prompt Structure
+        if current_prompt:
+            parts.append("# Prompt Structure")
+            parts.append(self._render_prompt_structure(current_prompt))
+            parts.append("")
+
+        # 2. Current Prompt
+        if current_prompt:
+            parts.append("# Current Prompt")
+            parts.append(current_prompt.to_markdown())
+            parts.append("")
+
+        # 3. Case Execution
         if prompt_type == "extraction":
             if extraction_result:
-                parts.append("# Extraction Result")
-                parts.append(f"sample_id: {extraction_result.sample_id}")
-                parts.append(f"status: {extraction_result.status}")
-                parts.append(f"raw_output: {extraction_result.raw_output}")
+                parts.append("# Case Execution")
+                parts.append(f"- **Sample ID**: {extraction_result.sample_id}")
+                parts.append(f"- **Status**: {extraction_result.status}")
+                if extraction_result.raw_output:
+                    parts.append(f"- **Raw Output**: {extraction_result.raw_output}")
                 if extraction_result.parsed_output:
-                    parts.append(f"parsed_output: {json.dumps(extraction_result.parsed_output, ensure_ascii=False)}")
+                    parts.append(f"- **Parsed Output**: {json.dumps(extraction_result.parsed_output, ensure_ascii=False)}")
 
             if analysis_result:
                 parts.append("\n# Analysis Result")
                 judgement = analysis_result.judgement
-                parts.append(f"judgement: {json.dumps(judgement, ensure_ascii=False)}")
-                parts.append(f"analysis_correct: {analysis_result.analysis_correct}")
+                parts.append(f"- **Judgement**: {json.dumps(judgement, ensure_ascii=False)}")
+                parts.append(f"- **Analysis Correct**: {analysis_result.analysis_correct}")
                 if analysis_result.error_reason:
-                    parts.append(f"error_reason: {analysis_result.error_reason}")
+                    parts.append(f"- **Error Reason**: {analysis_result.error_reason}")
                 if analysis_result.confirmed_facts:
-                    parts.append(f"confirmed_facts: {json.dumps(analysis_result.confirmed_facts, ensure_ascii=False)}")
+                    parts.append(f"- **Confirmed Facts**: {json.dumps(analysis_result.confirmed_facts, ensure_ascii=False)}")
                 if analysis_result.hypothesized_error_causes:
-                    parts.append(f"hypothesized_error_causes: {json.dumps(analysis_result.hypothesized_error_causes, ensure_ascii=False)}")
+                    parts.append(f"- **Hypothesized Error Causes**: {json.dumps(analysis_result.hypothesized_error_causes, ensure_ascii=False)}")
 
         elif prompt_type == "analysis":
             if reflection_result:
-                parts.append("# Reflection Result")
-                parts.append(f"sample_id: {reflection_result.sample_id}")
-                parts.append(f"reflection_success: {reflection_result.reflection_success}")
+                parts.append("# Case Execution")
+                parts.append(f"- **Sample ID**: {reflection_result.sample_id}")
+                parts.append(f"- **Status**: {'INCORRECT' if reflection_result.reflection_success else 'CORRECT'}")
                 if reflection_result.error_reason:
-                    parts.append(f"error_reason: {reflection_result.error_reason}")
+                    parts.append(f"- **Error Reason**: {reflection_result.error_reason}")
                 if reflection_result.patch_suggestion:
-                    parts.append(f"patch_suggestion: {json.dumps(reflection_result.patch_suggestion, ensure_ascii=False)}")
+                    parts.append(f"- **Patch Suggestion**: {json.dumps(reflection_result.patch_suggestion, ensure_ascii=False)}")
                 if reflection_result.notes:
-                    parts.append(f"notes: {json.dumps(reflection_result.notes, ensure_ascii=False)}")
+                    parts.append(f"- **Notes**: {json.dumps(reflection_result.notes, ensure_ascii=False)}")
 
             if hasattr(reflection_result, 'analysis_result') and reflection_result.analysis_result:
                 ar = reflection_result.analysis_result
                 parts.append("\n# Original Analysis Result")
-                parts.append(f"judgement: {json.dumps(ar.judgement, ensure_ascii=False)}")
-                parts.append(f"analysis_correct: {ar.analysis_correct}")
+                parts.append(f"- **Judgement**: {json.dumps(ar.judgement, ensure_ascii=False)}")
+                parts.append(f"- **Analysis Correct**: {ar.analysis_correct}")
 
+        # 4. Ground Truth
         if ground_truth:
             parts.append("\n# Ground Truth")
             parts.append(json.dumps(ground_truth, ensure_ascii=False))
 
-        if current_prompt:
-            parts.append("\n# Current Prompt")
-            parts.append(current_prompt.to_markdown())
-
-        parts.append("\n# Task")
-        parts.append("Generate patch suggestions to fix the identified issues.")
-        parts.append("Output a JSON object with patch_suggestions array.")
-
         return "\n".join(parts)
+
+    def _render_prompt_structure(self, prompt: StructuredPrompt) -> str:
+        """渲染 prompt 结构（section id、title、level、mutable 状态）。"""
+
+        def render_section(section: PromptSection, indent: str = "") -> list[str]:
+            lines: list[str] = []
+            mutable_tag = "" if section.mutable else " [PROTECTED]"
+            lines.append(f"{indent}- {section.id}: {section.title} (level={section.level}){mutable_tag}")
+            for child in section.children:
+                lines.extend(render_section(child, indent + "  "))
+            return lines
+
+        all_lines: list[str] = []
+        for section in prompt.sections:
+            all_lines.extend(render_section(section))
+        return "\n".join(all_lines)
 
     def _generate_extraction_patches_by_code(
         self,
@@ -396,9 +425,9 @@ class PatchGenerationExecutor:
 
             suggestion = {
                 "target_section": default_section_id,
-                "operation": "append",
+                "op": "append_to_section",
                 "content": content,
-                "rationale": rationale,
+                "reasoning": rationale,
             }
 
             patch = self._build_patch_from_suggestion(
@@ -437,10 +466,18 @@ class PatchGenerationExecutor:
             error_reason = reflection.error_reason or ""
             suggestion: dict[str, Any] = dict(reflection.patch_suggestion)
 
+            # 确保使用新的操作格式
+            if "operation" in suggestion:
+                suggestion["op"] = suggestion.pop("operation")
+            if "rationale" in suggestion:
+                suggestion["reasoning"] = suggestion.pop("rationale")
+            if "op" not in suggestion:
+                suggestion["op"] = "append_to_section"
+
             if not suggestion.get("content"):
                 suggestion["content"] = error_reason
-            if not suggestion.get("rationale"):
-                suggestion["rationale"] = error_reason
+            if not suggestion.get("reasoning"):
+                suggestion["reasoning"] = error_reason
 
             patch = self._build_patch_from_suggestion(
                 sample_id=sample_id,
@@ -490,12 +527,21 @@ class PatchGenerationExecutor:
         suggestion: dict[str, Any],
         patch_class: type,
         patch_id_prefix: str,
+        cited_sections: list[str] | None = None,
     ) -> ExtractionPatch | AnalysisPatch:
-        """从 patch_suggestion 构建 patch 对象。"""
+        """从 patch suggestion 构建 patch 对象。"""
         target_section_id = suggestion.get("target_section", "section_1")
-        operation_type = suggestion.get("operation", "replace")
+        operation_type = suggestion.get("op", "append_to_section")
         content = suggestion.get("content", "")
-        rationale = suggestion.get("rationale", "")
+        rationale = suggestion.get("reasoning", "")
+        target_text = suggestion.get("target_text")
+        old_text = suggestion.get("old_text")
+        new_text = suggestion.get("new_text")
+        new_header = suggestion.get("new_header")
+
+        metadata: dict[str, Any] = {}
+        if cited_sections:
+            metadata["cited_sections"] = cited_sections
 
         return patch_class(
             id=f"{patch_id_prefix}_{sample_id}",
@@ -505,6 +551,11 @@ class PatchGenerationExecutor:
             rationale=rationale,
             source_sample_ids=[sample_id],
             status="draft",
+            target_text=target_text,
+            old_text=old_text,
+            new_text=new_text,
+            new_header=new_header,
+            metadata=metadata,
         )
 
     def _get_mutable_section_ids(self, prompt: StructuredPrompt) -> list[str]:

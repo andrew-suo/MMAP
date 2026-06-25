@@ -123,13 +123,30 @@ class AnalysisPromptOptimizationStage:
 
     def run(self) -> AnalysisMetrics:
         """执行完整的 Analysis Prompt Optimization Stage。"""
+        print("  [Step 1/8] 统计基础分析准确率...")
         self._step1_compute_base_metrics()
+        if self.metrics.base_accuracy is not None:
+            print(f"  [Step 1/8] 基础评估完成，准确率: {self.metrics.base_accuracy:.2%}")
+
+        print("  [Step 2/8] 反思分析错误...")
         self._step2_reflect_on_errors()
+
         self._step3_generate_patches()
+        print(f"  [Step 3/8] 生成 patch（{len(self.draft_patches)} 个）...")
+
         self._step4_initial_merge()
+        print(f"  [Step 4/8] 合并 patch（{len(self.initial_merged_patches)} 个）...")
+
+        print("  [Step 5/8] 应用 patch 并回归测试...")
         self._step5_apply_and_test()
+
+        print("  [Step 6/8] 测毒验证...")
         self._step6_regression_and_toxicity_test()
+
+        print("  [Step 7/8] 压缩 prompt...")
         self._step7_compress_if_needed()
+
+        print("  [Step 8/8] 生成最终结果...")
         self._step8_final_test_and_metrics()
 
         return self.metrics
@@ -225,7 +242,7 @@ class AnalysisPromptOptimizationStage:
             patch = AnalysisPatch(
                 id=f"patch_analysis_{reflection.sample_id}",
                 target_section_id=suggestion.get("target_section", "section_1"),
-                operation_type=suggestion.get("operation", "replace"),
+                operation_type=suggestion.get("op", "append_to_section"),
                 content=suggestion.get("content", "Mock analysis patch content"),
                 rationale=f"Based on reflection for sample {reflection.sample_id}",
                 source_sample_ids=[reflection.sample_id],

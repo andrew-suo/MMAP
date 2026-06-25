@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from mmap_optimizer.extraction_prompt_optimization_stage import (
+from mmap_optimizer.stages.extraction_prompt_optimization import (
     AnalysisResult,
     EvalRecord,
     ExtractionPromptOptimizationStage,
@@ -14,9 +14,9 @@ from mmap_optimizer.executors.patch_generation_executor import (
     PatchGenerationExecutor,
 )
 from mmap_optimizer.executors.patch_validator import PatchValidator
-from mmap_optimizer.patch_types import ExtractionPatch
-from mmap_optimizer.sample import SampleBatch, SampleSet, SampleSpec, SampleState
-from mmap_optimizer.structured_prompt import PromptSection, StructuredPrompt
+from mmap_optimizer.patch.types import ExtractionPatch
+from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
+from mmap_optimizer.prompt.structured_prompt import PromptSection, StructuredPrompt
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +196,7 @@ def test_accepted_patch_modifies_section():
     patch = ExtractionPatch(
         id="patch_2",
         target_section_id="section_1",
-        operation_type="replace",
+        operation_type="replace_section",
         content="New content",
         rationale="update section content",
     )
@@ -242,7 +242,7 @@ def test_immutable_section_not_modifiable():
     patch = ExtractionPatch(
         id="patch_3",
         target_section_id="schema",
-        operation_type="replace",
+        operation_type="replace_section",
         content="new schema",
         rationale="attempt to modify schema",
     )
@@ -286,7 +286,7 @@ def test_final_prompt_can_render():
     patch = ExtractionPatch(
         id="patch_4",
         target_section_id="section_1",
-        operation_type="replace",
+        operation_type="replace_section",
         content="Updated content for rendering",
         rationale="update for render test",
     )
@@ -332,7 +332,7 @@ def test_prompt_version_changes():
     patch = ExtractionPatch(
         id="patch_5",
         target_section_id="section_1",
-        operation_type="replace",
+        operation_type="replace_section",
         content="New version content",
         rationale="version bump test",
     )

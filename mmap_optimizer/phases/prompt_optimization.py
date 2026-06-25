@@ -121,9 +121,29 @@ class PromptOptimizationPhase:
         if not self.config.enabled:
             return []
 
-        for iteration in range(1, self.config.rounds + 1):
+        max_iterations = self.config.rounds
+        prev_accuracy: float | None = None
+
+        for iteration in range(1, max_iterations + 1):
+            print(f"\n--- Phase 2: Prompt 优化 - 迭代 {iteration}/{max_iterations} ---")
             result = self._run_iteration(iteration)
             self.iteration_results.append(result)
+
+            # 输出当前准确率
+            current_accuracy = result.extraction_metrics.final_accuracy
+            if current_accuracy is not None:
+                print(f"迭代 {iteration} 完成，当前准确率: {current_accuracy:.2%}")
+                # 准确率变化判断
+                if prev_accuracy is not None:
+                    if current_accuracy > prev_accuracy:
+                        print(f"📈 准确率提升: {prev_accuracy:.2%} → {current_accuracy:.2%}")
+                    elif current_accuracy < prev_accuracy:
+                        print(f"⚠️ 准确率下降: {prev_accuracy:.2%} → {current_accuracy:.2%}")
+                    else:
+                        print(f"⚠️ 准确率未提升，保持: {current_accuracy:.2%}")
+                prev_accuracy = current_accuracy
+            else:
+                print(f"迭代 {iteration} 完成")
 
             # 更新 batch size controller
             if result.extraction_metrics.base_accuracy is not None:

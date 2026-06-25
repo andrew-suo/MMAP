@@ -241,16 +241,31 @@ class PromptStructuringPhase:
             standardized_markdown = self._standardize_with_model(markdown)
             if standardized_markdown:
                 # 重新解析标准化后的文本
-                structured = self.parser.parse(
+                new_structured = self.parser.parse(
                     standardized_markdown,
                     prompt_type,
                     f"{prompt_id}_standardized",
                 )
-                quality = self._evaluate_structure_quality(structured)
-                print(f"标准化后结构化质量: {quality}")
-                structured.metadata["structure_quality"] = quality
-                structured.metadata["standardized"] = True
-                structured.metadata["original_markdown"] = markdown
+                new_quality = self._evaluate_structure_quality(new_structured)
+
+                # 质量回退检查：标准化结果不应比原结果更差
+                if len(new_structured.sections) == 0:
+                    print(f"⚠️ 标准化后 0 sections，保留原结果（原 section 数: {len(structured.sections)}）")
+                    structured.metadata["standardized"] = False
+                    structured.metadata["standardization_skipped"] = True
+                    structured.metadata["standardization_reason"] = "0 sections after standardization"
+                elif len(new_structured.sections) < len(structured.sections):
+                    print(f"⚠️ 标准化后 section 数减少 ({len(structured.sections)} → {len(new_structured.sections)})，保留原结果")
+                    structured.metadata["standardized"] = False
+                    structured.metadata["standardization_skipped"] = True
+                    structured.metadata["standardization_reason"] = "section count decreased"
+                else:
+                    structured = new_structured
+                    quality = new_quality
+                    print(f"标准化后结构化质量: {quality}")
+                    structured.metadata["structure_quality"] = quality
+                    structured.metadata["standardized"] = True
+                    structured.metadata["original_markdown"] = markdown
 
         return structured
 

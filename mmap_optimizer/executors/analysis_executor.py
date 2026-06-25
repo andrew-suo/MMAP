@@ -281,12 +281,12 @@ class AnalysisExecutor:
                 assets.append(asset_dict)
         return assets
 
-    def _load_asset(self, asset: dict[str, Any]) -> dict[str, Any] | None:
+    def _load_asset(self, asset: Any) -> dict[str, Any] | None:
         """加载单个图片资产为 data URL 格式。"""
         try:
-            local_path = asset.get("local_path")
-            uri = asset.get("uri", "")
-            mime_type = asset.get("mime_type")
+            local_path = getattr(asset, "local_path", None)
+            uri = getattr(asset, "uri", None)
+            mime_type = getattr(asset, "mime_type", None)
 
             if local_path:
                 path = Path(local_path)

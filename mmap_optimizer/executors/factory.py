@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from ..stages.extraction_prompt_optimization import (
@@ -197,17 +198,24 @@ def _build_model_client(model_config: dict[str, Any] | None) -> Any:
 
     第一版仅返回 None，后续 PR 接入真实 ModelClient。
     """
+    logger = logging.getLogger(__name__)
     if not model_config:
         return None
     try:
         from ..core.config import ModelConfig, model_config_from_mapping
         from ..model.factory import build_model_client
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "model_client 构建失败（导入异常）: %s。将回退到 mock executor。", e
+        )
         return None
     try:
         config = model_config_from_mapping(model_config)
         return build_model_client(config)
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "model_client 构建失败（配置或初始化异常）: %s。将回退到 mock executor。", e
+        )
         return None
 
 

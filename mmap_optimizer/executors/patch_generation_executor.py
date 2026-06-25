@@ -163,7 +163,7 @@ class PatchGenerationExecutor:
                 )
                 draft_patches.append(patch)
 
-        validated, rejected = self.patch_validator.validate_batch(
+        validated, rejected = self.patch_validator.validate_batch_with_calibration(
             draft_patches, extraction_prompt, sample_set
         )
         return draft_patches, validated, rejected
@@ -212,7 +212,7 @@ class PatchGenerationExecutor:
                 )
                 draft_patches.append(patch)
 
-        validated, rejected = self.patch_validator.validate_batch(
+        validated, rejected = self.patch_validator.validate_batch_with_calibration(
             draft_patches, analysis_prompt, sample_set
         )
         return draft_patches, validated, rejected

@@ -93,10 +93,10 @@ class ExtractionExecutor:
         return self.renderer.render_system_message(prompt)
 
     def _build_user_message(self, spec: SampleSpec) -> dict[str, Any]:
-        """组装 user message。
+        """组装 user message（仅文本部分）。
 
-        包含样本文本和 metadata。如果有图片资产，构造多模态 content
-        （text + image_url parts），参考 OpenAI message 格式。
+        图片资产由 complete_multimodal 通过 assets 参数统一注入，
+        避免重复发送。
         """
         text_parts: list[str] = []
         if spec.input:
@@ -106,17 +106,7 @@ class ExtractionExecutor:
             text_parts.append("Metadata:")
             text_parts.append(json.dumps(spec.metadata, ensure_ascii=False, indent=2))
         text = "\n".join(text_parts).strip() or spec.id
-
-        image_assets = [a for a in spec.assets if a.type == "image"]
-        if not image_assets:
-            return {"role": "user", "content": text}
-
-        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-        for asset in image_assets:
-            url = self._asset_to_url(asset)
-            if url:
-                content.append({"type": "image_url", "image_url": {"url": url}})
-        return {"role": "user", "content": content}
+        return {"role": "user", "content": text}
 
     def _build_assets(self, spec: SampleSpec) -> list[Any]:
         """构建资产列表，从 spec.assets 中提取图片资产。"""

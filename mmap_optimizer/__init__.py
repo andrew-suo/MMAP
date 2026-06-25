@@ -40,6 +40,7 @@ from .data.sampler import (
     DifficultySampler,
     FrequencySampler,
     DifficultyFrequencySampler,
+    BalancedTraceSampler,
     create_sampler,
 )
 
@@ -131,6 +132,7 @@ __all__ = [
     "DifficultySampler",
     "FrequencySampler",
     "DifficultyFrequencySampler",
+    "BalancedTraceSampler",
     "create_sampler",
     # Batch Size Controller
     "BatchSizeControllerConfig",

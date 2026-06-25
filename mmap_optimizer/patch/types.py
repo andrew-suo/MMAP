@@ -59,6 +59,7 @@ class CandidateValidationReport:
     min_gain: float = 0.0
     reject_on_any_broken: bool = True
     candidates: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +71,7 @@ class CandidateValidationReport:
             "min_gain": self.min_gain,
             "reject_on_any_broken": self.reject_on_any_broken,
             "candidates": list(self.candidates),
+            "metadata": dict(self.metadata),
         }
 
 

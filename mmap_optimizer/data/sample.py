@@ -161,3 +161,15 @@ class SampleBatch:
     scores: dict[str, dict] = field(default_factory=dict)  # sample_id -> score details
     metadata: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "phase": self.phase,
+            "iteration": self.iteration,
+            "sample_ids": list(self.sample_ids),
+            "sampler_name": self.sampler_name,
+            "scores": dict(self.scores),
+            "metadata": dict(self.metadata),
+            "warnings": list(self.warnings),
+        }

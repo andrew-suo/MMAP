@@ -23,7 +23,7 @@ except Exception:
 from ..stages.batch_size_controller import BatchSizeControllerConfig
 from ..phases.fewshot_optimization import FewshotConfig
 from ..phases.prompt_structuring import PromptStructuringConfig
-from ..phases.prompt_optimization import PromptOptimizationConfig
+from ..phases.prompt_optimization import MultiSeedConfig, PromptOptimizationConfig
 from ..data.sampler import SamplerConfig
 
 
@@ -171,6 +171,10 @@ class RefactoredConfig:
                     "type": self.prompt_optimization.sampler.type,
                     "difficulty_weight": self.prompt_optimization.sampler.difficulty_weight,
                     "frequency_weight": self.prompt_optimization.sampler.frequency_weight,
+                    "error_ratio": self.prompt_optimization.sampler.error_ratio,
+                    "success_ratio": self.prompt_optimization.sampler.success_ratio,
+                    "low_frequency_ratio": self.prompt_optimization.sampler.low_frequency_ratio,
+                    "fallback_to_difficulty_frequency": self.prompt_optimization.sampler.fallback_to_difficulty_frequency,
                 },
                 "extraction_prompt": {
                     "line_limit": self.prompt_optimization.extraction_prompt_line_limit,
@@ -192,12 +196,21 @@ class RefactoredConfig:
                         "validation_split_ratio": self.prompt_optimization.candidate_validation_split_ratio,
                         "min_gain": self.prompt_optimization.candidate_min_gain,
                         "reject_on_any_broken": self.prompt_optimization.candidate_reject_on_any_broken,
+                        "validation_pool_enabled": self.prompt_optimization.validation_pool_enabled,
+                        "validation_batch_size": self.prompt_optimization.validation_batch_size,
+                        "validation_exclude_optimization_batch": self.prompt_optimization.validation_exclude_optimization_batch,
                     },
                     "toxicity_test": {
                         "enabled": self.prompt_optimization.toxicity_test_enabled,
                         "early_stop": self.prompt_optimization.toxicity_test_early_stop,
                         "sort_by_source_difficulty": self.prompt_optimization.toxicity_test_sort_by_source_difficulty,
                     },
+                },
+                "multi_seed": {
+                    "enabled": self.prompt_optimization.multi_seed.enabled,
+                    "seed_count": self.prompt_optimization.multi_seed.seed_count,
+                    "candidate_batch_size": self.prompt_optimization.multi_seed.candidate_batch_size,
+                    "merge_candidates_before_selection": self.prompt_optimization.multi_seed.merge_candidates_before_selection,
                 },
             },
             "fewshot_optimization": {
@@ -273,6 +286,10 @@ class RefactoredConfig:
             difficulty_weight=sampling_data.get("difficulty_weight", 0.7),
             frequency_weight=sampling_data.get("frequency_weight", 0.3),
             random_noise_scale=sampling_data.get("ema_alpha", 0.01),
+            error_ratio=sampling_data.get("error_ratio", 0.6),
+            success_ratio=sampling_data.get("success_ratio", 0.25),
+            low_frequency_ratio=sampling_data.get("low_frequency_ratio", 0.15),
+            fallback_to_difficulty_frequency=sampling_data.get("fallback_to_difficulty_frequency", True),
         )
 
         # 构建 PromptOptimizationConfig
@@ -283,6 +300,7 @@ class RefactoredConfig:
         po_patch_data = prompt_optimization_data.get("patch", {})
         po_toxicity_test_data = po_patch_data.get("toxicity_test", {})
         po_candidate_selection_data = po_patch_data.get("candidate_selection", {})
+        po_multi_seed_data = prompt_optimization_data.get("multi_seed", {})
 
         prompt_optimization_config = PromptOptimizationConfig(
             enabled=prompt_optimization_data.get("enabled", True),
@@ -305,6 +323,11 @@ class RefactoredConfig:
                 type=po_sampler_data.get("type", "difficulty_frequency"),
                 difficulty_weight=po_sampler_data.get("difficulty_weight", 0.7),
                 frequency_weight=po_sampler_data.get("frequency_weight", 0.3),
+                random_noise_scale=po_sampler_data.get("random_noise_scale", 0.01),
+                error_ratio=po_sampler_data.get("error_ratio", 0.6),
+                success_ratio=po_sampler_data.get("success_ratio", 0.25),
+                low_frequency_ratio=po_sampler_data.get("low_frequency_ratio", 0.15),
+                fallback_to_difficulty_frequency=po_sampler_data.get("fallback_to_difficulty_frequency", True),
             ),
             extraction_prompt_line_limit=po_extraction_prompt_data.get("line_limit", 300),
             extraction_prompt_char_limit=po_extraction_prompt_data.get("char_limit", 20000),
@@ -323,6 +346,15 @@ class RefactoredConfig:
             candidate_validation_split_ratio=po_candidate_selection_data.get("validation_split_ratio", 0.3),
             candidate_min_gain=po_candidate_selection_data.get("min_gain", 0.0),
             candidate_reject_on_any_broken=po_candidate_selection_data.get("reject_on_any_broken", True),
+            validation_pool_enabled=po_candidate_selection_data.get("validation_pool_enabled", True),
+            validation_batch_size=po_candidate_selection_data.get("validation_batch_size"),
+            validation_exclude_optimization_batch=po_candidate_selection_data.get("validation_exclude_optimization_batch", True),
+            multi_seed=MultiSeedConfig(
+                enabled=po_multi_seed_data.get("enabled", False),
+                seed_count=po_multi_seed_data.get("seed_count", 3),
+                candidate_batch_size=po_multi_seed_data.get("candidate_batch_size"),
+                merge_candidates_before_selection=po_multi_seed_data.get("merge_candidates_before_selection", True),
+            ),
         )
 
         # 构建 FewshotConfig

@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from mmap_optimizer.logging import _safe_log_dict, get_logger, log_stage
+from mmap_optimizer.logging import _safe_log_dict, configure_run_logging, get_logger, log_stage
 
 
 class TestSafeLogDict:
@@ -127,3 +127,24 @@ class TestLoggerRedactionIntegration:
             log_stage(logger, "model_request", image_data="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
         assert "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" not in caplog.text
         assert "<BINARY_DATA>" in caplog.text
+
+
+def test_configure_run_logging_writes_to_run_log(tmp_path):
+    log_path = configure_run_logging(tmp_path)
+    logger = get_logger("test_file_logging")
+
+    log_stage(logger, "run_start", output_dir=tmp_path)
+
+    content = log_path.read_text(encoding="utf-8")
+    assert "[stage=run_start]" in content
+    assert "output_dir=" in content
+
+
+def test_configure_run_logging_does_not_write_to_stdout(tmp_path, capsys):
+    configure_run_logging(tmp_path)
+    logger = get_logger("test_no_stdout_logging")
+
+    log_stage(logger, "model_request", model="mock")
+
+    captured = capsys.readouterr()
+    assert "[stage=model_request]" not in captured.out

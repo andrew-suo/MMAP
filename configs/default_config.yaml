@@ -10,6 +10,8 @@
 run:
   seed: 42
   output_dir: runs/exp_001
+  log_level: INFO
+  progress_enabled: true
   # use_mock: 三种模式
   #   null  - 自动判断（有 models 配置则真实，否则 mock）
   #   true  - 强制 mock（用于测试/无模型环境）

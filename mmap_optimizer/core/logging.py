@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
+from pathlib import Path
 from typing import Any
 
 DEFAULT_LOG_LEVEL = os.environ.get("MMAP_LOG_LEVEL", "INFO").upper()
 
 _loggers: dict[str, logging.Logger] = {}
+_run_log_path: Path | None = None
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -24,23 +25,62 @@ def get_logger(name: str) -> logging.Logger:
     if name in _loggers:
         return _loggers[name]
     logger = logging.getLogger(name)
-    if not logger.handlers and not logging.getLogger().handlers:
-        _setup_handler(logger)
+    logger.setLevel(getattr(logging, DEFAULT_LOG_LEVEL, logging.INFO))
     _loggers[name] = logger
     return logger
 
 
-def _setup_handler(logger: logging.Logger) -> None:
-    """Set up console handler with standard format."""
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.DEBUG)
+def configure_run_logging(
+    output_dir: str | Path,
+    *,
+    level: str | int | None = None,
+    log_to_console: bool = False,
+) -> Path:
+    """Configure runtime logs to be written under the run directory.
+
+    The application uses stdout for user-facing progress. Runtime diagnostic
+    logs are written to ``<output_dir>/logs/mmap.log`` by default.
+    """
+    global _run_log_path
+
+    log_dir = Path(output_dir) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "mmap.log"
+
+    root_logger = logging.getLogger()
+    log_level = (
+        level
+        if isinstance(level, int)
+        else getattr(logging, str(level or DEFAULT_LOG_LEVEL).upper(), logging.INFO)
+    )
+    root_logger.setLevel(log_level)
+
+    for handler in list(root_logger.handlers):
+        if getattr(handler, "_mmap_run_handler", False):
+            root_logger.removeHandler(handler)
+            handler.close()
+
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(log_level)
+    file_handler._mmap_run_handler = True  # type: ignore[attr-defined]
     formatter = logging.Formatter(
-        fmt="[%(asctime)s] [%(levelname)s] %(message)s",
+        fmt="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(getattr(logging, DEFAULT_LOG_LEVEL, logging.INFO))
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
+    if log_to_console:
+        import sys
+
+        console_handler = logging.StreamHandler(sys.stderr)
+        console_handler.setLevel(log_level)
+        console_handler._mmap_run_handler = True  # type: ignore[attr-defined]
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
+
+    _run_log_path = log_path
+    return log_path
 
 
 def _safe_log_dict(data: dict[str, Any], *, max_value_len: int = 200) -> str:

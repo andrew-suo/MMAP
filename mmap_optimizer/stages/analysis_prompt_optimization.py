@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from ..core.logging import get_logger, log_stage
+from ..core.progress import NullProgressReporter, ProgressReporter
 from ..patch.types import (
     AnalysisPatch,
     CompressionReport,
@@ -90,6 +92,7 @@ class AnalysisPromptOptimizationStage:
         char_limit: int = 16000,
         compression_enabled: bool = True,
         ema_alpha: float = 0.3,
+        progress_reporter: ProgressReporter | None = None,
     ):
         self.analysis_prompt = analysis_prompt
         self.extraction_results = extraction_results
@@ -108,6 +111,8 @@ class AnalysisPromptOptimizationStage:
         self.char_limit = char_limit
         self.compression_enabled = compression_enabled
         self.ema_alpha = ema_alpha
+        self.progress = progress_reporter or NullProgressReporter()
+        self.logger = get_logger(__name__)
 
         self.reflection_results: list[ReflectionResult] = []
         self.draft_patches: list[AnalysisPatch] = []
@@ -144,34 +149,45 @@ class AnalysisPromptOptimizationStage:
 
     def run(self) -> AnalysisMetrics:
         """执行完整的 Analysis Prompt Optimization Stage。"""
-        print("  [Step 1/8] 统计基础分析准确率...")
+        log_stage(self.logger, "analysis_stage_start", iteration=self.iteration, samples=len(self.batch.sample_ids))
+        self.progress.step("  [Analysis 1/8] 统计基础分析准确率...")
         self._step1_compute_base_metrics()
         if self.metrics.base_accuracy is not None:
-            print(f"  [Step 1/8] 基础评估完成，准确率: {self.metrics.base_accuracy:.2%}")
+            self.progress.step(f"  [Analysis 1/8] 基础评估完成，准确率: {self.metrics.base_accuracy:.2%}")
 
         # 更新 section 贡献度追踪
         self._update_contribution_tracker()
 
-        print("  [Step 2/8] 反思分析错误...")
+        self.progress.step("  [Analysis 2/8] 反思分析错误...")
         self._step2_reflect_on_errors()
 
         self._step3_generate_patches()
-        print(f"  [Step 3/8] 生成 patch（{len(self.draft_patches)} 个）...")
+        self.progress.step(f"  [Analysis 3/8] 生成 patch（{len(self.draft_patches)} 个）...")
 
         self._step4_initial_merge()
-        print(f"  [Step 4/8] 合并 patch（{len(self.initial_merged_patches)} 个）...")
+        self.progress.step(f"  [Analysis 4/8] 合并 patch（{len(self.initial_merged_patches)} 个）...")
 
-        print("  [Step 5/8] 应用 patch 并回归测试...")
+        self.progress.step("  [Analysis 5/8] 应用 patch 并回归测试...")
         self._step5_apply_and_test()
 
-        print("  [Step 6/8] 测毒验证...")
+        self.progress.step("  [Analysis 6/8] 测毒验证...")
         self._step6_regression_and_toxicity_test()
 
-        print("  [Step 7/8] 压缩 prompt...")
+        self.progress.step("  [Analysis 7/8] 压缩 prompt...")
         self._step7_compress_if_needed()
 
-        print("  [Step 8/8] 生成最终结果...")
+        self.progress.step("  [Analysis 8/8] 生成最终结果...")
         self._step8_final_test_and_metrics()
+        log_stage(
+            self.logger,
+            "analysis_stage_done",
+            iteration=self.iteration,
+            base_accuracy=self.metrics.base_accuracy,
+            final_accuracy=self.metrics.final_accuracy,
+            accepted_patches=self.metrics.accepted_patch_count,
+            rejected_patches=self.metrics.rejected_patch_count,
+            no_progress=self.metrics.no_progress,
+        )
 
         return self.metrics
 

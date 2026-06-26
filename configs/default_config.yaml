@@ -57,7 +57,7 @@ prompt_structuring:
 # Sampling: 抽样配置（顶层用于 Phase 级别）
 # ============================================================
 sampling:
-  type: difficulty_frequency  # 可选: random / difficulty / frequency / difficulty_frequency
+  type: difficulty_frequency  # 可选: random / difficulty / frequency / difficulty_frequency / balanced_trace / apex_trace
   difficulty_weight: 0.7
   frequency_weight: 0.3
   ema_alpha: 0.01             # EMA 平滑系数（用于贡献度追踪）
@@ -65,6 +65,13 @@ sampling:
   success_ratio: 0.25         # 成功样本占比
   low_frequency_ratio: 0.15   # 低频样本占比
   fallback_to_difficulty_frequency: true
+  # APEX 风格动态采样参数，仅 type=apex_trace 时生效
+  lookback_window: 5
+  mixed_fail_ratio: 0.55
+  hard_fail_ratio: 0.20
+  unknown_ratio: 0.15
+  easy_ratio: 0.10
+  patch_memory_weight: 0.30
 
 # ============================================================
 # Prompt Optimization: Prompt 优化阶段
@@ -87,13 +94,19 @@ prompt_optimization:
 
   # 阶段内抽样器
   sampler:
-    type: difficulty_frequency
+    type: difficulty_frequency # 可切换为 apex_trace 启用 APEX 风格动态采样
     difficulty_weight: 0.7
     frequency_weight: 0.3
     error_ratio: 0.6
     success_ratio: 0.25
     low_frequency_ratio: 0.15
     fallback_to_difficulty_frequency: true
+    lookback_window: 5
+    mixed_fail_ratio: 0.55
+    hard_fail_ratio: 0.20
+    unknown_ratio: 0.15
+    easy_ratio: 0.10
+    patch_memory_weight: 0.30
 
   # Extraction Prompt 压缩配置
   extraction_prompt:

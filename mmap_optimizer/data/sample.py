@@ -9,7 +9,51 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
+
+
+@dataclass
+class SampleOutcomeHistoryItem:
+    """单个样本的跨轮评估结果历史，用于动态采样。"""
+    sample_id: str
+    prompt_type: Literal["extraction", "analysis"]
+    iteration: int
+    status: Literal["pass", "fail", "unknown"] = "unknown"
+    transition: str = "unknown"
+    selected: bool = True
+    patch_decision: str = "unknown"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sample_id": self.sample_id,
+            "prompt_type": self.prompt_type,
+            "iteration": self.iteration,
+            "status": self.status,
+            "transition": self.transition,
+            "selected": self.selected,
+            "patch_decision": self.patch_decision,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SampleOutcomeHistoryItem":
+        status = str(data.get("status", "unknown"))
+        if status not in {"pass", "fail", "unknown"}:
+            status = "unknown"
+        prompt_type = data.get("prompt_type", "extraction")
+        if prompt_type not in {"extraction", "analysis"}:
+            prompt_type = "extraction"
+        return cls(
+            sample_id=str(data.get("sample_id", "")),
+            prompt_type=cast(Literal["extraction", "analysis"], prompt_type),
+            iteration=int(data.get("iteration", 0)),
+            status=cast(Literal["pass", "fail", "unknown"], status),
+            transition=str(data.get("transition", "unknown")),
+            selected=bool(data.get("selected", True)),
+            patch_decision=str(data.get("patch_decision", "unknown")),
+            metadata=dict(data.get("metadata", {})),
+        )
 
 
 @dataclass
@@ -166,6 +210,7 @@ class SampleState:
     historical_broken_count: int = 0
     generated_extraction_patch_count: int = 0
     generated_analysis_patch_count: int = 0
+    outcome_history: list[SampleOutcomeHistoryItem] = field(default_factory=list)
     patch_memory: list[SamplePatchMemoryItem] = field(default_factory=list)
 
     def update_selection(self, selected: bool, iteration: int, alpha: float = 0.3) -> None:
@@ -203,6 +248,41 @@ class SampleState:
             key=lambda memory: (memory.iteration, memory.prompt_type, memory.patch_id),
         )
 
+    def add_outcome_history(
+        self,
+        item: SampleOutcomeHistoryItem,
+        max_items_per_type: int = 20,
+    ) -> None:
+        """追加跨轮评估历史，并按 prompt_type 保留最近记录。"""
+        self.outcome_history.append(item)
+        grouped: dict[str, list[SampleOutcomeHistoryItem]] = {}
+        for outcome in self.outcome_history:
+            grouped.setdefault(outcome.prompt_type, []).append(outcome)
+
+        trimmed: list[SampleOutcomeHistoryItem] = []
+        for prompt_type in sorted(grouped):
+            outcomes = sorted(grouped[prompt_type], key=lambda outcome: outcome.iteration)
+            trimmed.extend(outcomes[-max_items_per_type:])
+        self.outcome_history = sorted(
+            trimmed,
+            key=lambda outcome: (outcome.iteration, outcome.prompt_type),
+        )
+
+    def get_outcome_history(
+        self,
+        prompt_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[SampleOutcomeHistoryItem]:
+        """获取最近评估历史。"""
+        if prompt_type is None:
+            outcomes = list(self.outcome_history)
+        else:
+            outcomes = [o for o in self.outcome_history if o.prompt_type == prompt_type]
+        outcomes = sorted(outcomes, key=lambda outcome: outcome.iteration)
+        if limit is None:
+            return outcomes
+        return outcomes[-limit:]
+
     def get_patch_memory(
         self,
         prompt_type: str,
@@ -230,6 +310,7 @@ class SampleState:
             "historical_broken_count": self.historical_broken_count,
             "generated_extraction_patch_count": self.generated_extraction_patch_count,
             "generated_analysis_patch_count": self.generated_analysis_patch_count,
+            "outcome_history": [item.to_dict() for item in self.outcome_history],
             "patch_memory": [item.to_dict() for item in self.patch_memory],
         }
 
@@ -256,6 +337,11 @@ class SampleState:
         state.patch_memory = [
             SamplePatchMemoryItem.from_dict(item)
             for item in data.get("patch_memory", [])
+            if isinstance(item, dict)
+        ]
+        state.outcome_history = [
+            SampleOutcomeHistoryItem.from_dict(item)
+            for item in data.get("outcome_history", [])
             if isinstance(item, dict)
         ]
         return state

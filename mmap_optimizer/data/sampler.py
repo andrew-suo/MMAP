@@ -28,6 +28,12 @@ class SamplerConfig:
     success_ratio: float = 0.25
     low_frequency_ratio: float = 0.15
     fallback_to_difficulty_frequency: bool = True
+    lookback_window: int = 5
+    mixed_fail_ratio: float = 0.55
+    hard_fail_ratio: float = 0.20
+    unknown_ratio: float = 0.15
+    easy_ratio: float = 0.10
+    patch_memory_weight: float = 0.30
 
 
 class BaseSampler(ABC):
@@ -360,6 +366,223 @@ class BalancedTraceSampler(BaseSampler):
         return batch
 
 
+class ApexTraceSampler(BaseSampler):
+    """APEX 风格的动态分层采样器。
+
+    根据样本最近若干次 pass/fail 轨迹，将样本分入 mixed_fail / hard_fail /
+    unknown / easy_pass 池，优先选择当前失败但历史上成功过的样本。
+    """
+
+    def name(self) -> str:
+        return "apex_trace"
+
+    def compute_score(self, spec: SampleSpec, state: SampleState, rng: random.Random) -> float:
+        pool = self._classify_state(state)
+        pool_bonus = {
+            "mixed_fail": 1.0,
+            "hard_fail": 0.7,
+            "unknown": 0.45,
+            "easy_pass": 0.2,
+        }.get(pool, 0.0)
+        return self._score_for_pool(state, pool, rng) + pool_bonus
+
+    def sample(
+        self,
+        sample_set: SampleSet,
+        batch_size: int,
+        iteration: int,
+        seed: int = 42,
+        update_state: bool = True,
+        excluded_sample_ids: set[str] | None = None,
+        batch_id_prefix: str = "batch",
+    ) -> SampleBatch:
+        rng = random.Random(seed + iteration)
+        excluded = excluded_sample_ids or set()
+        active_specs = [s for s in sample_set.get_active_specs() if s.id not in excluded]
+        states = {
+            spec.id: sample_set.states.get(spec.id, SampleState(sample_id=spec.id))
+            for spec in active_specs
+        }
+
+        quotas = self._quota_counts(batch_size)
+        pools: dict[str, list[SampleSpec]] = {
+            "mixed_fail": [],
+            "hard_fail": [],
+            "unknown": [],
+            "easy_pass": [],
+        }
+        for spec in active_specs:
+            pool = self._classify_state(states[spec.id])
+            pools.setdefault(pool, pools["unknown"]).append(spec)
+
+        for pool_name, pool_specs in pools.items():
+            pool_specs.sort(
+                key=lambda spec: self._score_for_pool(states[spec.id], pool_name, rng),
+                reverse=True,
+            )
+
+        selected: list[SampleSpec] = []
+        source_by_id: dict[str, str] = {}
+
+        def add_from(pool_name: str, limit: int) -> None:
+            for spec in pools.get(pool_name, []):
+                if sum(1 for src in source_by_id.values() if src == pool_name) >= limit:
+                    break
+                if spec.id in source_by_id:
+                    continue
+                selected.append(spec)
+                source_by_id[spec.id] = pool_name
+
+        for pool_name in ("mixed_fail", "hard_fail", "unknown", "easy_pass"):
+            add_from(pool_name, quotas[pool_name])
+
+        fallback_count = 0
+        if len(selected) < batch_size:
+            selected_ids = {spec.id for spec in selected}
+            fallback_specs = [spec for spec in active_specs if spec.id not in selected_ids]
+            fallback_specs.sort(
+                key=lambda spec: self.compute_score(spec, states[spec.id], rng),
+                reverse=True,
+            )
+            for spec in fallback_specs:
+                if len(selected) >= batch_size:
+                    break
+                selected.append(spec)
+                source_by_id[spec.id] = "fallback"
+                fallback_count += 1
+
+        selected = selected[:batch_size]
+        selected_ids = [spec.id for spec in selected]
+        scores_dict = {
+            spec.id: {
+                "difficulty_score": states[spec.id].difficulty_score,
+                "frequency_score": states[spec.id].frequency_score,
+                "error_ema": states[spec.id].error_ema,
+                "selected_count": states[spec.id].selected_count,
+                "pool": source_by_id.get(spec.id, "unknown"),
+                "apex_classification": self._classify_state(states[spec.id]),
+                "recent_statuses": self._recent_statuses(states[spec.id]),
+                "patch_memory_score": self._patch_memory_score(states[spec.id]),
+            }
+            for spec in selected
+        }
+        pool_counts = {
+            pool_name: sum(1 for src in source_by_id.values() if src == pool_name)
+            for pool_name in ("mixed_fail", "hard_fail", "unknown", "easy_pass")
+        }
+        pool_counts["fallback"] = fallback_count
+
+        batch = SampleBatch(
+            id=f"{batch_id_prefix}_{self.name()}_{iteration}",
+            phase="unknown",
+            iteration=iteration,
+            sample_ids=selected_ids,
+            sampler_name=self.name(),
+            scores=scores_dict,
+            metadata={
+                "apex_pool_counts": pool_counts,
+                "apex_candidate_pool_sizes": {
+                    pool_name: len(pool_specs) for pool_name, pool_specs in pools.items()
+                },
+                "requested_ratios": {
+                    "mixed_fail": self.config.mixed_fail_ratio,
+                    "hard_fail": self.config.hard_fail_ratio,
+                    "unknown": self.config.unknown_ratio,
+                    "easy_pass": self.config.easy_ratio,
+                },
+                "lookback_window": self.config.lookback_window,
+                "filled_by_fallback_count": fallback_count,
+            },
+        )
+
+        if update_state:
+            selected_set = set(selected_ids)
+            for spec_id in selected_ids:
+                state = sample_set.states.get(spec_id)
+                if state:
+                    state.update_selection(selected=True, iteration=iteration)
+            for spec in active_specs:
+                if spec.id not in selected_set:
+                    state = sample_set.states.get(spec.id)
+                    if state:
+                        state.update_selection(selected=False, iteration=iteration)
+
+        return batch
+
+    def _quota_counts(self, batch_size: int) -> dict[str, int]:
+        mixed_fail_count = int(batch_size * self.config.mixed_fail_ratio)
+        hard_fail_count = int(batch_size * self.config.hard_fail_ratio)
+        unknown_count = int(batch_size * self.config.unknown_ratio)
+        easy_count = max(0, batch_size - mixed_fail_count - hard_fail_count - unknown_count)
+        return {
+            "mixed_fail": mixed_fail_count,
+            "hard_fail": hard_fail_count,
+            "unknown": unknown_count,
+            "easy_pass": easy_count,
+        }
+
+    def _classify_state(self, state: SampleState) -> str:
+        statuses = self._recent_statuses(state)
+        if not statuses:
+            if state.last_extraction_status in {"wrong", "invalid"} or state.last_analysis_status == "wrong":
+                return "hard_fail"
+            if state.last_extraction_status == "correct" or state.last_analysis_status == "correct":
+                return "easy_pass"
+            return "unknown"
+
+        has_pass = "pass" in statuses
+        has_fail = "fail" in statuses
+        current_fail = statuses[-1] == "fail"
+        if has_pass and has_fail and current_fail:
+            return "mixed_fail"
+        if has_pass and has_fail:
+            return "unknown"
+        if has_fail:
+            return "hard_fail"
+        if has_pass:
+            return "easy_pass"
+        return "unknown"
+
+    def _recent_statuses(self, state: SampleState) -> list[str]:
+        outcomes = state.get_outcome_history(limit=max(1, self.config.lookback_window))
+        return [outcome.status for outcome in outcomes if outcome.status in {"pass", "fail"}]
+
+    def _patch_memory_score(self, state: SampleState) -> float:
+        memories = state.get_patch_memory("extraction", limit=5) + state.get_patch_memory("analysis", limit=5)
+        score = 0.0
+        for memory in memories:
+            if memory.final_decision in {"accepted", "merged"}:
+                score += 0.5
+            if memory.transition == "fixed":
+                score += 1.0
+            elif memory.transition == "broken":
+                score -= 1.0
+            elif memory.transition == "unchanged_wrong":
+                score -= 0.2
+            if memory.toxicity == "toxic":
+                score -= 1.0
+        return max(-1.0, min(1.0, score / max(1, len(memories))))
+
+    def _score_for_pool(self, state: SampleState, pool_name: str, rng: random.Random) -> float:
+        patch_score = self._patch_memory_score(state)
+        recency_bonus = 0.0
+        if state.last_selected_iteration is not None:
+            recency_bonus = min(1.0, 1 / (1 + state.last_selected_iteration))
+        if pool_name == "mixed_fail":
+            difficulty_weight = 0.4
+        elif pool_name == "hard_fail":
+            difficulty_weight = 0.7
+        else:
+            difficulty_weight = 0.2
+        return (
+            difficulty_weight * state.difficulty_score
+            + self.config.frequency_weight * state.frequency_score
+            + self.config.patch_memory_weight * patch_score
+            + 0.05 * recency_bonus
+            + rng.random() * self.config.random_noise_scale
+        )
+
+
 def create_sampler(config: SamplerConfig) -> BaseSampler:
     """根据配置创建抽样器。"""
     sampler_type = config.type.lower()
@@ -374,5 +597,7 @@ def create_sampler(config: SamplerConfig) -> BaseSampler:
         return DifficultyFrequencySampler(config)
     elif sampler_type == "balanced_trace":
         return BalancedTraceSampler(config)
+    elif sampler_type == "apex_trace":
+        return ApexTraceSampler(config)
     else:
         raise ValueError(f"Unknown sampler type: {sampler_type}")

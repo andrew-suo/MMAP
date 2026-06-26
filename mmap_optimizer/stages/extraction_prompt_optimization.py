@@ -14,7 +14,14 @@ from ..patch.types import (
     SemanticPatchDraft,
     ToxicityReport,
 )
-from ..data.sample import SampleBatch, SamplePatchMemoryItem, SampleSet, SampleState, SampleTrace
+from ..data.sample import (
+    SampleBatch,
+    SampleOutcomeHistoryItem,
+    SamplePatchMemoryItem,
+    SampleSet,
+    SampleState,
+    SampleTrace,
+)
 from ..prompt.structured_prompt import StructuredPrompt
 from ..prompt.section_contribution import SectionContributionTracker
 
@@ -1053,14 +1060,17 @@ class ExtractionPromptOptimizationStage:
                         trace.sample_id, "correct"
                     )
                     trace.final_extraction_result_id = trace.sample_id
+                self._record_extraction_outcome_history()
             else:
                 self.metrics.final_accuracy = self.metrics.base_accuracy
                 self.metrics.no_progress = True
+                self._record_extraction_outcome_history()
             return
 
         if not self.final_merged_patches:
             self.metrics.no_progress = True
             self.metrics.final_accuracy = self.metrics.base_accuracy
+            self._record_extraction_outcome_history()
             return
 
         for sample_id in self.batch.sample_ids:
@@ -1076,3 +1086,43 @@ class ExtractionPromptOptimizationStage:
         total = len(self.final_extraction_results)
         self.metrics.final_correct_count = correct_count
         self.metrics.final_accuracy = correct_count / total if total > 0 else 0.0
+        self._record_extraction_outcome_history()
+
+    def _record_extraction_outcome_history(self) -> None:
+        """记录本轮 extraction prompt 最终效果，供 APEX 风格采样使用。"""
+        final_status_by_sample = {
+            result.sample_id: result.status for result in self.final_extraction_results
+        }
+        base_status_by_sample = {
+            result.sample_id: result.status for result in self.base_extraction_results
+        }
+        trace_by_sample = {
+            trace.sample_id: trace
+            for trace in self.sample_set.get_traces_for_iteration(
+                "prompt_optimization", self.iteration
+            )
+        }
+        patch_decision = "accepted" if self.accepted_prompt is not None else "no_progress"
+
+        for sample_id in self.batch.sample_ids:
+            raw_status = final_status_by_sample.get(sample_id) or base_status_by_sample.get(sample_id)
+            if raw_status is None:
+                outcome_status = "unknown"
+            else:
+                outcome_status = "pass" if raw_status == "correct" else "fail"
+            state = self.sample_set.states.get(sample_id)
+            if state is None:
+                continue
+            state.last_extraction_status = raw_status or state.last_extraction_status
+            state.add_outcome_history(
+                SampleOutcomeHistoryItem(
+                    sample_id=sample_id,
+                    prompt_type="extraction",
+                    iteration=self.iteration,
+                    status=outcome_status,
+                    transition=getattr(trace_by_sample.get(sample_id), "transition", None) or "unknown",
+                    selected=True,
+                    patch_decision=patch_decision,
+                    metadata={"raw_status": raw_status},
+                )
+            )

@@ -464,16 +464,21 @@ class PromptOptimizationPhase:
             report_dict["iteration"] = iteration
             self.patch_apply_reports.append(report_dict)
 
-        # 保存到文件
-        lineage_file = self.output_dir / "prompt_versions.jsonl"
-        lineage_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(lineage_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(lineage, ensure_ascii=False) + "\n")
+            # 保存到文件
+            lineage_file = self.output_dir / "prompt_versions.jsonl"
+            lineage_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(lineage_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(lineage, ensure_ascii=False) + "\n")
 
-        if apply_report is not None:
             report_file = self.output_dir / "patch_apply_reports.jsonl"
             with open(report_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(report_dict, ensure_ascii=False) + "\n")
+        else:
+            # 即使无 apply_report 也需保存 prompt lineage
+            lineage_file = self.output_dir / "prompt_versions.jsonl"
+            lineage_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(lineage_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(lineage, ensure_ascii=False) + "\n")
 
     def _save_iteration_artifacts(
         self,
@@ -693,11 +698,12 @@ class PromptOptimizationPhase:
         # PR3: Extraction 阶段新增 artifact
         if getattr(extraction_stage, "transition_report", None) is not None:
             _write_json(extraction_dir / "transition_report.json", extraction_stage.transition_report)
-        if getattr(extraction_stage, "candidate_validation_report", None) is not None:
-            _write_json(extraction_dir / "candidate_validation_report.json", extraction_stage.candidate_validation_report)
+        extraction_candidate_validation_report = getattr(extraction_stage, "candidate_validation_report", None)
+        if extraction_candidate_validation_report is not None:
+            _write_json(extraction_dir / "candidate_validation_report.json", extraction_candidate_validation_report)
             _write_jsonl(
                 extraction_dir / "candidate_patch_sets.jsonl",
-                extraction_stage.candidate_validation_report.candidates,
+                extraction_candidate_validation_report.candidates,
             )
         _write_jsonl(extraction_dir / "ineffective_patches.jsonl", getattr(extraction_stage, "ineffective_patches", []))
         if getattr(extraction_stage, "toxicity_report", None) is not None:
@@ -709,10 +715,11 @@ class PromptOptimizationPhase:
         _write_jsonl(extraction_dir / "final_merged_patches.jsonl", getattr(extraction_stage, "final_merged_patches", []))
         _write_jsonl(extraction_dir / "success_memory_items.jsonl", _success_memory_items(extraction_stage.analysis_results, "extraction"))
         _write_jsonl(extraction_dir / "patch_lifecycle.jsonl", _patch_lifecycle(extraction_stage, "extraction"))
-        if getattr(extraction_stage, "toxicity_report", None) is not None:
+        extraction_toxicity_report = getattr(extraction_stage, "toxicity_report", None)
+        if extraction_toxicity_report is not None:
             _write_jsonl(
                 extraction_dir / "patch_test_records.jsonl",
-                extraction_stage.toxicity_report.patch_test_records,
+                extraction_toxicity_report.patch_test_records,
             )
 
         # PR4: Compression report
@@ -749,11 +756,12 @@ class PromptOptimizationPhase:
         # PR3: Analysis 阶段新增 artifact
         if getattr(analysis_stage, "transition_report", None) is not None:
             _write_json(analysis_dir / "transition_report.json", analysis_stage.transition_report)
-        if getattr(analysis_stage, "candidate_validation_report", None) is not None:
-            _write_json(analysis_dir / "candidate_validation_report.json", analysis_stage.candidate_validation_report)
+        analysis_candidate_validation_report = getattr(analysis_stage, "candidate_validation_report", None)
+        if analysis_candidate_validation_report is not None:
+            _write_json(analysis_dir / "candidate_validation_report.json", analysis_candidate_validation_report)
             _write_jsonl(
                 analysis_dir / "candidate_patch_sets.jsonl",
-                analysis_stage.candidate_validation_report.candidates,
+                analysis_candidate_validation_report.candidates,
             )
         _write_jsonl(analysis_dir / "ineffective_patches.jsonl", getattr(analysis_stage, "ineffective_patches", []))
         if getattr(analysis_stage, "toxicity_report", None) is not None:
@@ -765,10 +773,11 @@ class PromptOptimizationPhase:
         _write_jsonl(analysis_dir / "final_merged_patches.jsonl", getattr(analysis_stage, "final_merged_patches", []))
         _write_jsonl(analysis_dir / "success_memory_items.jsonl", _success_memory_items(analysis_stage.base_analysis_results, "analysis"))
         _write_jsonl(analysis_dir / "patch_lifecycle.jsonl", _patch_lifecycle(analysis_stage, "analysis"))
-        if getattr(analysis_stage, "toxicity_report", None) is not None:
+        analysis_toxicity_report = getattr(analysis_stage, "toxicity_report", None)
+        if analysis_toxicity_report is not None:
             _write_jsonl(
                 analysis_dir / "patch_test_records.jsonl",
-                analysis_stage.toxicity_report.patch_test_records,
+                analysis_toxicity_report.patch_test_records,
             )
 
         # PR4: Compression report

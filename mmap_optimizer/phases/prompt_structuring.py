@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from ..prompt.structured_prompt import PromptSection, StructuredPrompt
 
@@ -33,7 +33,7 @@ class MarkdownParser:
         sections = self._parse_sections(markdown)
         return StructuredPrompt(
             id=prompt_id,
-            prompt_type=prompt_type,
+            prompt_type=cast(Literal["extraction", "analysis"], prompt_type),
             sections=sections,
             raw_markdown=markdown,
         )
@@ -281,9 +281,12 @@ class PromptStructuringPhase:
             标准化后的 Markdown 文本，失败返回 None
         """
         try:
-            # 读取标准化 prompt
+            # 读取标准化 prompt（调用方已校验 standardization_prompt_path 非空）
+            standardization_prompt_path = self.config.standardization_prompt_path
+            if standardization_prompt_path is None:
+                return None
             standardization_prompt = Path(
-                self.config.standardization_prompt_path
+                standardization_prompt_path
             ).read_text(encoding="utf-8")
 
             # 将原始 prompt 注入到 system prompt 的占位符中
@@ -297,7 +300,9 @@ class PromptStructuringPhase:
                 {"role": "user", "content": "请开始标准化处理。"},
             ]
 
-            # 调用模型
+            # 调用模型（调用方已校验 model_client 非空）
+            if self.model_client is None:
+                return None
             response = self.model_client.complete(
                 messages=messages,
                 model_config=self.model_config,

@@ -611,6 +611,8 @@ class ExtractionPromptOptimizationStage:
 
     def _select_candidate_patch_set(self) -> list[ExtractionPatch]:
         """选择 validation score 最高的候选 patch set。"""
+        # 调用方（_step6_apply_and_test）已校验 patch_apply_executor 非空
+        assert self.patch_apply_executor is not None
         candidates = self._build_candidate_patch_sets()
         eval_batch = self.validation_batch or self.batch
         if self.validation_batch is not None and self.extraction_executor is not None and self.evaluation_executor is not None:

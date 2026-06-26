@@ -236,7 +236,7 @@ def test_patch_validator_calibrates_unknown_section_once_successfully(tmp_path):
     assert validated == [patch]
     assert rejected == []
     assert patch.target_section_id == "section_1"
-    assert patch.status == "candidate"
+    assert patch.status == "candidate_safe"
     assert patch.metadata["repair_attempted"] is True
     assert patch.metadata["repair_reason"] == "UNKNOWN_SECTION"
     assert patch.metadata["original_rejection_reason"] == "VALIDATION_FAILED:UNKNOWN_SECTION"
@@ -613,7 +613,7 @@ def test_broken_sample_rollback():
             content="new content for broken test",
             rationale="test broken rollback",
             source_sample_ids=["s1"],
-            status="candidate",
+            status="candidate_safe",
         )
     ]
     stage.trial_prompt = extraction_prompt
@@ -691,7 +691,7 @@ def test_fixed_sample_accepted():
             content="new content for fixed test",
             rationale="test fixed acceptance",
             source_sample_ids=["s1"],
-            status="candidate",
+            status="candidate_safe",
         )
     ]
     stage.trial_prompt = extraction_prompt

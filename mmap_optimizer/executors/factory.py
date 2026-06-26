@@ -353,6 +353,10 @@ def create_executors(
         failure_policy.max_consecutive_sample_failures
     )
     if use_real:
+        # use_real 隐含 model_client is not None，因此 extraction_client/optimizer_client 至少有一个非空
+        # （model_client = extraction_client or optimizer_client）
+        assert extraction_client is not None
+        assert optimizer_client is not None
         extraction_executor: Any = ExtractionExecutor(
             extraction_client,
             extraction_runtime_config,
@@ -388,7 +392,7 @@ def create_executors(
     patch_generation_executor: Any = PatchGenerationExecutor(
         model_client=optimizer_client,
         model_config=optimizer_runtime_config,
-        patch_generation_prompt_path=patch_generation_prompt_path,
+        patch_generation_prompt_path=patch_generation_prompt_path or "prompts/patch_generation.txt",
         semantic_patch_generation_prompt_path=semantic_patch_generation_prompt_path or "prompts/semantic_patch_generation.txt",
         patch_translation_prompt_path=semantic_patch_translation_prompt_path or "prompts/semantic_patch_translation.txt",
         patch_generation_mode=patch_generation_mode,
@@ -403,7 +407,7 @@ def create_executors(
         "patch_apply": PatchApplyExecutor(
             model_client=optimizer_client,
             model_config=optimizer_runtime_config,
-            text_match_prompt_path=patch_text_match_prompt_path,
+            text_match_prompt_path=patch_text_match_prompt_path or "prompts/patch_text_match.txt",
         ),
         "patch_validator": shared_patch_validator,
         "merge": MergeExecutor(

@@ -485,6 +485,8 @@ class AnalysisPromptOptimizationStage:
 
     def _select_candidate_patch_set(self) -> list[AnalysisPatch]:
         """选择 validation score 最高的 analysis patch set。"""
+        # 调用方（_step5_apply_and_test）已校验 patch_apply_executor 非空
+        assert self.patch_apply_executor is not None
         candidates = self._build_candidate_patch_sets()
         eval_batch = self.validation_batch or self.batch
         if self.validation_batch is not None and self.analysis_executor is not None:

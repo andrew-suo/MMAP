@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..model.client import ModelClient
+from ..model.retry import FailurePolicyConfig, SampleFailureTracker
 from ..stages.extraction_prompt_optimization import ExtractionResult
 from ..phases.fewshot_optimization import FewshotExample
 from ..data.sample import SampleBatch, SampleSet, SampleSpec
@@ -23,12 +24,22 @@ from ..prompt.output_repair import parse_model_json_output
 class ExtractionExecutor:
     """真实抽取执行器，接入 ModelClient。"""
 
-    def __init__(self, model_client: ModelClient, model_config: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        model_client: ModelClient,
+        model_config: dict[str, Any] | None = None,
+        failure_policy: FailurePolicyConfig | None = None,
+        sample_failure_tracker: SampleFailureTracker | None = None,
+    ):
         self.model_client = model_client
         self.model_config = model_config or {}
         self.renderer = StructuredPromptRenderer()
         self.model_output_repairs: list[dict[str, Any]] = []
         self._last_parse_record: dict[str, Any] | None = None
+        self.failure_policy = failure_policy or FailurePolicyConfig()
+        self.sample_failure_tracker = sample_failure_tracker or SampleFailureTracker(
+            self.failure_policy.max_consecutive_sample_failures
+        )
 
     def execute(
         self,
@@ -43,7 +54,24 @@ class ExtractionExecutor:
             spec = sample_set.specs.get(sample_id)
             if spec is None:
                 continue
-            result = self._execute_single(prompt, spec, fewshot_examples)
+            try:
+                result = self._execute_single(prompt, spec, fewshot_examples)
+                self.sample_failure_tracker.record_success()
+            except Exception as exc:
+                if not self.failure_policy.skip_single_sample_failure:
+                    raise
+                self.sample_failure_tracker.record_failure(
+                    sample_id=spec.id,
+                    call_type="extraction",
+                    error=exc,
+                )
+                result = ExtractionResult(
+                    sample_id=spec.id,
+                    raw_output="",
+                    parsed_output=None,
+                    status="invalid",
+                    error_details=[f"model_call_failed: {type(exc).__name__}: {exc}"],
+                )
             results.append(result)
         return results
 

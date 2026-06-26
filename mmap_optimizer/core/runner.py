@@ -12,19 +12,22 @@ RunPlan
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ..stages.analysis_prompt_optimization import AnalysisMetrics
+from ..stages.batch_size_controller import BatchSizeController
+from ..core.checkpoint import CheckpointStore, RunCheckpoint
 from ..core.config import RefactoredConfig
 from ..data.dataset_loader import DatasetLoader
 from ..executors import create_executors
 from ..stages.extraction_prompt_optimization import ExtractionMetrics
-from ..phases.fewshot_optimization import FewshotMetrics, FewshotOptimizationPhase
+from ..phases.fewshot_optimization import FewshotExample, FewshotMetrics, FewshotOptimizationPhase
 from ..phases.prompt_optimization import PromptOptimizationPhase
 from ..phases.prompt_structuring import PromptStructuringPhase
-from ..data.sample import SampleSet
+from ..data.sample import SampleSet, SampleState, SampleTrace
 from ..prompt.structured_prompt import StructuredPrompt
 
 # YAML 导入检查（在顶部导入，避免 _save_initial_artifacts 使用时未定义）
@@ -53,6 +56,16 @@ class RunPlanStep:
             "notes": list(self.notes),
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RunPlanStep":
+        return cls(
+            id=data.get("id", ""),
+            phase=data.get("phase", ""),
+            iteration=data.get("iteration"),
+            status=data.get("status", "pending"),
+            notes=list(data.get("notes", [])),
+        )
+
 
 @dataclass
 class RunPlan:
@@ -68,6 +81,14 @@ class RunPlan:
             "steps": [step.to_dict() for step in self.steps],
             "current_step_index": self.current_step_index,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RunPlan":
+        return cls(
+            id=data.get("id", "run_plan"),
+            steps=[RunPlanStep.from_dict(step) for step in data.get("steps", [])],
+            current_step_index=int(data.get("current_step_index", 0)),
+        )
 
     def get_current_step(self) -> RunPlanStep | None:
         """获取当前步骤。"""
@@ -252,6 +273,28 @@ class RunSummary:
             "notes": list(self.notes),
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RunSummary":
+        summary = cls(id=data.get("id", "run_summary"))
+        summary.status = data.get("status", summary.status)
+        summary.start_time = data.get("start_time")
+        summary.end_time = data.get("end_time")
+        summary.duration_seconds = data.get("duration_seconds")
+        summary.prompt_structuring_status = data.get("prompt_structuring_status", "pending")
+        for target, source in (
+            (summary.prompt_optimization, data.get("prompt_optimization", {})),
+            (summary.analysis_prompt, data.get("analysis_prompt", {})),
+            (summary.fewshot_optimization, data.get("fewshot_optimization", {})),
+        ):
+            for key, value in source.items():
+                if hasattr(target, key):
+                    setattr(target, key, value)
+        summary.final_extraction_prompt_id = data.get("final_extraction_prompt_id")
+        summary.final_analysis_prompt_id = data.get("final_analysis_prompt_id")
+        summary.final_fewshot_example_count = data.get("final_fewshot_example_count", 0)
+        summary.notes = list(data.get("notes", []))
+        return summary
+
 
 class MMAPRunner:
     """重构后的 MMAP 主运行器。"""
@@ -280,6 +323,8 @@ class MMAPRunner:
 
         # 创建 Run Summary
         self.run_summary = RunSummary(id="run_summary")
+        self.checkpoint_store = CheckpointStore(self.output_dir)
+        self.checkpoint = RunCheckpoint()
 
         # 状态
         self.sample_set: SampleSet | None = None
@@ -336,7 +381,7 @@ class MMAPRunner:
 
         return RunPlan(id="run_plan", steps=steps)
 
-    def run(self) -> RunSummary:
+    def run(self, resume: bool = False) -> RunSummary:
         """执行完整的 MMAP 运行。"""
         import time
         from datetime import datetime, timezone
@@ -345,18 +390,33 @@ class MMAPRunner:
         start_ts = time.time()
         self.run_summary.start_time = datetime.now(timezone.utc).isoformat()
 
-        # 保存初始配置和 Run Plan
-        self._save_initial_artifacts()
+        if resume and self.checkpoint_store.exists():
+            self._restore_from_checkpoint()
+            if self.checkpoint.run_status == "completed":
+                self.run_summary.status = "completed"
+                return self.run_summary
+        else:
+            # 保存初始配置和 Run Plan
+            self._save_initial_artifacts()
+            self._save_checkpoint(
+                current_phase="prompt_structuring",
+                current_step_id="prompt_structuring",
+                event="run_started",
+            )
 
         # Phase 1: Prompt Structuring
-        print(f"\n{'='*60}\n🚀 Phase 1: Prompt Structuring 开始\n{'='*60}")
-        self._run_prompt_structuring()
-        print(f"\n{'='*60}\n✅ Phase 1: Prompt Structuring 完成\n{'='*60}")
+        if self.run_plan.current_step_index == 0:
+            print(f"\n{'='*60}\n🚀 Phase 1: Prompt Structuring 开始\n{'='*60}")
+            self._run_prompt_structuring()
+            print(f"\n{'='*60}\n✅ Phase 1: Prompt Structuring 完成\n{'='*60}")
+        elif self.sample_set is None:
+            self._load_sample_set()
 
         # Phase 2: Prompt Optimization
-        if self.config.prompt_optimization.enabled:
+        prompt_start = self._next_iteration_for_phase("prompt_optimization")
+        if self.config.prompt_optimization.enabled and prompt_start <= self.config.prompt_optimization.rounds:
             print(f"\n{'='*60}\n🚀 Phase 2: Prompt Optimization 开始\n{'='*60}")
-            self._run_prompt_optimization()
+            self._run_prompt_optimization(start_iteration=prompt_start)
             po_summary = self.run_summary.prompt_optimization
             if po_summary.final_accuracy_last is not None:
                 print(f"当前 Extraction 准确率: {po_summary.final_accuracy_last:.2%}")
@@ -365,9 +425,10 @@ class MMAPRunner:
             print(f"{'='*60}\n✅ Phase 2: Prompt Optimization 完成\n{'='*60}")
 
         # Phase 3: Few-shot Optimization
-        if self.config.fewshot_optimization.enabled:
+        fewshot_start = self._next_iteration_for_phase("fewshot_optimization")
+        if self.config.fewshot_optimization.enabled and fewshot_start <= self.config.fewshot_optimization.rounds:
             print(f"\n{'='*60}\n🚀 Phase 3: Few-shot Optimization 开始\n{'='*60}")
-            self._run_fewshot_optimization()
+            self._run_fewshot_optimization(start_iteration=fewshot_start)
             fo_summary = self.run_summary.fewshot_optimization
             if fo_summary.final_accuracy_last is not None:
                 print(f"当前 Few-shot 准确率: {fo_summary.final_accuracy_last:.2%}")
@@ -379,6 +440,7 @@ class MMAPRunner:
         self.run_summary.duration_seconds = round(end_ts - start_ts, 3)
         self.run_summary.status = "completed"
         self._save_final_artifacts()
+        self._save_checkpoint(run_status="completed", event="run_completed")
 
         return self.run_summary
 
@@ -407,7 +469,7 @@ class MMAPRunner:
         )
 
         # PR4: 确保 Run 级 JSONL 文件存在（即使为空），保证 artifact 结构完整
-        for name in ("prompt_versions.jsonl", "patch_apply_reports.jsonl"):
+        for name in ("prompt_versions.jsonl", "patch_apply_reports.jsonl", "model_call_failures.jsonl"):
             f = self.output_dir / name
             if not f.exists():
                 f.write_text("", encoding="utf-8")
@@ -420,6 +482,12 @@ class MMAPRunner:
 
         step.status = "running"
         self._save_run_plan()
+        self._save_checkpoint(
+            current_phase="prompt_structuring",
+            current_step_id=step.id,
+            current_stage="running",
+            event="prompt_structuring_started",
+        )
 
         # 获取 optimizer_model_client（用于结构质量较差时进行标准化）
         # 标准化属于优化任务，应使用 optimizer 模型而非 extraction 模型
@@ -473,8 +541,16 @@ class MMAPRunner:
         self.run_summary.prompt_structuring_status = "completed"
         self.run_plan.advance()
         self._save_run_plan()
+        self._save_current_prompts()
+        self._save_sample_traces()
+        self._save_checkpoint(
+            current_phase="prompt_optimization",
+            current_step_id=self.run_plan.get_current_step().id if self.run_plan.get_current_step() else None,
+            current_stage="completed",
+            event="prompt_structuring_completed",
+        )
 
-    def _run_prompt_optimization(self) -> None:
+    def _run_prompt_optimization(self, start_iteration: int = 1) -> None:
         """执行 Prompt Optimization Phase。"""
         if self.structured_extraction_prompt is None or self.structured_analysis_prompt is None:
             return
@@ -490,10 +566,12 @@ class MMAPRunner:
             output_dir=self.output_dir,
             seed=self.config.run.seed,
             executors=self.executors,
+            checkpoint_callback=self._on_prompt_iteration_completed,
         )
+        self._restore_batch_size_controller(phase, start_iteration)
 
         # 执行
-        results = phase.run()
+        results = phase.run(start_iteration=start_iteration)
 
         # 更新状态
         self.structured_extraction_prompt = phase.extraction_prompt
@@ -570,8 +648,8 @@ class MMAPRunner:
                 ap_summary.final_accuracy_last = last_result.analysis_metrics.final_accuracy
 
         # 更新 Run Plan
-        for i, result in enumerate(results):
-            step_index = i + 1  # prompt_structuring 是第 0 步
+        for result in results:
+            step_index = result.iteration  # prompt_structuring 是第 0 步
             if step_index < len(self.run_plan.steps):
                 step = self.run_plan.steps[step_index]
                 step.status = "completed"
@@ -580,13 +658,18 @@ class MMAPRunner:
                 if result.no_progress:
                     step.notes.append("no_progress")
 
-        self.run_plan.current_step_index = len(results) + 1
+        self.run_plan.current_step_index = max(
+            self.run_plan.current_step_index,
+            1 + self.config.prompt_optimization.rounds,
+        )
         self._save_run_plan()
 
         # 保存样本状态
         self._save_sample_states()
+        self._save_sample_traces()
+        self._save_current_prompts()
 
-    def _run_fewshot_optimization(self) -> None:
+    def _run_fewshot_optimization(self, start_iteration: int = 1) -> None:
         """执行 Few-shot Optimization Phase。"""
         if self.structured_extraction_prompt is None:
             return
@@ -600,11 +683,13 @@ class MMAPRunner:
             sample_set=self.sample_set,
             output_dir=self.output_dir,
             seed=self.config.run.seed,
+            initial_fewshot_examples=self._load_fewshot_examples(),
             fewshot_executor=self.executors.get("fewshot"),
+            checkpoint_callback=self._on_fewshot_iteration_completed,
         )
 
         # 执行
-        results = phase.run()
+        results = phase.run(start_iteration=start_iteration)
 
         # PR4: 更新 Run Summary 嵌套对象
         fo_summary = self.run_summary.fewshot_optimization
@@ -627,8 +712,8 @@ class MMAPRunner:
 
         # 更新 Run Plan
         prompt_opt_steps = self.config.prompt_optimization.rounds
-        for i, result in enumerate(results):
-            step_index = 1 + prompt_opt_steps + i  # prompt_structuring(1) + prompt_optimization(N)
+        for result in results:
+            step_index = prompt_opt_steps + result.iteration
             if step_index < len(self.run_plan.steps):
                 step = self.run_plan.steps[step_index]
                 step.status = "completed"
@@ -663,22 +748,8 @@ class MMAPRunner:
         if self.sample_set is None:
             return
 
-        import json
-
         states_dict = {
-            sample_id: {
-                "sample_id": state.sample_id,
-                "selected_count": state.selected_count,
-                "selection_ema": state.selection_ema,
-                "frequency_score": state.frequency_score,
-                "error_count": state.error_count,
-                "error_ema": state.error_ema,
-                "difficulty_score": state.difficulty_score,
-                "last_extraction_status": state.last_extraction_status,
-                "last_analysis_status": state.last_analysis_status,
-                "historical_fixed_count": state.historical_fixed_count,
-                "historical_broken_count": state.historical_broken_count,
-            }
+            sample_id: state.to_dict()
             for sample_id, state in self.sample_set.states.items()
         }
 
@@ -686,6 +757,220 @@ class MMAPRunner:
             json.dumps(states_dict, indent=2),
             encoding="utf-8",
         )
+
+    def _save_sample_traces(self) -> None:
+        if self.sample_set is None:
+            return
+        traces_file = self.output_dir / "sample_traces.jsonl"
+        with open(traces_file, "w", encoding="utf-8") as f:
+            for trace in self.sample_set.traces:
+                f.write(json.dumps(trace.to_dict(), ensure_ascii=False) + "\n")
+
+    def _save_current_prompts(self) -> None:
+        if self.structured_extraction_prompt is not None:
+            (self.output_dir / "current_extraction_prompt.json").write_text(
+                json.dumps(self.structured_extraction_prompt.to_dict(), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        if self.structured_analysis_prompt is not None:
+            (self.output_dir / "current_analysis_prompt.json").write_text(
+                json.dumps(self.structured_analysis_prompt.to_dict(), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+    def _save_checkpoint(
+        self,
+        *,
+        run_status: str = "running",
+        current_phase: str | None = None,
+        current_step_id: str | None = None,
+        current_iteration: int | None = None,
+        current_stage: str | None = None,
+        last_error: str | None = None,
+        event: str | None = None,
+    ) -> None:
+        completed_steps = [
+            step.id for step in self.run_plan.steps if step.status == "completed"
+        ]
+        self.checkpoint.run_status = run_status
+        self.checkpoint.current_phase = current_phase or self.checkpoint.current_phase
+        self.checkpoint.current_step_id = current_step_id or self.checkpoint.current_step_id
+        self.checkpoint.current_iteration = current_iteration
+        self.checkpoint.current_stage = current_stage
+        self.checkpoint.completed_steps = completed_steps
+        self.checkpoint.structured_extraction_prompt_path = "structured_extraction_prompt.json"
+        self.checkpoint.structured_analysis_prompt_path = "structured_analysis_prompt.json"
+        self.checkpoint.current_extraction_prompt_path = "current_extraction_prompt.json"
+        self.checkpoint.current_analysis_prompt_path = "current_analysis_prompt.json"
+        self.checkpoint.sample_states_path = "sample_states.json"
+        self.checkpoint.sample_traces_path = "sample_traces.jsonl"
+        self.checkpoint.batch_size_controller_path = self._latest_batch_controller_path()
+        self.checkpoint.fewshot_examples_path = "final_fewshot_examples.jsonl"
+        self.checkpoint.last_error = last_error
+        self.checkpoint_store.save(self.checkpoint, event=event)
+
+    def _restore_from_checkpoint(self) -> None:
+        self.checkpoint = self.checkpoint_store.load()
+        run_plan_file = self.output_dir / "run_plan.json"
+        if run_plan_file.exists():
+            self.run_plan = RunPlan.from_dict(json.loads(run_plan_file.read_text(encoding="utf-8")))
+        summary_file = self.output_dir / "run_summary.json"
+        if summary_file.exists():
+            data = json.loads(summary_file.read_text(encoding="utf-8"))
+            self.run_summary = RunSummary.from_dict(data)
+        self._load_current_prompts()
+        self._load_sample_set()
+        self._save_checkpoint(event="run_resumed")
+
+    def _load_current_prompts(self) -> None:
+        extraction_candidates = [
+            self.output_dir / "current_extraction_prompt.json",
+            self.output_dir / "final_extraction_prompt.json",
+            self.output_dir / "structured_extraction_prompt.json",
+        ]
+        analysis_candidates = [
+            self.output_dir / "current_analysis_prompt.json",
+            self.output_dir / "final_analysis_prompt.json",
+            self.output_dir / "structured_analysis_prompt.json",
+        ]
+        for path in extraction_candidates:
+            if path.exists():
+                self.structured_extraction_prompt = StructuredPrompt.from_dict(
+                    json.loads(path.read_text(encoding="utf-8"))
+                )
+                break
+        for path in analysis_candidates:
+            if path.exists():
+                self.structured_analysis_prompt = StructuredPrompt.from_dict(
+                    json.loads(path.read_text(encoding="utf-8"))
+                )
+                break
+
+    def _load_sample_set(self) -> None:
+        loader = DatasetLoader(
+            dataset_path=self.config.dataset.path,
+            format=self.config.dataset.format,
+            image_root=self.config.dataset.image_root,
+        )
+        self.sample_set = loader.load_with_ground_truth(self.config.dataset.ground_truth_path)
+        states_file = self.output_dir / "sample_states.json"
+        if states_file.exists():
+            states_data = json.loads(states_file.read_text(encoding="utf-8"))
+            self.sample_set.states = {
+                sid: SampleState.from_dict({"sample_id": sid, **data})
+                for sid, data in states_data.items()
+            }
+        traces_file = self.output_dir / "sample_traces.jsonl"
+        if traces_file.exists():
+            traces: list[SampleTrace] = []
+            for line in traces_file.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    traces.append(SampleTrace.from_dict(json.loads(line)))
+            self.sample_set.traces = traces
+
+    def _next_iteration_for_phase(self, phase: str) -> int:
+        completed = [
+            step.iteration or 0
+            for step in self.run_plan.steps
+            if step.phase == phase and step.status == "completed"
+        ]
+        return (max(completed) + 1) if completed else 1
+
+    def _latest_batch_controller_path(self) -> str | None:
+        candidates = sorted(
+            (self.output_dir / "prompt_optimization").glob(
+                "iteration_*/batch_size_controller_after.json"
+            )
+        )
+        if not candidates:
+            return None
+        return str(candidates[-1].relative_to(self.output_dir))
+
+    def _restore_batch_size_controller(
+        self,
+        phase: PromptOptimizationPhase,
+        start_iteration: int,
+    ) -> None:
+        if start_iteration <= 1:
+            return
+        previous = start_iteration - 1
+        path = (
+            self.output_dir
+            / "prompt_optimization"
+            / f"iteration_{previous}"
+            / "batch_size_controller_after.json"
+        )
+        if path.exists():
+            phase.batch_size_controller = BatchSizeController.from_dict(
+                json.loads(path.read_text(encoding="utf-8"))
+            )
+
+    def _on_prompt_iteration_completed(
+        self,
+        iteration: int,
+        phase: PromptOptimizationPhase,
+    ) -> None:
+        self.structured_extraction_prompt = phase.extraction_prompt
+        self.structured_analysis_prompt = phase.analysis_prompt
+        step_index = iteration
+        if step_index < len(self.run_plan.steps):
+            self.run_plan.steps[step_index].status = "completed"
+            self.run_plan.current_step_index = max(
+                self.run_plan.current_step_index,
+                step_index + 1,
+            )
+        self._save_run_plan()
+        self._save_sample_states()
+        self._save_sample_traces()
+        self._save_current_prompts()
+        self._save_checkpoint(
+            current_phase="prompt_optimization",
+            current_step_id=f"prompt_iter_{iteration:03d}",
+            current_iteration=iteration,
+            current_stage="iteration_completed",
+            event="prompt_iteration_completed",
+        )
+
+    def _on_fewshot_iteration_completed(
+        self,
+        iteration: int,
+        phase: FewshotOptimizationPhase,
+    ) -> None:
+        prompt_opt_steps = self.config.prompt_optimization.rounds
+        step_index = prompt_opt_steps + iteration
+        if step_index < len(self.run_plan.steps):
+            self.run_plan.steps[step_index].status = "completed"
+            self.run_plan.current_step_index = max(
+                self.run_plan.current_step_index,
+                step_index + 1,
+            )
+        self._save_run_plan()
+        self._save_sample_states()
+        self._save_sample_traces()
+        self._save_fewshot_examples(phase.fewshot_examples)
+        self._save_checkpoint(
+            current_phase="fewshot_optimization",
+            current_step_id=f"fewshot_iter_{iteration:03d}",
+            current_iteration=iteration,
+            current_stage="iteration_completed",
+            event="fewshot_iteration_completed",
+        )
+
+    def _save_fewshot_examples(self, examples: list[FewshotExample]) -> None:
+        fewshot_file = self.output_dir / "final_fewshot_examples.jsonl"
+        with open(fewshot_file, "w", encoding="utf-8") as f:
+            for example in examples:
+                f.write(json.dumps(example.to_dict(), ensure_ascii=False) + "\n")
+
+    def _load_fewshot_examples(self) -> list[FewshotExample]:
+        fewshot_file = self.output_dir / "final_fewshot_examples.jsonl"
+        if not fewshot_file.exists():
+            return []
+        examples: list[FewshotExample] = []
+        for line in fewshot_file.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                examples.append(FewshotExample.from_dict(json.loads(line)))
+        return examples
 
     def _save_final_artifacts(self) -> None:
         """保存最终 artifacts。"""

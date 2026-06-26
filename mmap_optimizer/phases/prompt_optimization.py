@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..stages.analysis_prompt_optimization import AnalysisMetrics, AnalysisPromptOptimizationStage
 from ..stages.batch_size_controller import BatchSizeController, BatchSizeControllerConfig
@@ -116,6 +116,7 @@ class PromptOptimizationPhase:
         output_dir: Path,
         seed: int = 42,
         executors: dict[str, Any] | None = None,
+        checkpoint_callback: Callable[[int, "PromptOptimizationPhase"], None] | None = None,
     ):
         self.config = config
         self.extraction_prompt = extraction_prompt
@@ -125,6 +126,7 @@ class PromptOptimizationPhase:
         self.seed = seed
         # executor 字典，默认为空（stage 内部会回退到 mock）
         self.executors = executors or {}
+        self.checkpoint_callback = checkpoint_callback
 
         # 创建 sampler
         self.sampler = create_sampler(config.sampler)
@@ -141,7 +143,7 @@ class PromptOptimizationPhase:
         self.analysis_stages: list[AnalysisPromptOptimizationStage] = []
         self.sampling_plans: dict[int, dict[str, Any]] = {}
 
-    def run(self) -> list[PromptOptimizationIterationResult]:
+    def run(self, start_iteration: int = 1) -> list[PromptOptimizationIterationResult]:
         """执行完整的 Prompt Optimization Phase。"""
         if not self.config.enabled:
             return []
@@ -149,7 +151,7 @@ class PromptOptimizationPhase:
         max_iterations = self.config.rounds
         prev_accuracy: float | None = None
 
-        for iteration in range(1, max_iterations + 1):
+        for iteration in range(start_iteration, max_iterations + 1):
             print(f"\n--- Phase 2: Prompt 优化 - 迭代 {iteration}/{max_iterations} ---")
             result = self._run_iteration(iteration)
             self.iteration_results.append(result)
@@ -178,6 +180,8 @@ class PromptOptimizationPhase:
                     rollback=result.rollback,
                     no_progress=result.no_progress,
                 )
+            if self.checkpoint_callback is not None:
+                self.checkpoint_callback(iteration, self)
 
         return self.iteration_results
 

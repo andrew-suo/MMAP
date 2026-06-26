@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..stages.extraction_prompt_optimization import ExtractionResult
 from ..data.sampler import SamplerConfig, create_sampler
@@ -42,6 +42,18 @@ class FewshotExample:
             "output_data": dict(self.output_data),
             "metadata": dict(self.metadata),
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FewshotExample":
+        return cls(
+            id=data.get("id", ""),
+            sample_id=data.get("sample_id", ""),
+            input_text=data.get("input_text", ""),
+            input_images=list(data.get("input_images", [])),
+            output_text=data.get("output_text", ""),
+            output_data=dict(data.get("output_data", {})),
+            metadata=dict(data.get("metadata", {})),
+        )
 
 
 @dataclass
@@ -118,6 +130,7 @@ class FewshotOptimizationPhase:
         seed: int = 42,
         initial_fewshot_examples: list[FewshotExample] | None = None,
         fewshot_executor=None,  # FewshotExecutor 实例
+        checkpoint_callback: Callable[[int, "FewshotOptimizationPhase"], None] | None = None,
     ):
         self.config = config
         self.extraction_prompt = extraction_prompt
@@ -125,6 +138,7 @@ class FewshotOptimizationPhase:
         self.output_dir = output_dir
         self.seed = seed
         self.fewshot_executor = fewshot_executor
+        self.checkpoint_callback = checkpoint_callback
 
         # 创建 sampler
         self.sampler = create_sampler(config.sampler)
@@ -135,7 +149,7 @@ class FewshotOptimizationPhase:
         # 结果存储
         self.iteration_results: list[FewshotOptimizationIterationResult] = []
 
-    def run(self) -> list[FewshotOptimizationIterationResult]:
+    def run(self, start_iteration: int = 1) -> list[FewshotOptimizationIterationResult]:
         """执行完整的 Few-shot Optimization Phase。"""
         if not self.config.enabled:
             return []
@@ -143,7 +157,7 @@ class FewshotOptimizationPhase:
         print(f"\n--- Phase 3: Few-shot 优化 ---")
         max_iterations = self.config.rounds
 
-        for iteration in range(1, max_iterations + 1):
+        for iteration in range(start_iteration, max_iterations + 1):
             print(f"  迭代 {iteration}/{max_iterations}")
             result = self._run_iteration(iteration)
             self.iteration_results.append(result)
@@ -151,6 +165,8 @@ class FewshotOptimizationPhase:
                 print(f"  迭代 {iteration} 完成，准确率: {result.metrics.final_accuracy:.2%}")
             else:
                 print(f"  迭代 {iteration} 完成")
+            if self.checkpoint_callback is not None:
+                self.checkpoint_callback(iteration, self)
 
         # 输出最终准确率
         if self.iteration_results:

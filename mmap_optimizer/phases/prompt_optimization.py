@@ -519,6 +519,13 @@ class PromptOptimizationPhase:
             for t in traces_data:
                 f.write(json.dumps(t, ensure_ascii=False) + "\n")
 
+        sample_patch_memory_records = []
+        for state in self.sample_set.states.values():
+            for memory in getattr(state, "patch_memory", []):
+                if getattr(memory, "iteration", None) == iteration:
+                    sample_patch_memory_records.append(memory)
+        _write_jsonl(iteration_dir / "sample_patch_memory.jsonl", sample_patch_memory_records)
+
         # PR4: 保存 sample state before/after
         def _serialize_state(state):
             """序列化 SampleState。"""

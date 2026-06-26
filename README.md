@@ -28,6 +28,7 @@ MMAP Optimizer 是一个面向多模态信息抽取任务的 Prompt 自动优化
 - **并行 Patch 合并**：按 section 分组，使用确定性 guardrail 与 LLM tree-reduce merge，最后执行 root merge。
 - **Patch 应用与文本匹配**：支持 exact match、difflib fuzzy match 和 LLM semantic match 三级定位。
 - **Trace2Skill 风格采样**：支持 `balanced_trace`，优先覆盖错误样本、成功样本和低频样本。
+- **Sample 级 Patch 经验记忆**：记录每个样本历史 patch 的方向、内容、有效性和毒性，后续同一样本生成 patch 时自动参考。
 - **测毒与回归保护**：逐 patch 检查是否破坏原本正确样本，拒绝 toxic / ineffective patch。
 - **Prompt 压缩**：按行数和字符数阈值触发压缩，并用 LLM 验证压缩是否保留语义。
 - **Few-shot 优化**：维护候选示例池，按 slot 选择更优 few-shot 示例。
@@ -241,6 +242,7 @@ runs/<run_id>/
         ├── sample_batch.json
         ├── sampling_plan.json
         ├── sample_traces.jsonl
+        ├── sample_patch_memory.jsonl
         ├── extraction/
         │   ├── base_results.jsonl
         │   ├── analysis_results.jsonl
@@ -262,6 +264,7 @@ runs/<run_id>/
 | 文件 | 说明 |
 | --- | --- |
 | `sample_traces.jsonl` | 每个样本在本轮中的选择、分析、patch、transition 记录 |
+| `sample_patch_memory.jsonl` | 本轮写入每个样本的 patch 经验记忆 |
 | `semantic_patch_drafts.jsonl` | LLM 生成的语义 patch 草稿 |
 | `translated_patches.jsonl` | semantic patch 翻译后的严格 patch |
 | `patch_lifecycle.jsonl` | patch 从生成、校验、合并、测毒到最终接受/拒绝的生命周期 |

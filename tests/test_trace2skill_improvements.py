@@ -77,23 +77,6 @@ class _ApplyExecutor:
         return prompt, type("Report", (), {"changed": changed})()
 
 
-class _ExtractionExecutor:
-    def __init__(self, statuses_by_patch_count):
-        self.statuses_by_patch_count = statuses_by_patch_count
-
-    def execute(self, prompt, batch, sample_set):
-        statuses = self.statuses_by_patch_count.get(
-            getattr(self, "current_patch_count", 0),
-            ["wrong" for _ in batch.sample_ids],
-        )
-        from mmap_optimizer.stages.extraction_prompt_optimization import ExtractionResult
-
-        return [
-            ExtractionResult(sample_id=sid, raw_output="{}", parsed_output={}, status=status)
-            for sid, status in zip(batch.sample_ids, statuses)
-        ]
-
-
 class _EvaluationExecutor:
     def evaluate_batch(self, results, sample_set):
         return [
@@ -107,7 +90,7 @@ class _EvaluationExecutor:
         ]
 
 
-def test_candidate_selection_prefers_highest_scoring_patch_set():
+def test_extraction_stage_applies_merged_patch_set_directly():
     from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
 
     sample_set = SampleSet(
@@ -130,8 +113,6 @@ def test_candidate_selection_prefers_highest_scoring_patch_set():
         patch_apply_executor=_ApplyExecutor(),
         extraction_executor=None,
         evaluation_executor=_EvaluationExecutor(),
-        candidate_selection_enabled=True,
-        candidate_count=2,
     )
     stage.base_eval_records = [
         EvalRecord("s1", "s1", "wrong", False),
@@ -154,7 +135,7 @@ def test_candidate_selection_prefers_highest_scoring_patch_set():
 
     stage.extraction_executor = Executor()
 
-    selected = stage._select_candidate_patch_set()
+    stage._step6_apply_and_test()
 
-    assert [p.id for p in selected] == ["p1", "p2"]
-    assert stage.candidate_validation_report.selected_candidate_id == "candidate_1"
+    assert [p.id for p in stage.initial_merged_patches] == ["p1", "p2"]
+    assert len(stage.patched_extraction_results) == 2

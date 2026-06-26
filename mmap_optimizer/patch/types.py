@@ -46,35 +46,6 @@ class SemanticPatchDraft:
             "metadata": dict(self.metadata),
         }
 
-
-@dataclass
-class CandidateValidationReport:
-    """Validation summary for one candidate patch-set selection step."""
-
-    id: str
-    prompt_type: str
-    selected_candidate_id: str | None = None
-    baseline_correct_count: int = 0
-    candidate_count: int = 0
-    min_gain: float = 0.0
-    reject_on_any_broken: bool = True
-    candidates: list[dict[str, Any]] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "prompt_type": self.prompt_type,
-            "selected_candidate_id": self.selected_candidate_id,
-            "baseline_correct_count": self.baseline_correct_count,
-            "candidate_count": self.candidate_count,
-            "min_gain": self.min_gain,
-            "reject_on_any_broken": self.reject_on_any_broken,
-            "candidates": list(self.candidates),
-            "metadata": dict(self.metadata),
-        }
-
-
 @dataclass
 class ExtractionPatch:
     """Extraction Prompt Patch。"""

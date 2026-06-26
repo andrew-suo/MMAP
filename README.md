@@ -27,12 +27,11 @@ MMAP Optimizer 是一个面向多模态信息抽取任务的 Prompt 自动优化
 - **Patch 校验与自动修复**：`PatchValidator` 会校验 section、operation、定位文本、样本来源，并对可修复定位错误执行一次 calibration。
 - **并行 Patch 合并**：按 section 分组，使用确定性 guardrail 与 LLM tree-reduce merge，最后执行 root merge。
 - **Patch 应用与文本匹配**：支持 exact match、difflib fuzzy match 和 LLM semantic match 三级定位。
-- **候选 Patch 验证选择**：支持 candidate patch set 打分，选择固定 / 破坏样本权衡更优的候选。
-- **Trace2Skill 风格采样**：支持 `balanced_trace`、validation pool 和 multi-seed candidate batch。
+- **Trace2Skill 风格采样**：支持 `balanced_trace`，优先覆盖错误样本、成功样本和低频样本。
 - **测毒与回归保护**：逐 patch 检查是否破坏原本正确样本，拒绝 toxic / ineffective patch。
 - **Prompt 压缩**：按行数和字符数阈值触发压缩，并用 LLM 验证压缩是否保留语义。
 - **Few-shot 优化**：维护候选示例池，按 slot 选择更优 few-shot 示例。
-- **可追踪产物**：每轮输出 sample traces、patch lifecycle、candidate report、merge report、compression report 等 artifact。
+- **可追踪产物**：每轮输出 sample traces、patch lifecycle、merge report、toxicity report、compression report 等 artifact。
 
 ## 工作流概览
 
@@ -219,34 +218,6 @@ prompt_optimization:
     fallback_to_difficulty_frequency: true
 ```
 
-### Candidate Selection 与 Multi-seed
-
-```yaml
-prompt_optimization:
-  patch:
-    candidate_selection:
-      enabled: true
-      candidate_count: 3
-      validation_split_ratio: 0.3
-      min_gain: 0.0
-      reject_on_any_broken: true
-      validation_pool_enabled: true
-      validation_batch_size: null
-      validation_exclude_optimization_batch: true
-
-  multi_seed:
-    enabled: false
-    seed_count: 3
-    candidate_batch_size: null
-    merge_candidates_before_selection: true
-```
-
-说明：
-
-- `candidate_selection.enabled` 默认关闭，开启后会对多个 patch set 打分选择。
-- `validation_pool_enabled` 开启时，会从 optimization batch 之外抽 validation batch。
-- `multi_seed.enabled` 默认关闭，因为真实模型调用成本会随 seed 数增加。
-
 完整示例见 `configs/default_config.yaml` 和 `configs/smoke.yaml`。
 
 ## 输出产物
@@ -268,8 +239,6 @@ runs/<run_id>/
 └── prompt_optimization/
     └── iteration_1/
         ├── sample_batch.json
-        ├── validation_batch.json
-        ├── candidate_batches.jsonl
         ├── sampling_plan.json
         ├── sample_traces.jsonl
         ├── extraction/
@@ -280,7 +249,6 @@ runs/<run_id>/
         │   ├── draft_patches.jsonl
         │   ├── validated_patches.jsonl
         │   ├── rejected_patches.jsonl
-        │   ├── candidate_validation_report.json
         │   ├── patch_lifecycle.jsonl
         │   ├── toxicity_report.json
         │   ├── compression_report.json
@@ -297,7 +265,6 @@ runs/<run_id>/
 | `semantic_patch_drafts.jsonl` | LLM 生成的语义 patch 草稿 |
 | `translated_patches.jsonl` | semantic patch 翻译后的严格 patch |
 | `patch_lifecycle.jsonl` | patch 从生成、校验、合并、测毒到最终接受/拒绝的生命周期 |
-| `candidate_validation_report.json` | candidate patch set 的验证打分和选择结果 |
 | `model_output_repairs.jsonl` | LLM 输出解析修复记录 |
 | `toxicity_report.json` | patch 测毒结果 |
 | `compression_report.json` | Prompt 压缩触发、验证和接受情况 |

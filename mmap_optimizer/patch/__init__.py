@@ -4,7 +4,6 @@
 """
 
 from .types import (
-    CandidateValidationReport,
     ExtractionPatch,
     AnalysisPatch,
     PatchMergeReport,
@@ -15,7 +14,6 @@ from .types import (
 )
 
 __all__ = [
-    "CandidateValidationReport",
     "ExtractionPatch",
     "AnalysisPatch",
     "PatchMergeReport",

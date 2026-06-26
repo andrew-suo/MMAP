@@ -23,7 +23,7 @@ except Exception:
 from ..stages.batch_size_controller import BatchSizeControllerConfig
 from ..phases.fewshot_optimization import FewshotConfig
 from ..phases.prompt_structuring import PromptStructuringConfig
-from ..phases.prompt_optimization import MultiSeedConfig, PromptOptimizationConfig
+from ..phases.prompt_optimization import PromptOptimizationConfig
 from ..data.sampler import SamplerConfig
 from ..model.retry import FailurePolicyConfig, RetryConfig
 
@@ -210,27 +210,11 @@ class RefactoredConfig:
                 "patch": {
                     "merge_strategy": self.prompt_optimization.patch_merge_strategy,
                     "generation_mode": self.prompt_optimization.patch_generation_mode,
-                    "candidate_selection": {
-                        "enabled": self.prompt_optimization.candidate_selection_enabled,
-                        "candidate_count": self.prompt_optimization.candidate_count,
-                        "validation_split_ratio": self.prompt_optimization.candidate_validation_split_ratio,
-                        "min_gain": self.prompt_optimization.candidate_min_gain,
-                        "reject_on_any_broken": self.prompt_optimization.candidate_reject_on_any_broken,
-                        "validation_pool_enabled": self.prompt_optimization.validation_pool_enabled,
-                        "validation_batch_size": self.prompt_optimization.validation_batch_size,
-                        "validation_exclude_optimization_batch": self.prompt_optimization.validation_exclude_optimization_batch,
-                    },
                     "toxicity_test": {
                         "enabled": self.prompt_optimization.toxicity_test_enabled,
                         "early_stop": self.prompt_optimization.toxicity_test_early_stop,
                         "sort_by_source_difficulty": self.prompt_optimization.toxicity_test_sort_by_source_difficulty,
                     },
-                },
-                "multi_seed": {
-                    "enabled": self.prompt_optimization.multi_seed.enabled,
-                    "seed_count": self.prompt_optimization.multi_seed.seed_count,
-                    "candidate_batch_size": self.prompt_optimization.multi_seed.candidate_batch_size,
-                    "merge_candidates_before_selection": self.prompt_optimization.multi_seed.merge_candidates_before_selection,
                 },
             },
             "fewshot_optimization": {
@@ -321,8 +305,6 @@ class RefactoredConfig:
         po_analysis_prompt_data = prompt_optimization_data.get("analysis_prompt", {})
         po_patch_data = prompt_optimization_data.get("patch", {})
         po_toxicity_test_data = po_patch_data.get("toxicity_test", {})
-        po_candidate_selection_data = po_patch_data.get("candidate_selection", {})
-        po_multi_seed_data = prompt_optimization_data.get("multi_seed", {})
 
         prompt_optimization_config = PromptOptimizationConfig(
             enabled=prompt_optimization_data.get("enabled", True),
@@ -363,20 +345,6 @@ class RefactoredConfig:
             toxicity_test_early_stop=po_toxicity_test_data.get("early_stop", True),
             toxicity_test_sort_by_source_difficulty=po_toxicity_test_data.get("sort_by_source_difficulty", True),
             patch_generation_mode=po_patch_data.get("generation_mode", "semantic_then_translate"),
-            candidate_selection_enabled=po_candidate_selection_data.get("enabled", False),
-            candidate_count=po_candidate_selection_data.get("candidate_count", 3),
-            candidate_validation_split_ratio=po_candidate_selection_data.get("validation_split_ratio", 0.3),
-            candidate_min_gain=po_candidate_selection_data.get("min_gain", 0.0),
-            candidate_reject_on_any_broken=po_candidate_selection_data.get("reject_on_any_broken", True),
-            validation_pool_enabled=po_candidate_selection_data.get("validation_pool_enabled", True),
-            validation_batch_size=po_candidate_selection_data.get("validation_batch_size"),
-            validation_exclude_optimization_batch=po_candidate_selection_data.get("validation_exclude_optimization_batch", True),
-            multi_seed=MultiSeedConfig(
-                enabled=po_multi_seed_data.get("enabled", False),
-                seed_count=po_multi_seed_data.get("seed_count", 3),
-                candidate_batch_size=po_multi_seed_data.get("candidate_batch_size"),
-                merge_candidates_before_selection=po_multi_seed_data.get("merge_candidates_before_selection", True),
-            ),
         )
 
         # 构建 FewshotConfig

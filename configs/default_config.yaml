@@ -113,29 +113,11 @@ prompt_optimization:
     merge_strategy: tree_merge  # 可选: tree_merge / sequential_merge
     generation_mode: semantic_then_translate  # 可选: direct / semantic_then_translate
 
-    # Candidate Selection: 多候选 patch 选优
-    candidate_selection:
-      enabled: false
-      candidate_count: 3
-      validation_split_ratio: 0.3
-      min_gain: 0.0
-      reject_on_any_broken: true
-      validation_pool_enabled: true
-      validation_batch_size: null          # null 表示使用当前批量大小
-      validation_exclude_optimization_batch: true
-
     # Toxicity Test: 测毒测试
     toxicity_test:
       enabled: true
       early_stop: true
       sort_by_source_difficulty: true
-
-  # Multi-seed: 多种子候选采样（实验性）
-  multi_seed:
-    enabled: false
-    seed_count: 3
-    candidate_batch_size: null             # null 表示使用当前批量大小
-    merge_candidates_before_selection: true
 
 # ============================================================
 # Few-shot Optimization: Few-shot 优化阶段

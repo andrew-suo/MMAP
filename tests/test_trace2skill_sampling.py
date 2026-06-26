@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from mmap_optimizer.data.sample import SampleSet, SampleSpec, SampleState
 from mmap_optimizer.data.sampler import SamplerConfig, create_sampler
-from mmap_optimizer.phases.prompt_optimization import MultiSeedConfig, PromptOptimizationConfig, PromptOptimizationPhase
 from mmap_optimizer.prompt.structured_prompt import PromptSection, StructuredPrompt
 
 
@@ -79,30 +76,3 @@ def test_validation_sampling_excludes_optimization_batch():
 
     assert validation_batch.phase == "prompt_optimization_validation"
     assert set(validation_batch.sample_ids).isdisjoint(optimization_batch.sample_ids)
-
-
-def test_phase_builds_multi_seed_candidate_batches(tmp_path: Path):
-    config = PromptOptimizationConfig(
-        rounds=1,
-        initial_batch_size=3,
-        min_batch_size=3,
-        max_batch_size=3,
-        multi_seed=MultiSeedConfig(enabled=True, seed_count=2),
-    )
-    phase = PromptOptimizationPhase(
-        config=config,
-        extraction_prompt=_prompt(),
-        analysis_prompt=_prompt(),
-        sample_set=_sample_set(),
-        output_dir=tmp_path,
-        seed=11,
-        executors={},
-    )
-    optimization_batch = phase._sampling_stage(1)
-
-    candidate_batches = phase._candidate_sampling_stage(optimization_batch, 1)
-
-    assert len(candidate_batches) == 2
-    assert candidate_batches[0].metadata["seed_index"] == 1
-    assert candidate_batches[1].metadata["seed_index"] == 2
-    assert all(batch.phase == "prompt_optimization_candidate" for batch in candidate_batches)

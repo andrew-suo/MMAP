@@ -21,15 +21,6 @@ from ..prompt.structured_prompt import StructuredPrompt
 
 
 @dataclass
-class MultiSeedConfig:
-    """Multi-seed candidate sampling 配置。"""
-    enabled: bool = False
-    seed_count: int = 3
-    candidate_batch_size: int | None = None
-    merge_candidates_before_selection: bool = True
-
-
-@dataclass
 class PromptOptimizationConfig:
     """Prompt Optimization 配置。"""
     enabled: bool = True
@@ -63,17 +54,6 @@ class PromptOptimizationConfig:
     toxicity_test_early_stop: bool = True
     toxicity_test_sort_by_source_difficulty: bool = True
     patch_generation_mode: str = "semantic_then_translate"
-    candidate_selection_enabled: bool = False
-    candidate_count: int = 3
-    candidate_validation_split_ratio: float = 0.3
-    candidate_min_gain: float = 0.0
-    candidate_reject_on_any_broken: bool = True
-    validation_pool_enabled: bool = True
-    validation_batch_size: int | None = None
-    validation_exclude_optimization_batch: bool = True
-
-    # Multi-seed candidate sampling
-    multi_seed: MultiSeedConfig = field(default_factory=MultiSeedConfig)
 
 
 @dataclass
@@ -196,23 +176,9 @@ class PromptOptimizationPhase:
 
         # Stage 1: Sampling Stage
         batch = self._sampling_stage(iteration)
-        validation_batch = self._validation_sampling_stage(batch, iteration)
-        candidate_batches = self._candidate_sampling_stage(batch, iteration)
         self.sampling_plans[iteration] = {
             "optimization_batch_id": batch.id,
             "optimization_sample_ids": list(batch.sample_ids),
-            "validation_batch_id": validation_batch.id if validation_batch else None,
-            "validation_sample_ids": list(validation_batch.sample_ids) if validation_batch else [],
-            "candidate_batches": [
-                {
-                    "batch_id": candidate_batch.id,
-                    "sample_ids": list(candidate_batch.sample_ids),
-                    "seed_index": candidate_batch.metadata.get("seed_index"),
-                }
-                for candidate_batch in candidate_batches
-            ],
-            "multi_seed_enabled": self.config.multi_seed.enabled,
-            "validation_pool_enabled": self.config.validation_pool_enabled,
         }
 
         # Stage 2: Extraction Prompt Optimization Stage
@@ -234,12 +200,6 @@ class PromptOptimizationPhase:
             char_limit=self.config.extraction_prompt_char_limit,
             compression_enabled=self.config.extraction_prompt_compression_enabled,
             ema_alpha=self.config.ema_alpha,
-            candidate_selection_enabled=self.config.candidate_selection_enabled,
-            candidate_count=self.config.candidate_count,
-            candidate_min_gain=self.config.candidate_min_gain,
-            candidate_reject_on_any_broken=self.config.candidate_reject_on_any_broken,
-            validation_batch=validation_batch,
-            candidate_batches=candidate_batches,
         )
         extraction_metrics = extraction_stage.run()
         self.extraction_stages.append(extraction_stage)
@@ -277,12 +237,6 @@ class PromptOptimizationPhase:
             char_limit=self.config.analysis_prompt_char_limit,
             compression_enabled=self.config.analysis_prompt_compression_enabled,
             ema_alpha=self.config.ema_alpha,
-            candidate_selection_enabled=self.config.candidate_selection_enabled,
-            candidate_count=self.config.candidate_count,
-            candidate_min_gain=self.config.candidate_min_gain,
-            candidate_reject_on_any_broken=self.config.candidate_reject_on_any_broken,
-            validation_batch=validation_batch,
-            candidate_batches=candidate_batches,
         )
         analysis_metrics = analysis_stage.run()
         self.analysis_stages.append(analysis_stage)
@@ -368,73 +322,6 @@ class PromptOptimizationPhase:
                 self.sample_set.add_trace(trace)
 
         return batch
-
-    def _validation_sampling_stage(
-        self,
-        optimization_batch: SampleBatch,
-        iteration: int,
-    ) -> SampleBatch | None:
-        """抽取 candidate selection 使用的 validation batch。"""
-        if not self.config.candidate_selection_enabled or not self.config.validation_pool_enabled:
-            return None
-
-        batch_size = self.config.validation_batch_size
-        if batch_size is None:
-            import math
-            batch_size = max(
-                3,
-                math.ceil(len(optimization_batch.sample_ids) * self.config.candidate_validation_split_ratio),
-            )
-
-        excluded = set(optimization_batch.sample_ids) if self.config.validation_exclude_optimization_batch else set()
-        validation_batch = self.sampler.sample_validation(
-            sample_set=self.sample_set,
-            batch_size=batch_size,
-            iteration=iteration,
-            seed=self.seed + 10_000,
-            excluded_sample_ids=excluded,
-        )
-        fallback_used = False
-        if not validation_batch.sample_ids and excluded:
-            validation_batch = self.sampler.sample_validation(
-                sample_set=self.sample_set,
-                batch_size=batch_size,
-                iteration=iteration,
-                seed=self.seed + 10_000,
-                excluded_sample_ids=set(),
-            )
-            fallback_used = True
-            validation_batch.warnings.append("validation pool fallback used because excluded pool was empty")
-        validation_batch.metadata["validation_pool_fallback_used"] = fallback_used
-        validation_batch.metadata["excluded_optimization_batch"] = bool(excluded)
-        return validation_batch
-
-    def _candidate_sampling_stage(
-        self,
-        optimization_batch: SampleBatch,
-        iteration: int,
-    ) -> list[SampleBatch]:
-        """为 multi-seed candidate generation 抽取额外 batch。"""
-        if not self.config.multi_seed.enabled:
-            return []
-        seed_count = max(0, self.config.multi_seed.seed_count)
-        batch_size = self.config.multi_seed.candidate_batch_size or len(optimization_batch.sample_ids)
-        candidate_batches: list[SampleBatch] = []
-        for seed_idx in range(seed_count):
-            candidate_seed = self.seed + iteration * 100 + seed_idx
-            candidate_batch = self.sampler.sample(
-                sample_set=self.sample_set,
-                batch_size=batch_size,
-                iteration=iteration,
-                seed=candidate_seed,
-                update_state=False,
-                batch_id_prefix=f"candidate_batch_{seed_idx + 1}",
-            )
-            candidate_batch.phase = "prompt_optimization_candidate"
-            candidate_batch.metadata["seed_index"] = seed_idx + 1
-            candidate_batch.metadata["seed"] = candidate_seed
-            candidate_batches.append(candidate_batch)
-        return candidate_batches
 
     def _record_prompt_lineage(
         self,
@@ -610,11 +497,6 @@ class PromptOptimizationPhase:
             encoding="utf-8",
         )
         _write_json(iteration_dir / "sampling_plan.json", self.sampling_plans.get(iteration, {}))
-        validation_batch = getattr(extraction_stage, "validation_batch", None)
-        if validation_batch is not None:
-            _write_json(iteration_dir / "validation_batch.json", validation_batch)
-        candidate_batches = getattr(extraction_stage, "candidate_batches", [])
-        _write_jsonl(iteration_dir / "candidate_batches.jsonl", candidate_batches)
 
         # PR4: 保存 sample traces
         traces = self.sample_set.get_traces_for_iteration("prompt_optimization", iteration)
@@ -698,13 +580,6 @@ class PromptOptimizationPhase:
         # PR3: Extraction 阶段新增 artifact
         if getattr(extraction_stage, "transition_report", None) is not None:
             _write_json(extraction_dir / "transition_report.json", extraction_stage.transition_report)
-        extraction_candidate_validation_report = getattr(extraction_stage, "candidate_validation_report", None)
-        if extraction_candidate_validation_report is not None:
-            _write_json(extraction_dir / "candidate_validation_report.json", extraction_candidate_validation_report)
-            _write_jsonl(
-                extraction_dir / "candidate_patch_sets.jsonl",
-                extraction_candidate_validation_report.candidates,
-            )
         _write_jsonl(extraction_dir / "ineffective_patches.jsonl", getattr(extraction_stage, "ineffective_patches", []))
         if getattr(extraction_stage, "toxicity_report", None) is not None:
             _write_json(extraction_dir / "toxicity_report.json", extraction_stage.toxicity_report)
@@ -756,13 +631,6 @@ class PromptOptimizationPhase:
         # PR3: Analysis 阶段新增 artifact
         if getattr(analysis_stage, "transition_report", None) is not None:
             _write_json(analysis_dir / "transition_report.json", analysis_stage.transition_report)
-        analysis_candidate_validation_report = getattr(analysis_stage, "candidate_validation_report", None)
-        if analysis_candidate_validation_report is not None:
-            _write_json(analysis_dir / "candidate_validation_report.json", analysis_candidate_validation_report)
-            _write_jsonl(
-                analysis_dir / "candidate_patch_sets.jsonl",
-                analysis_candidate_validation_report.candidates,
-            )
         _write_jsonl(analysis_dir / "ineffective_patches.jsonl", getattr(analysis_stage, "ineffective_patches", []))
         if getattr(analysis_stage, "toxicity_report", None) is not None:
             _write_json(analysis_dir / "toxicity_report.json", analysis_stage.toxicity_report)

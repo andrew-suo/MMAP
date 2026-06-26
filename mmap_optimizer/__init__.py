@@ -20,6 +20,7 @@
 
 from .data.sample import (
     SampleAsset,
+    SamplePatchMemoryItem,
     SampleSpec,
     SampleState,
     SampleTrace,
@@ -115,6 +116,7 @@ from .core.runner import (
 __all__ = [
     # Sample
     "SampleAsset",
+    "SamplePatchMemoryItem",
     "SampleSpec",
     "SampleState",
     "SampleTrace",

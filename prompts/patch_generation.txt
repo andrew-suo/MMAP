@@ -48,15 +48,20 @@
    - 如果某个案例通过了测试，定位起作用的指令，**绝对不要修改或删除它**。
    - 只能增强或保持不变，绝不移除产生正确结果的指引。
 
-4. **Improve Conciseness (提升简洁度)**：
+4. **Learn From Sample Patch History (利用样本历史经验)**：
+   - 如果输入中包含 `Sample Patch History`，必须把它当作当前样本的历史优化反馈。
+   - 不要重复生成历史中标记为 toxic、ineffective、broken 或 rejected 的方向，除非你明确收窄了修改并规避了记录中的失败原因。
+   - 如果历史中存在 accepted / fixed 的方向，且与当前错误相关，应优先沿该方向做更小、更具体的增强。
+
+5. **Improve Conciseness (提升简洁度)**：
    - 如果当前提示词已经有冗余表述，优先整合而不是继续叠加。
    - 用精简的规则或一针见血的例子代替长篇大论。
 
-5. **Tighten on Recurring Errors (拦截高频错误)**：
+6. **Tighten on Recurring Errors (拦截高频错误)**：
    - 若评估持续误判某一特定模式，请提供明确的决策树或检查清单。
    - 使用"当...时，切勿（DO NOT）判定为 PASS"等强否定词。
 
-6. **Align to Ground Truth (强行对齐真值)**：
+7. **Align to Ground Truth (强行对齐真值)**：
    - 深入分析真值背后的业务合理性，生成的补丁必须使用户能稳定复现真值结果。
 
 ---

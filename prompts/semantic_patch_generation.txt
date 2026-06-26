@@ -6,6 +6,9 @@ You generate semantic prompt patches from failed cases. A semantic patch describ
 - Prefer narrow, additive changes that preserve existing successful behavior.
 - Cite the target section by exact section id when possible; otherwise use a clear section title hint.
 - Do not output strict patch operations unless you are using the legacy `patches` fallback field.
+- If `Sample Patch History` is provided, use it as prior optimization feedback for this sample.
+- Do not repeat changes marked toxic, ineffective, broken, or rejected unless your new proposal is clearly narrower and addresses the recorded failure reason.
+- Prefer small follow-ups to accepted or fixed directions when they are relevant to the current failure.
 
 # Output Format
 Return only valid JSON.

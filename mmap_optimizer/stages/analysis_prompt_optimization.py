@@ -12,7 +12,7 @@ from ..patch.types import (
     SemanticPatchDraft,
     ToxicityReport,
 )
-from ..data.sample import SampleBatch, SampleSet, SampleTrace
+from ..data.sample import SampleBatch, SamplePatchMemoryItem, SampleSet, SampleTrace
 from ..prompt.structured_prompt import StructuredPrompt
 from ..prompt.section_contribution import SectionContributionTracker
 from .extraction_prompt_optimization import AnalysisResult, ExtractionResult
@@ -502,6 +502,13 @@ class AnalysisPromptOptimizationStage:
                     trace.transition = "unchanged_wrong"
                 else:
                     trace.transition = "unchanged_correct"
+            self._record_sample_patch_memory(
+                patches=self.initial_merged_patches,
+                fixed_sample_ids=fixed_ids,
+                broken_sample_ids=broken_ids,
+                unchanged_wrong_ids=unchanged_wrong_ids,
+                unchanged_correct_ids=unchanged_correct_ids,
+            )
             return
 
         if self.patch_apply_executor is not None:
@@ -598,6 +605,13 @@ class AnalysisPromptOptimizationStage:
                     trace.transition = "unchanged_wrong"
                 else:
                     trace.transition = "unchanged_correct"
+            self._record_sample_patch_memory(
+                patches=self.initial_merged_patches,
+                fixed_sample_ids=fixed_ids,
+                broken_sample_ids=broken_ids,
+                unchanged_wrong_ids=unchanged_wrong_ids,
+                unchanged_correct_ids=unchanged_correct_ids,
+            )
             return
 
         if not self.initial_merged_patches:
@@ -664,6 +678,107 @@ class AnalysisPromptOptimizationStage:
             safe_patches=[p.id for p in safe_patches],
             toxic_sample_ids=toxic_sample_ids,
         )
+
+        self._record_sample_patch_memory(
+            patches=self.initial_merged_patches,
+            fixed_sample_ids=fixed_ids,
+            broken_sample_ids=broken_ids,
+            unchanged_wrong_ids=unchanged_wrong_ids,
+            unchanged_correct_ids=unchanged_correct_ids,
+        )
+
+    def _record_sample_patch_memory(
+        self,
+        patches: list[AnalysisPatch],
+        fixed_sample_ids: list[str],
+        broken_sample_ids: list[str],
+        unchanged_wrong_ids: list[str],
+        unchanged_correct_ids: list[str],
+    ) -> None:
+        """把本轮 analysis patch 的最终结果写入 source sample 记忆。"""
+        transition_by_sample = self._transition_map(
+            fixed_sample_ids=fixed_sample_ids,
+            broken_sample_ids=broken_sample_ids,
+            unchanged_wrong_ids=unchanged_wrong_ids,
+            unchanged_correct_ids=unchanged_correct_ids,
+        )
+        for patch in patches:
+            for sample_id in patch.source_sample_ids:
+                state = self.sample_set.states.get(sample_id)
+                if state is None:
+                    continue
+                item = self._build_patch_memory_item(
+                    patch=patch,
+                    sample_id=sample_id,
+                    transition=transition_by_sample.get(sample_id, "unknown"),
+                )
+                state.add_patch_memory(item)
+                state.generated_analysis_patch_count += 1
+
+    def _transition_map(
+        self,
+        fixed_sample_ids: list[str],
+        broken_sample_ids: list[str],
+        unchanged_wrong_ids: list[str],
+        unchanged_correct_ids: list[str],
+    ) -> dict[str, str]:
+        transition_by_sample = {sid: "fixed" for sid in fixed_sample_ids}
+        transition_by_sample.update({sid: "broken" for sid in broken_sample_ids})
+        transition_by_sample.update({sid: "unchanged_wrong" for sid in unchanged_wrong_ids})
+        transition_by_sample.update({sid: "unchanged_correct" for sid in unchanged_correct_ids})
+        return transition_by_sample
+
+    def _build_patch_memory_item(
+        self,
+        patch: AnalysisPatch,
+        sample_id: str,
+        transition: str,
+    ) -> SamplePatchMemoryItem:
+        metadata = dict(getattr(patch, "metadata", {}))
+        rejection_reason = getattr(patch, "rejection_reason", None)
+        final_decision = self._patch_final_decision(patch)
+        return SamplePatchMemoryItem(
+            sample_id=sample_id,
+            prompt_type="analysis",
+            iteration=self.iteration,
+            patch_id=patch.id,
+            source_patch_id=metadata.get("semantic_draft_id"),
+            target_section_id=patch.target_section_id,
+            operation_type=patch.operation_type,
+            direction=str(metadata.get("source_reason") or patch.rationale or "")[:500],
+            content=patch.content[:800],
+            rationale=patch.rationale[:800],
+            final_decision=final_decision,
+            transition=transition,
+            toxicity=self._patch_toxicity(patch, final_decision),
+            rejection_reason=rejection_reason,
+            metadata={
+                "translation_status": metadata.get("translation_status"),
+                "source_phase": metadata.get("source_phase"),
+            },
+        )
+
+    def _patch_final_decision(self, patch: AnalysisPatch) -> str:
+        if patch.rejection_reason == "TOXIC":
+            return "toxic"
+        if patch.rejection_reason == "INEFFECTIVE":
+            return "ineffective"
+        if patch.rejection_reason == "REGRESSION":
+            return "rejected"
+        if patch.status == "accepted":
+            return "accepted"
+        if patch.status == "candidate_safe":
+            return "accepted"
+        if patch.status == "rejected":
+            return "rejected"
+        return patch.status or "unknown"
+
+    def _patch_toxicity(self, patch: AnalysisPatch, final_decision: str) -> str:
+        if final_decision == "toxic" or patch.rejection_reason == "TOXIC":
+            return "toxic"
+        if final_decision == "accepted":
+            return "safe"
+        return "not_tested"
 
     def _step7_compress_if_needed(self) -> None:
         """Step 7: Analysis Prompt 压缩。"""

@@ -17,7 +17,7 @@ from typing import Any, Literal, TypeVar, cast
 
 from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionResult
 from ..patch.types import AnalysisPatch, ExtractionPatch, SemanticPatchDraft
-from ..data.sample import SampleSet
+from ..data.sample import SamplePatchMemoryItem, SampleSet
 from ..prompt.structured_prompt import PromptSection, StructuredPrompt
 from ..prompt.output_repair import parse_model_json_output
 from .patch_validator import PatchValidator
@@ -163,6 +163,7 @@ class PatchGenerationExecutor:
                 analysis_result=analysis_result,
                 ground_truth=ground_truth,
                 current_prompt=extraction_prompt,
+                sample_set=sample_set,
             )
 
             for suggestion in suggestions:
@@ -213,6 +214,7 @@ class PatchGenerationExecutor:
                 reflection_result=reflection,
                 ground_truth=ground_truth,
                 current_prompt=analysis_prompt,
+                sample_set=sample_set,
             )
 
             for suggestion in suggestions:
@@ -238,6 +240,7 @@ class PatchGenerationExecutor:
         reflection_result: Any = None,
         ground_truth: dict[str, Any] | None = None,
         current_prompt: StructuredPrompt | None = None,
+        sample_set: SampleSet | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """调用模型生成 patch suggestions。
 
@@ -264,6 +267,7 @@ class PatchGenerationExecutor:
             reflection_result=reflection_result,
             ground_truth=ground_truth,
             current_prompt=current_prompt,
+            sample_set=sample_set,
         )
 
         messages = [
@@ -348,6 +352,7 @@ class PatchGenerationExecutor:
         reflection_result: Any = None,
         ground_truth: dict[str, Any] | None = None,
         current_prompt: StructuredPrompt | None = None,
+        sample_set: SampleSet | None = None,
     ) -> str:
         """构建 patch 生成的用户消息。"""
         parts: list[str] = []
@@ -410,7 +415,73 @@ class PatchGenerationExecutor:
             parts.append("\n# Ground Truth")
             parts.append(json.dumps(ground_truth, ensure_ascii=False))
 
+        sample_id = self._sample_id_for_patch_context(
+            prompt_type=prompt_type,
+            extraction_result=extraction_result,
+            reflection_result=reflection_result,
+        )
+        history = self._get_sample_patch_history(
+            sample_id=sample_id,
+            prompt_type=prompt_type,
+            sample_set=sample_set,
+        )
+        if history:
+            parts.append("\n# Sample Patch History")
+            parts.append(self._render_sample_patch_history(history))
+
         return "\n".join(parts)
+
+    def _sample_id_for_patch_context(
+        self,
+        prompt_type: str,
+        extraction_result: ExtractionResult | None = None,
+        reflection_result: Any = None,
+    ) -> str | None:
+        if prompt_type == "extraction" and extraction_result is not None:
+            return extraction_result.sample_id
+        if prompt_type == "analysis" and reflection_result is not None:
+            return getattr(reflection_result, "sample_id", None)
+        return None
+
+    def _get_sample_patch_history(
+        self,
+        sample_id: str | None,
+        prompt_type: str,
+        sample_set: SampleSet | None,
+        limit: int = 8,
+    ) -> list[SamplePatchMemoryItem]:
+        if not sample_id or sample_set is None:
+            return []
+        state = sample_set.states.get(sample_id)
+        if state is None:
+            return []
+        return state.get_patch_memory(prompt_type, limit=limit)
+
+    def _render_sample_patch_history(self, history: list[SamplePatchMemoryItem]) -> str:
+        lines = [
+            "Use this history to avoid repeating toxic or ineffective changes. "
+            "Prefer narrow follow-ups to accepted/fixed directions when they are relevant."
+        ]
+        for item in history:
+            lines.append(
+                "- "
+                f"iteration={item.iteration}; "
+                f"decision={item.final_decision}; "
+                f"transition={item.transition}; "
+                f"toxicity={item.toxicity}; "
+                f"section={item.target_section_id}; "
+                f"op={item.operation_type}; "
+                f"direction={self._compact_text(item.direction, 180)}; "
+                f"content={self._compact_text(item.content, 240)}; "
+                f"reason={self._compact_text(item.rejection_reason or item.rationale, 180)}"
+            )
+        return "\n".join(lines)
+
+    def _compact_text(self, text: str | None, limit: int) -> str:
+        value = " ".join(str(text or "").split())
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3] + "..."
 
     def _reset_run_artifacts(self) -> None:
         self.semantic_patch_drafts = []

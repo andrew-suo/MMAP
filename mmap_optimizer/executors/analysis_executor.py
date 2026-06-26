@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any, Optional
 
 from ..model.client import ModelClient
 from ..model.retry import FailurePolicyConfig, SampleFailureTracker
@@ -19,6 +19,9 @@ from ..prompt.structured_prompt import StructuredPrompt, StructuredPromptRendere
 from ..prompt.prompt_manager import render_prompt
 from ..prompt.output_repair import parse_model_json_output
 from .evaluation_executor import normalize_label
+
+if TYPE_CHECKING:
+    from ..stages.analysis_prompt_optimization import ReflectionResult
 
 
 class AnalysisExecutor:
@@ -140,7 +143,7 @@ class AnalysisExecutor:
         extraction_result: ExtractionResult,
         analysis_result: AnalysisResult,
         sample_spec: SampleSpec,
-    ) -> "ReflectionResult":
+    ) -> ReflectionResult:
         """对分析错误的样本进行反思（多模态，带 GT）。"""
         from ..stages.analysis_prompt_optimization import ReflectionResult
 
@@ -206,7 +209,7 @@ class AnalysisExecutor:
         extraction_prompt: StructuredPrompt,
         extraction_result: ExtractionResult,
         sample_spec: SampleSpec,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[list[dict[str, Any]], list[SampleAsset]]:
         """构建盲评分析消息（多模态，不带 GT）。"""
         system_content = self.renderer.render_system_message(analysis_prompt)
         extraction_prompt_text = self.renderer.render(extraction_prompt)
@@ -254,7 +257,7 @@ class AnalysisExecutor:
         extraction_result: ExtractionResult,
         analysis_result: AnalysisResult,
         sample_spec: SampleSpec,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[list[dict[str, Any]], list[SampleAsset]]:
         """构建反思消息（多模态，带 GT）。"""
         system_content = self.renderer.render_system_message(analysis_prompt)
 
@@ -345,7 +348,7 @@ class AnalysisExecutor:
             "judgement": dict,
             "confirmed_facts": list,
             "hypothesized_error_causes": list,
-            "error_reason": str | None,
+            "error_reason": Optional[str],
         }
         parse_result = parse_model_json_output(
             raw_output=raw_output,

@@ -543,9 +543,10 @@ class MMAPRunner:
         self._save_run_plan()
         self._save_current_prompts()
         self._save_sample_traces()
+        current_step = self.run_plan.get_current_step()
         self._save_checkpoint(
             current_phase="prompt_optimization",
-            current_step_id=self.run_plan.get_current_step().id if self.run_plan.get_current_step() else None,
+            current_step_id=current_step.id if current_step else None,
             current_stage="completed",
             event="prompt_structuring_completed",
         )

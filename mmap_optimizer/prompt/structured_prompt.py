@@ -59,6 +59,7 @@ class StructuredPrompt:
     sections: list[PromptSection]
     raw_markdown: str
     version: int = 1
+    parent_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -69,6 +70,7 @@ class StructuredPrompt:
             "sections": [section.to_dict() for section in self.sections],
             "raw_markdown": self.raw_markdown,
             "version": self.version,
+            "parent_id": self.parent_id,
             "metadata": dict(self.metadata),
         }
 

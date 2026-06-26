@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal, TypeVar, cast
 
 from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionResult
 from ..patch.types import AnalysisPatch, ExtractionPatch, SemanticPatchDraft
@@ -21,6 +21,8 @@ from ..data.sample import SampleSet
 from ..prompt.structured_prompt import PromptSection, StructuredPrompt
 from ..prompt.output_repair import parse_model_json_output
 from .patch_validator import PatchValidator
+
+_T_Patch = TypeVar("_T_Patch", ExtractionPatch, AnalysisPatch)
 
 
 class PatchGenerationExecutor:
@@ -176,7 +178,7 @@ class PatchGenerationExecutor:
         validated, rejected = self.patch_validator.validate_batch_with_calibration(
             draft_patches, extraction_prompt, sample_set
         )
-        return draft_patches, validated, rejected
+        return draft_patches, cast(list[ExtractionPatch], validated), cast(list[ExtractionPatch], rejected)
 
     def _generate_analysis_patches_with_model(
         self,
@@ -226,7 +228,7 @@ class PatchGenerationExecutor:
         validated, rejected = self.patch_validator.validate_batch_with_calibration(
             draft_patches, analysis_prompt, sample_set
         )
-        return draft_patches, validated, rejected
+        return draft_patches, cast(list[AnalysisPatch], validated), cast(list[AnalysisPatch], rejected)
 
     def _call_patch_generation_model(
         self,
@@ -586,7 +588,7 @@ class PatchGenerationExecutor:
         validated, rejected = self.patch_validator.validate_batch(
             draft_patches, extraction_prompt, sample_set
         )
-        return draft_patches, validated, rejected
+        return draft_patches, cast(list[ExtractionPatch], validated), cast(list[ExtractionPatch], rejected)
 
     def _generate_analysis_patches_by_code(
         self,
@@ -635,7 +637,7 @@ class PatchGenerationExecutor:
         validated, rejected = self.patch_validator.validate_batch(
             draft_patches, analysis_prompt, sample_set
         )
-        return draft_patches, validated, rejected
+        return draft_patches, cast(list[AnalysisPatch], validated), cast(list[AnalysisPatch], rejected)
 
     def _compose_extraction_patch_content(
         self,
@@ -670,10 +672,10 @@ class PatchGenerationExecutor:
         self,
         sample_id: str,
         suggestion: dict[str, Any],
-        patch_class: type,
+        patch_class: type[_T_Patch],
         patch_id_prefix: str,
         cited_sections: list[str] | None = None,
-    ) -> ExtractionPatch | AnalysisPatch:
+    ) -> _T_Patch:
         """从 patch suggestion 构建 patch 对象。"""
         target_section_id = suggestion.get("target_section", "section_1")
         operation_type = self._normalize_operation(suggestion.get("op", "append_to_section"))
@@ -711,9 +713,19 @@ class PatchGenerationExecutor:
         )
         if suggestion.get("semantic_draft_id"):
             self.translated_patches.append(patch)
-        return patch
+        return cast(_T_Patch, patch)
 
-    def _normalize_operation(self, operation: Any) -> str:
+    def _normalize_operation(
+        self, operation: Any
+    ) -> Literal[
+        "append_to_section",
+        "insert_after",
+        "insert_before",
+        "replace_in_section",
+        "replace_section",
+        "add_after_section",
+        "delete_section",
+    ]:
         """Normalize legacy suggestion operation names to patch operation types."""
         aliases = {
             "append": "append_to_section",
@@ -727,7 +739,7 @@ class PatchGenerationExecutor:
             "delete": "delete_section",
             "delete_section": "delete_section",
         }
-        return aliases.get(str(operation), "append_to_section")
+        return aliases.get(str(operation), "append_to_section")  # type: ignore[return-value]
 
     def _get_mutable_section_ids(self, prompt: StructuredPrompt) -> list[str]:
         """获取 prompt 中所有 mutable section 的 id（递归 children）。"""

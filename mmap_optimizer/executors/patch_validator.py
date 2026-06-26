@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from ..patch.types import AnalysisPatch, ExtractionPatch
 from ..data.sample import SampleSet
@@ -141,13 +141,13 @@ class PatchValidator:
                 return self._reject(patch, f"UNKNOWN_SOURCE_SAMPLE_ID:{sample_id}"), False
 
         # 校验通过
-        patch.status = "candidate"
+        patch.status = "candidate_safe"
         patch.rejection_reason = None
         return patch, True
 
     def validate_batch(
         self,
-        patches: list[ExtractionPatch | AnalysisPatch],
+        patches: Sequence[ExtractionPatch | AnalysisPatch],
         prompt: StructuredPrompt,
         sample_set: SampleSet,
     ) -> tuple[
@@ -176,7 +176,7 @@ class PatchValidator:
 
     def validate_batch_with_calibration(
         self,
-        patches: list[ExtractionPatch | AnalysisPatch],
+        patches: Sequence[ExtractionPatch | AnalysisPatch],
         prompt: StructuredPrompt,
         sample_set: SampleSet,
     ) -> tuple[
@@ -259,9 +259,14 @@ class PatchValidator:
         if not patches:
             return patches
 
+        # calibration_prompt_path 在调用方（validate_batch_with_calibration）已校验非空
+        calibration_path = self.calibration_prompt_path
+        if calibration_path is None:
+            return patches
+
         try:
             # 加载校准 prompt
-            calibration_prompt = Path(self.calibration_prompt_path).read_text(
+            calibration_prompt = Path(calibration_path).read_text(
                 encoding="utf-8"
             )
 

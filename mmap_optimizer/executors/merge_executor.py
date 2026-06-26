@@ -228,7 +228,7 @@ class MergeExecutor:
         lines: list[str] = []
         for section in prompt.sections:
             mutable_tag = "" if section.mutable else " [PROTECTED]"
-            lines.append(f"{section.header}{mutable_tag}")
+            lines.append(f"{section.title}{mutable_tag}")
         return "\n".join(lines)
 
     def _patch_to_merge_dict(self, patch: Any) -> dict[str, Any]:
@@ -291,7 +291,8 @@ class MergeExecutor:
         """将 patch 转换为字典（优先使用 to_dict，否则手动提取字段）。"""
         to_dict = getattr(patch, "to_dict", None)
         if callable(to_dict):
-            return to_dict()
+            result: Any = to_dict()
+            return result if isinstance(result, dict) else dict(result)
         return {
             "id": getattr(patch, "id", ""),
             "target_section_id": getattr(patch, "target_section_id", ""),

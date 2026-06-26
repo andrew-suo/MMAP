@@ -10,7 +10,7 @@ import base64
 import json
 import mimetypes
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ..model.client import ModelClient
 from ..model.retry import FailurePolicyConfig, SampleFailureTracker
@@ -170,12 +170,12 @@ class ExtractionExecutor:
         mime_type, _ = mimetypes.guess_type(path)
         return mime_type or "image/png"
 
-    def _parse_output(self, raw_output: str) -> tuple[dict | None, str]:
+    def _parse_output(self, raw_output: str) -> tuple[dict | None, Literal["correct", "wrong", "invalid"]]:
         """解析模型输出。
 
         尝试 JSON 解析：
         - 解析成功且为 dict，返回 (parsed_dict, "correct")
-        - 解析失败，尝试使用模型修复，修复成功返回 (parsed_dict, "repaired")
+        - 解析失败，尝试使用模型修复，修复成功返回 (parsed_dict, "correct")
         - 修复也失败，返回 (None, "invalid")
 
         注意：status 只反映解析成功/失败，不判断业务对错。
@@ -193,6 +193,6 @@ class ExtractionExecutor:
             "raw_output_preview": raw_output[:500],
         }
         if isinstance(parse_result.parsed, dict):
-            status = "correct" if parse_result.status == "parsed" else "repaired"
-            return parse_result.parsed, status
+            # 解析成功（含模型修复后成功）统一记为 "correct"
+            return parse_result.parsed, "correct"
         return None, "invalid"

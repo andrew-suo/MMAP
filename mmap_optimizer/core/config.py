@@ -25,6 +25,7 @@ from ..phases.fewshot_optimization import FewshotConfig
 from ..phases.prompt_structuring import PromptStructuringConfig
 from ..phases.prompt_optimization import MultiSeedConfig, PromptOptimizationConfig
 from ..data.sampler import SamplerConfig
+from ..model.retry import FailurePolicyConfig, RetryConfig
 
 
 @dataclass
@@ -75,6 +76,8 @@ class RunConfig:
     # PR4: Mock 边界收敛。None=自动判断（有 model_client 则真实，否则 mock）；
     # True=强制 mock；False=强制真实（缺 model_client 时报错）
     use_mock: bool | None = None
+    retry: RetryConfig = field(default_factory=RetryConfig)
+    failure_policy: FailurePolicyConfig = field(default_factory=FailurePolicyConfig)
 
 
 @dataclass
@@ -124,6 +127,8 @@ class RefactoredConfig:
                 "seed": self.run.seed,
                 "output_dir": self.run.output_dir,
                 "use_mock": self.run.use_mock,
+                "retry": self.run.retry.to_dict(),
+                "failure_policy": self.run.failure_policy.to_dict(),
             },
             "dataset": {
                 "path": self.dataset.path,
@@ -245,6 +250,8 @@ class RefactoredConfig:
             seed=run_data.get("seed", 42),
             output_dir=run_data.get("output_dir", "runs/exp_001"),
             use_mock=run_data.get("use_mock", None),
+            retry=RetryConfig.from_dict(run_data.get("retry")),
+            failure_policy=FailurePolicyConfig.from_dict(run_data.get("failure_policy")),
         )
 
         # 构建 DatasetConfig

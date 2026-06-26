@@ -206,6 +206,25 @@ def _build_model_client(model_config: dict[str, Any] | None) -> Any:
     return build_model_client(config)
 
 
+def _wrap_model_client(
+    client: Any,
+    *,
+    retry_config: Any,
+    failure_log_path: Any,
+    client_name: str,
+) -> Any:
+    if client is None:
+        return None
+    from ..model.retry import RetryingModelClient
+
+    return RetryingModelClient(
+        client,
+        retry_config=retry_config,
+        failure_log_path=failure_log_path,
+        client_name=client_name,
+    )
+
+
 def create_executors(
     config: dict[str, Any],
     use_mock: bool | None = None,
@@ -237,6 +256,17 @@ def create_executors(
         - ``optimizer_model_client``: 优化模型客户端（用于其他所有任务）
     """
     models_config = config.get("models", {}) if isinstance(config, dict) else {}
+    run_config = config.get("run", {}) if isinstance(config, dict) else {}
+    from ..model.retry import FailurePolicyConfig, RetryConfig, SampleFailureTracker
+
+    retry_config = RetryConfig.from_dict(run_config.get("retry"))
+    failure_policy = FailurePolicyConfig.from_dict(run_config.get("failure_policy"))
+    output_dir = run_config.get("output_dir", "runs/exp_001")
+    failure_log_path = None
+    if output_dir:
+        from pathlib import Path
+
+        failure_log_path = Path(output_dir) / "model_call_failures.jsonl"
     extraction_model_config = models_config.get("extraction") if isinstance(models_config, dict) else None
     optimizer_model_config = models_config.get("optimizer") if isinstance(models_config, dict) else None
 
@@ -249,11 +279,23 @@ def create_executors(
         if extraction_model_config:
             try:
                 extraction_client = _build_model_client(extraction_model_config)
+                extraction_client = _wrap_model_client(
+                    extraction_client,
+                    retry_config=retry_config,
+                    failure_log_path=failure_log_path,
+                    client_name="extraction_model_client",
+                )
             except Exception as e:
                 raise RuntimeError(f"extraction model_client 构建失败: {e}") from e
         if optimizer_model_config:
             try:
                 optimizer_client = _build_model_client(optimizer_model_config)
+                optimizer_client = _wrap_model_client(
+                    optimizer_client,
+                    retry_config=retry_config,
+                    failure_log_path=failure_log_path,
+                    client_name="optimizer_model_client",
+                )
             except Exception as e:
                 raise RuntimeError(f"optimizer model_client 构建失败: {e}") from e
 
@@ -295,15 +337,30 @@ def create_executors(
     # - extraction/fewshot 用 extraction_client
     # - analysis/patch/merge/compression 用 optimizer_client
     use_real = model_client is not None and use_mock is not True
+    sample_failure_tracker = SampleFailureTracker(
+        failure_policy.max_consecutive_sample_failures
+    )
     if use_real:
-        extraction_executor: Any = ExtractionExecutor(extraction_client, extraction_model_config)
+        extraction_executor: Any = ExtractionExecutor(
+            extraction_client,
+            extraction_model_config,
+            failure_policy=failure_policy,
+            sample_failure_tracker=sample_failure_tracker,
+        )
         evaluation_executor: Any = EvaluationExecutor()
         analysis_executor: Any = AnalysisExecutor(
             optimizer_client,
             optimizer_model_config,
             analysis_reflection_template_path=analysis_reflection_template_path,
+            failure_policy=failure_policy,
+            sample_failure_tracker=sample_failure_tracker,
         )
-        fewshot_executor: Any = FewshotExecutor(extraction_client, extraction_model_config)
+        fewshot_executor: Any = FewshotExecutor(
+            extraction_client,
+            extraction_model_config,
+            failure_policy=failure_policy,
+            sample_failure_tracker=sample_failure_tracker,
+        )
     else:
         extraction_executor = _MockExtractionExecutor()
         evaluation_executor = _MockEvaluationExecutor()

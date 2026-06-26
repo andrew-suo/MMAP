@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 from ..model.client import ModelClient
+from ..model.retry import FailurePolicyConfig, SampleFailureTracker
 
 from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionResult
 from ..data.sample import SampleAsset, SampleSet, SampleSpec
@@ -36,6 +37,8 @@ class AnalysisExecutor:
         primary_answer_fields: list[str] | None = None,
         label_mapping: dict[str, Any] | None = None,
         analysis_reflection_template_path: str | None = None,
+        failure_policy: FailurePolicyConfig | None = None,
+        sample_failure_tracker: SampleFailureTracker | None = None,
     ):
         self.model_client = model_client
         self.model_config = model_config or {}
@@ -45,6 +48,10 @@ class AnalysisExecutor:
         self.analysis_reflection_template_path = analysis_reflection_template_path
         self.model_output_repairs: list[dict[str, Any]] = []
         self._last_parse_record: dict[str, Any] | None = None
+        self.failure_policy = failure_policy or FailurePolicyConfig()
+        self.sample_failure_tracker = sample_failure_tracker or SampleFailureTracker(
+            self.failure_policy.max_consecutive_sample_failures
+        )
 
     def execute(
         self,
@@ -103,9 +110,28 @@ class AnalysisExecutor:
             spec = sample_set.specs.get(extraction_result.sample_id)
             if spec is None:
                 continue
-            results.append(
-                self.execute(analysis_prompt, extraction_prompt, extraction_result, spec)
-            )
+            try:
+                result = self.execute(analysis_prompt, extraction_prompt, extraction_result, spec)
+                self.sample_failure_tracker.record_success()
+            except Exception as exc:
+                if not self.failure_policy.skip_single_sample_failure:
+                    raise
+                self.sample_failure_tracker.record_failure(
+                    sample_id=extraction_result.sample_id,
+                    call_type="analysis",
+                    error=exc,
+                )
+                result = AnalysisResult(
+                    sample_id=extraction_result.sample_id,
+                    judgement={
+                        "status": "model_call_failed",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                    analysis_correct=False,
+                    error_reason=f"model_call_failed: {type(exc).__name__}: {exc}",
+                )
+            results.append(result)
         return results
 
     def reflect(
@@ -121,9 +147,26 @@ class AnalysisExecutor:
         messages, assets = self._build_reflection_messages(
             analysis_prompt, extraction_result, analysis_result, sample_spec
         )
-        response = self.model_client.complete_multimodal(
-            messages, assets=assets, model_config=self.model_config
-        )
+        try:
+            response = self.model_client.complete_multimodal(
+                messages, assets=assets, model_config=self.model_config
+            )
+            self.sample_failure_tracker.record_success()
+        except Exception as exc:
+            if not self.failure_policy.skip_single_sample_failure:
+                raise
+            self.sample_failure_tracker.record_failure(
+                sample_id=extraction_result.sample_id,
+                call_type="analysis_reflection",
+                error=exc,
+            )
+            return ReflectionResult(
+                sample_id=extraction_result.sample_id,
+                reflection_success=False,
+                error_reason=f"model_call_failed: {type(exc).__name__}: {exc}",
+                patch_suggestion=None,
+                notes=["model_call_failed"],
+            )
         parsed = self._parse_judgement(response.raw_output)
         if self._last_parse_record is not None:
             record = dict(self._last_parse_record)

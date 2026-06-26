@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..model.client import ModelClient
+from ..model.retry import FailurePolicyConfig, SampleFailureTracker
 from ..stages.extraction_prompt_optimization import EvalRecord, ExtractionResult
 from ..phases.fewshot_optimization import FewshotExample
 from ..data.sample import SampleBatch, SampleSet
@@ -28,16 +29,24 @@ class FewshotExecutor:
         primary_answer_fields: list[str] | None = None,
         label_mapping: dict[str, Any] | None = None,
         ema_alpha: float = 0.3,
+        failure_policy: FailurePolicyConfig | None = None,
+        sample_failure_tracker: SampleFailureTracker | None = None,
     ):
         self.model_client = model_client
         self.model_config = model_config or {}
         self.primary_answer_fields = primary_answer_fields or ["result"]
         self.label_mapping = label_mapping
         self.ema_alpha = ema_alpha
+        self.failure_policy = failure_policy or FailurePolicyConfig()
+        self.sample_failure_tracker = sample_failure_tracker or SampleFailureTracker(
+            self.failure_policy.max_consecutive_sample_failures
+        )
         # 复用 ExtractionExecutor 的核心逻辑
         self._extraction_executor = ExtractionExecutor(
             model_client=model_client,
             model_config=model_config,
+            failure_policy=self.failure_policy,
+            sample_failure_tracker=self.sample_failure_tracker,
         )
         # 复用 EvaluationExecutor
         self._evaluation_executor = EvaluationExecutor(

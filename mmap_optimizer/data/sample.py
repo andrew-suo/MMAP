@@ -23,6 +23,29 @@ class SampleAsset:
     mime_type: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "sample_id": self.sample_id,
+            "type": self.type,
+            "uri": self.uri,
+            "local_path": self.local_path,
+            "mime_type": self.mime_type,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SampleAsset":
+        return cls(
+            id=data.get("id", ""),
+            sample_id=data.get("sample_id", ""),
+            type=data.get("type", "image"),
+            uri=data.get("uri"),
+            local_path=data.get("local_path"),
+            mime_type=data.get("mime_type"),
+            metadata=dict(data.get("metadata", {})),
+        )
+
 
 @dataclass
 class SampleSpec:
@@ -34,6 +57,29 @@ class SampleSpec:
     metadata: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
     active: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "input": dict(self.input),
+            "ground_truth": dict(self.ground_truth),
+            "assets": [asset.to_dict() for asset in self.assets],
+            "metadata": dict(self.metadata),
+            "tags": list(self.tags),
+            "active": self.active,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SampleSpec":
+        return cls(
+            id=data.get("id", ""),
+            input=dict(data.get("input", {})),
+            ground_truth=dict(data.get("ground_truth", {})),
+            assets=[SampleAsset.from_dict(a) for a in data.get("assets", [])],
+            metadata=dict(data.get("metadata", {})),
+            tags=list(data.get("tags", [])),
+            active=bool(data.get("active", True)),
+        )
 
 
 @dataclass
@@ -81,6 +127,46 @@ class SampleState:
         if has_error:
             self.error_count += 1
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sample_id": self.sample_id,
+            "selected_count": self.selected_count,
+            "selection_ema": self.selection_ema,
+            "last_selected_iteration": self.last_selected_iteration,
+            "frequency_score": self.frequency_score,
+            "error_count": self.error_count,
+            "error_ema": self.error_ema,
+            "difficulty_score": self.difficulty_score,
+            "last_extraction_status": self.last_extraction_status,
+            "last_analysis_status": self.last_analysis_status,
+            "historical_fixed_count": self.historical_fixed_count,
+            "historical_broken_count": self.historical_broken_count,
+            "generated_extraction_patch_count": self.generated_extraction_patch_count,
+            "generated_analysis_patch_count": self.generated_analysis_patch_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SampleState":
+        state = cls(sample_id=data.get("sample_id", ""))
+        for key in (
+            "selected_count",
+            "selection_ema",
+            "last_selected_iteration",
+            "frequency_score",
+            "error_count",
+            "error_ema",
+            "difficulty_score",
+            "last_extraction_status",
+            "last_analysis_status",
+            "historical_fixed_count",
+            "historical_broken_count",
+            "generated_extraction_patch_count",
+            "generated_analysis_patch_count",
+        ):
+            if key in data:
+                setattr(state, key, data[key])
+        return state
+
 
 @dataclass
 class SampleTrace:
@@ -118,6 +204,53 @@ class SampleTrace:
 
     # 其他
     notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sample_id": self.sample_id,
+            "phase": self.phase,
+            "iteration": self.iteration,
+            "selected": self.selected,
+            "base_extraction_result_id": self.base_extraction_result_id,
+            "base_extraction_status": self.base_extraction_status,
+            "final_extraction_result_id": self.final_extraction_result_id,
+            "final_extraction_status": self.final_extraction_status,
+            "analysis_result_id": self.analysis_result_id,
+            "analysis_correct": self.analysis_correct,
+            "reflection_result_id": self.reflection_result_id,
+            "reflection_success": self.reflection_success,
+            "generated_extraction_patch_ids": list(self.generated_extraction_patch_ids),
+            "generated_analysis_patch_ids": list(self.generated_analysis_patch_ids),
+            "fixed_by_patch_ids": list(self.fixed_by_patch_ids),
+            "broken_by_patch_ids": list(self.broken_by_patch_ids),
+            "toxic_trigger_patch_ids": list(self.toxic_trigger_patch_ids),
+            "transition": self.transition,
+            "notes": list(self.notes),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SampleTrace":
+        return cls(
+            sample_id=data.get("sample_id", ""),
+            phase=data.get("phase", ""),
+            iteration=int(data.get("iteration", 0)),
+            selected=bool(data.get("selected", False)),
+            base_extraction_result_id=data.get("base_extraction_result_id"),
+            base_extraction_status=data.get("base_extraction_status"),
+            final_extraction_result_id=data.get("final_extraction_result_id"),
+            final_extraction_status=data.get("final_extraction_status"),
+            analysis_result_id=data.get("analysis_result_id"),
+            analysis_correct=data.get("analysis_correct"),
+            reflection_result_id=data.get("reflection_result_id"),
+            reflection_success=data.get("reflection_success"),
+            generated_extraction_patch_ids=list(data.get("generated_extraction_patch_ids", [])),
+            generated_analysis_patch_ids=list(data.get("generated_analysis_patch_ids", [])),
+            fixed_by_patch_ids=list(data.get("fixed_by_patch_ids", [])),
+            broken_by_patch_ids=list(data.get("broken_by_patch_ids", [])),
+            toxic_trigger_patch_ids=list(data.get("toxic_trigger_patch_ids", [])),
+            transition=data.get("transition"),
+            notes=list(data.get("notes", [])),
+        )
 
 
 @dataclass
@@ -173,3 +306,16 @@ class SampleBatch:
             "metadata": dict(self.metadata),
             "warnings": list(self.warnings),
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SampleBatch":
+        return cls(
+            id=data.get("id", ""),
+            phase=data.get("phase", ""),
+            iteration=int(data.get("iteration", 0)),
+            sample_ids=list(data.get("sample_ids", [])),
+            sampler_name=data.get("sampler_name", ""),
+            scores=dict(data.get("scores", {})),
+            metadata=dict(data.get("metadata", {})),
+            warnings=list(data.get("warnings", [])),
+        )

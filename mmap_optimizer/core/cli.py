@@ -104,6 +104,16 @@ def main() -> None:
         help="输出目录 (覆盖配置文件中的设置)",
     )
     run_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="从输出目录中的 checkpoint.json 继续运行",
+    )
+    run_parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="忽略已有 checkpoint，从头开始运行",
+    )
+    run_parser.add_argument(
         "--use-mock",
         action="store_true",
         default=None,
@@ -233,6 +243,8 @@ def run_command(args: argparse.Namespace) -> None:
     print(f"Patch root merge prompt: {patch_root_merge_prompt_path}")
     print(f"Patch text match prompt: {patch_text_match_prompt_path}")
     print(f"输出目录: {config.run.output_dir}")
+    if args.resume and not args.no_resume:
+        print("Resume: enabled")
 
     # PR4: 解析 use_mock 标志
     use_mock: bool | None = None
@@ -261,7 +273,7 @@ def run_command(args: argparse.Namespace) -> None:
     print("\n开始执行...")
     print("-" * 60)
 
-    summary = runner.run()
+    summary = runner.run(resume=bool(args.resume and not args.no_resume))
 
     # 显示结果
     print("-" * 60)

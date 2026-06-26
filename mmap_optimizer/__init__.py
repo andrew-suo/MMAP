@@ -20,6 +20,7 @@
 
 from .data.sample import (
     SampleAsset,
+    SampleOutcomeHistoryItem,
     SamplePatchMemoryItem,
     SampleSpec,
     SampleState,
@@ -42,6 +43,7 @@ from .data.sampler import (
     FrequencySampler,
     DifficultyFrequencySampler,
     BalancedTraceSampler,
+    ApexTraceSampler,
     create_sampler,
 )
 
@@ -116,6 +118,7 @@ from .core.runner import (
 __all__ = [
     # Sample
     "SampleAsset",
+    "SampleOutcomeHistoryItem",
     "SamplePatchMemoryItem",
     "SampleSpec",
     "SampleState",
@@ -134,6 +137,7 @@ __all__ = [
     "FrequencySampler",
     "DifficultyFrequencySampler",
     "BalancedTraceSampler",
+    "ApexTraceSampler",
     "create_sampler",
     # Batch Size Controller
     "BatchSizeControllerConfig",

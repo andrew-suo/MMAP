@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from mmap_optimizer.data.sample import SampleSet, SampleSpec, SampleState
+from mmap_optimizer.data.sample import (
+    SampleOutcomeHistoryItem,
+    SamplePatchMemoryItem,
+    SampleSet,
+    SampleSpec,
+    SampleState,
+)
 from mmap_optimizer.data.sampler import SamplerConfig, create_sampler
 from mmap_optimizer.prompt.structured_prompt import PromptSection, StructuredPrompt
 
@@ -76,3 +82,82 @@ def test_validation_sampling_excludes_optimization_batch():
 
     assert validation_batch.phase == "prompt_optimization_validation"
     assert set(validation_batch.sample_ids).isdisjoint(optimization_batch.sample_ids)
+
+
+def test_sample_outcome_history_round_trips_and_trims_by_prompt_type():
+    state = SampleState(sample_id="s1")
+    for idx in range(25):
+        state.add_outcome_history(
+            SampleOutcomeHistoryItem(
+                sample_id="s1",
+                prompt_type="extraction",
+                iteration=idx,
+                status="pass" if idx % 2 == 0 else "fail",
+            )
+        )
+    state.add_outcome_history(
+        SampleOutcomeHistoryItem(
+            sample_id="s1",
+            prompt_type="analysis",
+            iteration=1,
+            status="fail",
+        )
+    )
+
+    restored = SampleState.from_dict(state.to_dict())
+
+    assert len(restored.get_outcome_history("extraction")) == 20
+    assert restored.get_outcome_history("extraction")[0].iteration == 5
+    assert restored.get_outcome_history("analysis")[0].status == "fail"
+
+
+def test_apex_trace_sampler_prioritizes_mixed_fail_pool():
+    sample_set = SampleSet()
+    for sid in ("mixed", "hard", "easy", "unknown", "mixed2", "hard2"):
+        sample_set.add_spec(SampleSpec(id=sid, input={}, ground_truth={}))
+
+    for sid in ("mixed", "mixed2"):
+        state = sample_set.states[sid]
+        state.add_outcome_history(SampleOutcomeHistoryItem(sid, "extraction", 1, "pass"))
+        state.add_outcome_history(SampleOutcomeHistoryItem(sid, "extraction", 2, "fail"))
+        state.add_patch_memory(
+            SamplePatchMemoryItem(
+                sample_id=sid,
+                prompt_type="extraction",
+                iteration=2,
+                patch_id=f"p-{sid}",
+                target_section_id="task",
+                operation_type="replace",
+                final_decision="accepted",
+                transition="fixed",
+            )
+        )
+
+    for sid in ("hard", "hard2"):
+        state = sample_set.states[sid]
+        state.add_outcome_history(SampleOutcomeHistoryItem(sid, "extraction", 1, "fail"))
+        state.add_outcome_history(SampleOutcomeHistoryItem(sid, "extraction", 2, "fail"))
+        state.difficulty_score = 0.9
+
+    sample_set.states["easy"].add_outcome_history(
+        SampleOutcomeHistoryItem("easy", "extraction", 1, "pass")
+    )
+
+    sampler = create_sampler(
+        SamplerConfig(
+            type="apex_trace",
+            mixed_fail_ratio=0.5,
+            hard_fail_ratio=0.25,
+            unknown_ratio=0.25,
+            easy_ratio=0.0,
+            random_noise_scale=0.0,
+        )
+    )
+
+    batch = sampler.sample(sample_set, batch_size=4, iteration=3, seed=1)
+
+    assert batch.sampler_name == "apex_trace"
+    assert batch.metadata["apex_pool_counts"]["mixed_fail"] == 2
+    assert set(batch.sample_ids[:2]) == {"mixed", "mixed2"}
+    assert batch.scores["mixed"]["apex_classification"] == "mixed_fail"
+    assert batch.metadata["lookback_window"] == 5

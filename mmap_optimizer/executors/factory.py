@@ -206,6 +206,14 @@ def _build_model_client(model_config: dict[str, Any] | None) -> Any:
     return build_model_client(config)
 
 
+def _runtime_model_config(model_config: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not model_config:
+        return None
+    from ..core.config import model_config_to_runtime_dict
+
+    return model_config_to_runtime_dict(model_config)
+
+
 def _wrap_model_client(
     client: Any,
     *,
@@ -269,6 +277,8 @@ def create_executors(
         failure_log_path = Path(output_dir) / "model_call_failures.jsonl"
     extraction_model_config = models_config.get("extraction") if isinstance(models_config, dict) else None
     optimizer_model_config = models_config.get("optimizer") if isinstance(models_config, dict) else None
+    extraction_runtime_config = _runtime_model_config(extraction_model_config)
+    optimizer_runtime_config = _runtime_model_config(optimizer_model_config)
 
     # 构建两个独立的 model_client：
     # - extraction_client: 用于抽取和 few-shot 验证
@@ -302,8 +312,10 @@ def create_executors(
     # 兜底：只配置了一个模型时两者共用
     if extraction_client is None and optimizer_client is not None:
         extraction_client = optimizer_client
+        extraction_runtime_config = optimizer_runtime_config
     if optimizer_client is None and extraction_client is not None:
         optimizer_client = extraction_client
+        optimizer_runtime_config = extraction_runtime_config
 
     # 向后兼容：model_client 指向任意可用 client（用于校验和旧代码）
     model_client = extraction_client or optimizer_client
@@ -343,21 +355,21 @@ def create_executors(
     if use_real:
         extraction_executor: Any = ExtractionExecutor(
             extraction_client,
-            extraction_model_config,
+            extraction_runtime_config,
             failure_policy=failure_policy,
             sample_failure_tracker=sample_failure_tracker,
         )
         evaluation_executor: Any = EvaluationExecutor()
         analysis_executor: Any = AnalysisExecutor(
             optimizer_client,
-            optimizer_model_config,
+            optimizer_runtime_config,
             analysis_reflection_template_path=analysis_reflection_template_path,
             failure_policy=failure_policy,
             sample_failure_tracker=sample_failure_tracker,
         )
         fewshot_executor: Any = FewshotExecutor(
             extraction_client,
-            extraction_model_config,
+            extraction_runtime_config,
             failure_policy=failure_policy,
             sample_failure_tracker=sample_failure_tracker,
         )
@@ -369,13 +381,13 @@ def create_executors(
 
     shared_patch_validator = PatchValidator(
         model_client=optimizer_client,
-        model_config=optimizer_model_config,
+        model_config=optimizer_runtime_config,
         calibration_prompt_path=patch_calibration_prompt_path,
     )
 
     patch_generation_executor: Any = PatchGenerationExecutor(
         model_client=optimizer_client,
-        model_config=optimizer_model_config,
+        model_config=optimizer_runtime_config,
         patch_generation_prompt_path=patch_generation_prompt_path,
         semantic_patch_generation_prompt_path=semantic_patch_generation_prompt_path or "prompts/semantic_patch_generation.txt",
         patch_translation_prompt_path=semantic_patch_translation_prompt_path or "prompts/semantic_patch_translation.txt",
@@ -390,21 +402,21 @@ def create_executors(
         "patch_generation": patch_generation_executor,
         "patch_apply": PatchApplyExecutor(
             model_client=optimizer_client,
-            model_config=optimizer_model_config,
+            model_config=optimizer_runtime_config,
             text_match_prompt_path=patch_text_match_prompt_path,
         ),
         "patch_validator": shared_patch_validator,
         "merge": MergeExecutor(
             patch_validator=shared_patch_validator,
             model_client=optimizer_client,
-            model_config=optimizer_model_config,
+            model_config=optimizer_runtime_config,
             merge_prompt_path=patch_merge_prompt_path,
             root_merge_prompt_path=patch_root_merge_prompt_path,
         ),
         "toxicity_test": ToxicityTestExecutor(),
         "compression": CompressionExecutor(
             model_client=optimizer_client,
-            model_config=optimizer_model_config,
+            model_config=optimizer_runtime_config,
             compression_prompt_path=prompt_compression_path,
             validation_prompt_path=prompt_compression_validation_path,
             ema_alpha=ema_alpha,
@@ -413,6 +425,8 @@ def create_executors(
         "model_client": model_client,
         "extraction_model_client": extraction_client,
         "optimizer_model_client": optimizer_client,
+        "extraction_model_config": extraction_runtime_config,
+        "optimizer_model_config": optimizer_runtime_config,
     }
 
 

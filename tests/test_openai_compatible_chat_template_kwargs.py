@@ -1,6 +1,10 @@
 """Tests for chat_template_kwargs in OpenAI-compatible payload."""
 
-from mmap_optimizer.core.config import ModelConfig, model_config_from_mapping
+from mmap_optimizer.core.config import (
+    ModelConfig,
+    model_config_from_mapping,
+    model_config_to_runtime_dict,
+)
 from mmap_optimizer.model.openai_compatible import OpenAICompatibleClient
 
 
@@ -126,3 +130,71 @@ def test_build_payload_with_ssl_config_preserved():
     payload = client._build_payload(messages=[{"role": "user", "content": "hi"}])
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert client.verify_ssl is False
+
+
+def test_default_model_config_applies_to_payload_without_call_config():
+    """Client-level default config should apply when call config is omitted."""
+    client = OpenAICompatibleClient(
+        base_url="https://example.test",
+        model="fallback-model",
+        default_model_config={
+            "model": "configured-model",
+            "temperature": 0.6,
+            "max_tokens": 1234,
+            "timeout": 77,
+            "chat_template_kwargs": {"enable_thinking": True},
+        },
+    )
+
+    payload = client._build_payload(messages=[{"role": "user", "content": "hi"}])
+
+    assert payload["model"] == "configured-model"
+    assert payload["temperature"] == 0.6
+    assert payload["max_tokens"] == 1234
+    assert payload["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_call_model_config_overrides_default_model_config():
+    """Per-call config should override client defaults."""
+    client = OpenAICompatibleClient(
+        base_url="https://example.test",
+        model="fallback-model",
+        default_model_config={
+            "model": "configured-model",
+            "temperature": 0.6,
+            "max_tokens": 1234,
+            "timeout": 77,
+            "chat_template_kwargs": {"enable_thinking": True},
+        },
+    )
+
+    payload = client._build_payload(
+        messages=[{"role": "user", "content": "hi"}],
+        model_config={"temperature": 0.1, "max_tokens": 99},
+    )
+
+    assert payload["model"] == "configured-model"
+    assert payload["temperature"] == 0.1
+    assert payload["max_tokens"] == 99
+    assert payload["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_model_config_to_runtime_dict_preserves_request_fields():
+    config = model_config_from_mapping({
+        "provider": "openai_compatible",
+        "model": "test-model",
+        "temperature": 0.2,
+        "max_tokens": 3456,
+        "request_timeout": 88,
+        "chat_template_kwargs": {"enable_thinking": False},
+    })
+
+    runtime = model_config_to_runtime_dict(config)
+
+    assert runtime == {
+        "model": "test-model",
+        "temperature": 0.2,
+        "max_tokens": 3456,
+        "timeout": 88,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from ..core.config import ModelConfig
+from ..core.config import ModelConfig, model_config_to_runtime_dict
 from .client import MockModelClient, ModelClient
 from .openai_compatible import OpenAICompatibleClient
 
@@ -17,5 +17,11 @@ def build_model_client(config: ModelConfig) -> ModelClient:
         if not config.model:
             raise ValueError("OpenAI-compatible model config requires model")
         api_key = config.api_key or (os.environ.get(config.api_key_env) if config.api_key_env else None)
-        return OpenAICompatibleClient(base_url=config.base_url, api_key=api_key, model=config.model, verify_ssl=config.verify_ssl)
+        return OpenAICompatibleClient(
+            base_url=config.base_url,
+            api_key=api_key,
+            model=config.model,
+            verify_ssl=config.verify_ssl,
+            default_model_config=model_config_to_runtime_dict(config),
+        )
     raise ValueError(f"Unsupported model provider: {config.provider}")

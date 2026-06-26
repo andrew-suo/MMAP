@@ -157,6 +157,7 @@ class PromptStructuringPhase:
         self,
         config: PromptStructuringConfig,
         model_client: Any | None = None,
+        model_config: dict[str, Any] | None = None,
     ):
         """初始化 Prompt Structuring Phase。
 
@@ -167,6 +168,7 @@ class PromptStructuringPhase:
         self.config = config
         self.parser = MarkdownParser()
         self.model_client = model_client
+        self.model_config = model_config
 
     def run(
         self,
@@ -298,7 +300,7 @@ class PromptStructuringPhase:
             # 调用模型
             response = self.model_client.complete(
                 messages=messages,
-                model_config=None,
+                model_config=self.model_config,
             )
 
             return response.raw_output.strip()

@@ -497,6 +497,7 @@ class MMAPRunner:
         phase = PromptStructuringPhase(
             self.config.prompt_structuring,
             model_client=model_client,
+            model_config=self.executors.get("optimizer_model_config") or self.executors.get("extraction_model_config"),
         )
 
         # 执行

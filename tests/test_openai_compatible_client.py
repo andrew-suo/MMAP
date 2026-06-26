@@ -5,12 +5,19 @@ from mmap_optimizer.model.openai_compatible import OpenAICompatibleClient
 
 
 class RecordingOpenAICompatibleClient(OpenAICompatibleClient):
-    def __init__(self):
-        super().__init__(base_url="https://example.test", api_key="secret", model="vision-model")
+    def __init__(self, default_model_config=None):
+        super().__init__(
+            base_url="https://example.test",
+            api_key="secret",
+            model="vision-model",
+            default_model_config=default_model_config,
+        )
         self.payloads = []
+        self.timeouts = []
 
     def _post_json(self, payload, *, timeout=120):
         self.payloads.append(payload)
+        self.timeouts.append(timeout)
         return {"id": "resp_1", "choices": [{"message": {"content": '{"result":"OK"}'}}], "usage": {"total_tokens": 10}}
 
 
@@ -48,3 +55,21 @@ def test_complete_multimodal_forwards_remote_image_url_with_detail():
 
     image_part = client.payloads[0]["messages"][0]["content"][1]
     assert image_part == {"type": "image_url", "image_url": {"url": "https://cdn.example/image.jpg", "detail": "high"}}
+
+
+def test_complete_uses_default_model_config_timeout_and_max_tokens():
+    client = RecordingOpenAICompatibleClient(
+        default_model_config={
+            "model": "vision-model",
+            "temperature": 0.3,
+            "max_tokens": 2049,
+            "timeout": 66,
+        }
+    )
+
+    client.complete(messages=[{"role": "user", "content": "hi"}])
+
+    payload = client.payloads[0]
+    assert payload["max_tokens"] == 2049
+    assert payload["temperature"] == 0.3
+    assert client.timeouts == [66]

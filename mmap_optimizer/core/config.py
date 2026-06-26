@@ -68,6 +68,21 @@ def model_config_from_mapping(data: dict[str, Any] | None) -> ModelConfig:
     )
 
 
+def model_config_to_runtime_dict(config: ModelConfig | dict[str, Any] | None) -> dict[str, Any]:
+    """Convert model config to fields used by runtime model requests."""
+    if config is None:
+        return {}
+    if isinstance(config, dict):
+        config = model_config_from_mapping(config)
+    return {
+        "model": config.model,
+        "temperature": config.temperature,
+        "max_tokens": config.max_tokens,
+        "timeout": config.timeout,
+        "chat_template_kwargs": config.chat_template_kwargs,
+    }
+
+
 @dataclass
 class RunConfig:
     """运行配置。"""

@@ -186,7 +186,7 @@ python -m mmap_optimizer.core.cli run \
 
 | 配置块 | 说明 |
 | --- | --- |
-| `run` | seed、输出目录、是否使用 mock |
+| `run` | seed、输出目录、是否使用 mock、日志级别、进度显示 |
 | `dataset` | 数据路径、格式、图片根目录、外部 ground truth 路径 |
 | `prompts` | 各类 prompt 模板路径 |
 | `prompt_structuring` | Prompt 结构化配置 |
@@ -221,6 +221,13 @@ prompt_optimization:
 
 完整示例见 `configs/default_config.yaml` 和 `configs/smoke.yaml`。
 
+## 运行输出与日志
+
+- 终端输出用于观察当前执行进度：phase、stage、step、样本处理进度和阶段指标。
+- 调试日志默认写入 `run.output_dir/logs/mmap.log`，用于排查模型调用、patch、merge、压缩和 checkpoint 问题。
+- 模型连续失败和重试明细保留在 `model_call_failures.jsonl`。
+- 可通过 `run.log_level` 调整日志级别，通过 `run.progress_enabled` 或环境变量 `MMAP_DISABLE_PROGRESS=1` 关闭进度输出。
+
 ## 输出产物
 
 每次运行会在 `run.output_dir` 下生成可审计产物，常见文件包括：
@@ -237,6 +244,9 @@ runs/<run_id>/
 ├── final_analysis_prompt.json
 ├── final_fewshot_examples.jsonl
 ├── sample_states.json
+├── model_call_failures.jsonl
+├── logs/
+│   └── mmap.log
 └── prompt_optimization/
     └── iteration_1/
         ├── sample_batch.json
@@ -265,6 +275,8 @@ runs/<run_id>/
 | --- | --- |
 | `sample_traces.jsonl` | 每个样本在本轮中的选择、分析、patch、transition 记录 |
 | `sample_patch_memory.jsonl` | 本轮写入每个样本的 patch 经验记忆 |
+| `logs/mmap.log` | 运行调试日志，用于排查功能问题 |
+| `model_call_failures.jsonl` | 模型调用失败和重试记录 |
 | `semantic_patch_drafts.jsonl` | LLM 生成的语义 patch 草稿 |
 | `translated_patches.jsonl` | semantic patch 翻译后的严格 patch |
 | `patch_lifecycle.jsonl` | patch 从生成、校验、合并、测毒到最终接受/拒绝的生命周期 |

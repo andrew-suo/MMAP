@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from ..core.logging import get_logger, log_stage
+from ..core.progress import NullProgressReporter, ProgressReporter
 from ..stages.extraction_prompt_optimization import ExtractionResult
 from ..data.sampler import SamplerConfig, create_sampler
 from ..data.sample import SampleBatch, SampleSet, SampleTrace, SampleSpec, SampleState
@@ -131,6 +133,7 @@ class FewshotOptimizationPhase:
         initial_fewshot_examples: list[FewshotExample] | None = None,
         fewshot_executor=None,  # FewshotExecutor 实例
         checkpoint_callback: Callable[[int, "FewshotOptimizationPhase"], None] | None = None,
+        progress_reporter: ProgressReporter | None = None,
     ):
         self.config = config
         self.extraction_prompt = extraction_prompt
@@ -139,6 +142,8 @@ class FewshotOptimizationPhase:
         self.seed = seed
         self.fewshot_executor = fewshot_executor
         self.checkpoint_callback = checkpoint_callback
+        self.progress = progress_reporter or NullProgressReporter()
+        self.logger = get_logger(__name__)
 
         # 创建 sampler
         self.sampler = create_sampler(config.sampler)
@@ -154,17 +159,26 @@ class FewshotOptimizationPhase:
         if not self.config.enabled:
             return []
 
-        print(f"\n--- Phase 3: Few-shot 优化 ---")
+        self.progress.stage("\n--- Phase 3: Few-shot 优化 ---")
         max_iterations = self.config.rounds
 
         for iteration in range(start_iteration, max_iterations + 1):
-            print(f"  迭代 {iteration}/{max_iterations}")
+            self.progress.stage(f"  迭代 {iteration}/{max_iterations}")
+            log_stage(self.logger, "fewshot_iteration_start", iteration=iteration, rounds=max_iterations)
             result = self._run_iteration(iteration)
             self.iteration_results.append(result)
             if result.metrics.final_accuracy is not None:
-                print(f"  迭代 {iteration} 完成，准确率: {result.metrics.final_accuracy:.2%}")
+                self.progress.stage(f"  迭代 {iteration} 完成，准确率: {result.metrics.final_accuracy:.2%}")
             else:
-                print(f"  迭代 {iteration} 完成")
+                self.progress.stage(f"  迭代 {iteration} 完成")
+            log_stage(
+                self.logger,
+                "fewshot_iteration_done",
+                iteration=iteration,
+                final_accuracy=result.metrics.final_accuracy,
+                accepted=result.metrics.accepted,
+                selected_examples=result.metrics.selected_example_count,
+            )
             if self.checkpoint_callback is not None:
                 self.checkpoint_callback(iteration, self)
 
@@ -172,9 +186,9 @@ class FewshotOptimizationPhase:
         if self.iteration_results:
             last_acc = self.iteration_results[-1].metrics.final_accuracy
             if last_acc is not None:
-                print(f"Few-shot 优化完成，准确率: {last_acc:.2%}")
+                self.progress.stage(f"Few-shot 优化完成，准确率: {last_acc:.2%}")
             else:
-                print(f"Few-shot 优化完成")
+                self.progress.stage("Few-shot 优化完成")
 
         return self.iteration_results
 

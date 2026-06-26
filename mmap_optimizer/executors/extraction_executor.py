@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from ..model.client import ModelClient
 from ..model.retry import FailurePolicyConfig, SampleFailureTracker
+from ..core.progress import NullProgressReporter, ProgressReporter
 from ..stages.extraction_prompt_optimization import ExtractionResult
 from ..phases.fewshot_optimization import FewshotExample
 from ..data.sample import SampleBatch, SampleSet, SampleSpec
@@ -40,6 +41,7 @@ class ExtractionExecutor:
         self.sample_failure_tracker = sample_failure_tracker or SampleFailureTracker(
             self.failure_policy.max_consecutive_sample_failures
         )
+        self.progress_reporter: ProgressReporter = NullProgressReporter()
 
     def execute(
         self,
@@ -50,7 +52,12 @@ class ExtractionExecutor:
     ) -> list[ExtractionResult]:
         """对 batch 中所有样本执行抽取。"""
         results: list[ExtractionResult] = []
-        for sample_id in batch.sample_ids:
+        correct_count = wrong_count = invalid_count = 0
+        for sample_id in self.progress_reporter.iter(
+            batch.sample_ids,
+            desc="Extracting samples",
+            total=len(batch.sample_ids),
+        ):
             spec = sample_set.specs.get(sample_id)
             if spec is None:
                 continue
@@ -73,6 +80,12 @@ class ExtractionExecutor:
                     error_details=[f"model_call_failed: {type(exc).__name__}: {exc}"],
                 )
             results.append(result)
+            if result.status == "correct":
+                correct_count += 1
+            elif result.status == "wrong":
+                wrong_count += 1
+            else:
+                invalid_count += 1
         return results
 
     def _execute_single(

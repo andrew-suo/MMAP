@@ -7,7 +7,7 @@ name = "mmap-optimizer"
 version = "0.1.0"
 description = "MVP framework for multimodal prompt optimization with prompt IR, strict patch testing, dynamic validation, and few-shot slots."
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["tqdm>=4"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from ..core.logging import get_logger, log_stage
+from ..core.progress import NullProgressReporter, ProgressReporter
 from ..patch.types import (
     CompressionReport,
     ExtractionPatch,
@@ -141,6 +143,7 @@ class ExtractionPromptOptimizationStage:
         char_limit: int = 20000,
         compression_enabled: bool = True,
         ema_alpha: float = 0.3,
+        progress_reporter: ProgressReporter | None = None,
     ):
         self.extraction_prompt = extraction_prompt
         self.analysis_prompt = analysis_prompt
@@ -160,6 +163,8 @@ class ExtractionPromptOptimizationStage:
         self.char_limit = char_limit
         self.compression_enabled = compression_enabled
         self.ema_alpha = ema_alpha
+        self.progress = progress_reporter or NullProgressReporter()
+        self.logger = get_logger(__name__)
 
         self.base_extraction_results: list[ExtractionResult] = []
         self.base_eval_records: list[EvalRecord] = []
@@ -200,38 +205,50 @@ class ExtractionPromptOptimizationStage:
 
     def run(self) -> ExtractionMetrics:
         """执行完整的 Extraction Prompt Optimization Stage。"""
-        print("  [Step 1/9] 抽取样本...")
+        log_stage(self.logger, "extraction_stage_start", iteration=self.iteration, samples=len(self.batch.sample_ids))
+        self.progress.step("  [Extraction 1/9] 抽取样本...")
         self._step1_execute_extraction()
 
         self._step2_compute_base_metrics()
         if self.metrics.base_accuracy is not None:
-            print(f"  [Step 2/9] 基础评估完成，准确率: {self.metrics.base_accuracy:.2%}")
+            self.progress.step(f"  [Extraction 2/9] 基础评估完成，准确率: {self.metrics.base_accuracy:.2%}")
         else:
-            print("  [Step 2/9] 基础评估完成")
+            self.progress.step("  [Extraction 2/9] 基础评估完成")
 
         # 更新 section 贡献度追踪
         self._update_contribution_tracker()
 
-        print("  [Step 3/9] 分析抽取结果...")
+        self.progress.step("  [Extraction 3/9] 分析抽取结果...")
         self._step3_analyze_results()
 
         self._step4_generate_patches()
-        print(f"  [Step 4/9] 生成 patch（{len(self.draft_patches)} 个）...")
+        self.progress.step(f"  [Extraction 4/9] 生成 patch（{len(self.draft_patches)} 个）...")
 
         self._step5_initial_merge()
-        print(f"  [Step 5/9] 合并 patch（{len(self.initial_merged_patches)} 个）...")
+        self.progress.step(f"  [Extraction 5/9] 合并 patch（{len(self.initial_merged_patches)} 个）...")
 
-        print("  [Step 6/9] 应用 patch 并重新评估...")
+        self.progress.step("  [Extraction 6/9] 应用 patch 并重新评估...")
         self._step6_apply_and_test()
 
-        print("  [Step 7/9] 测毒验证...")
+        self.progress.step("  [Extraction 7/9] 测毒验证...")
         self._step7_regression_and_toxicity_test()
 
-        print("  [Step 8/9] 压缩 prompt...")
+        self.progress.step("  [Extraction 8/9] 压缩 prompt...")
         self._step8_compress_if_needed()
 
-        print("  [Step 9/9] 生成结果...")
+        self.progress.step("  [Extraction 9/9] 生成结果...")
         self._step9_final_test_and_metrics()
+        log_stage(
+            self.logger,
+            "extraction_stage_done",
+            iteration=self.iteration,
+            base_accuracy=self.metrics.base_accuracy,
+            final_accuracy=self.metrics.final_accuracy,
+            accepted_patches=self.metrics.accepted_patch_count,
+            rejected_patches=self.metrics.rejected_patch_count,
+            toxic_patches=self.metrics.toxic_patch_count,
+            no_progress=self.metrics.no_progress,
+        )
 
         return self.metrics
 

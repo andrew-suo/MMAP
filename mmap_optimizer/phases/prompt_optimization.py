@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from ..core.logging import get_logger, log_stage
+from ..core.progress import NullProgressReporter, ProgressReporter
 from ..stages.analysis_prompt_optimization import AnalysisMetrics, AnalysisPromptOptimizationStage
 from ..stages.batch_size_controller import BatchSizeController, BatchSizeControllerConfig
 from ..stages.extraction_prompt_optimization import ExtractionMetrics, ExtractionPromptOptimizationStage
@@ -97,6 +99,7 @@ class PromptOptimizationPhase:
         seed: int = 42,
         executors: dict[str, Any] | None = None,
         checkpoint_callback: Callable[[int, "PromptOptimizationPhase"], None] | None = None,
+        progress_reporter: ProgressReporter | None = None,
     ):
         self.config = config
         self.extraction_prompt = extraction_prompt
@@ -107,6 +110,8 @@ class PromptOptimizationPhase:
         # executor 字典，默认为空（stage 内部会回退到 mock）
         self.executors = executors or {}
         self.checkpoint_callback = checkpoint_callback
+        self.progress = progress_reporter or NullProgressReporter()
+        self.logger = get_logger(__name__)
 
         # 创建 sampler
         self.sampler = create_sampler(config.sampler)
@@ -132,25 +137,36 @@ class PromptOptimizationPhase:
         prev_accuracy: float | None = None
 
         for iteration in range(start_iteration, max_iterations + 1):
-            print(f"\n--- Phase 2: Prompt 优化 - 迭代 {iteration}/{max_iterations} ---")
+            self.progress.stage(f"\n--- Phase 2: Prompt 优化 - 迭代 {iteration}/{max_iterations} ---")
+            log_stage(self.logger, "prompt_iteration_start", iteration=iteration, rounds=max_iterations)
             result = self._run_iteration(iteration)
             self.iteration_results.append(result)
 
             # 输出当前准确率
             current_accuracy = result.extraction_metrics.final_accuracy
             if current_accuracy is not None:
-                print(f"迭代 {iteration} 完成，当前准确率: {current_accuracy:.2%}")
+                self.progress.stage(f"迭代 {iteration} 完成，Extraction 准确率: {current_accuracy:.2%}")
                 # 准确率变化判断
                 if prev_accuracy is not None:
                     if current_accuracy > prev_accuracy:
-                        print(f"📈 准确率提升: {prev_accuracy:.2%} → {current_accuracy:.2%}")
+                        self.progress.stage(f"准确率提升: {prev_accuracy:.2%} -> {current_accuracy:.2%}")
                     elif current_accuracy < prev_accuracy:
-                        print(f"⚠️ 准确率下降: {prev_accuracy:.2%} → {current_accuracy:.2%}")
+                        self.progress.stage(f"准确率下降: {prev_accuracy:.2%} -> {current_accuracy:.2%}")
                     else:
-                        print(f"⚠️ 准确率未提升，保持: {current_accuracy:.2%}")
+                        self.progress.stage(f"准确率未提升，保持: {current_accuracy:.2%}")
                 prev_accuracy = current_accuracy
             else:
-                print(f"迭代 {iteration} 完成")
+                self.progress.stage(f"迭代 {iteration} 完成")
+            log_stage(
+                self.logger,
+                "prompt_iteration_done",
+                iteration=iteration,
+                extraction_accuracy=current_accuracy,
+                analysis_accuracy=result.analysis_metrics.final_accuracy,
+                accepted_patches=result.extraction_metrics.accepted_patch_count,
+                toxic_patches=result.extraction_metrics.toxic_patch_count,
+                no_progress=result.no_progress,
+            )
 
             # 更新 batch size controller
             if result.extraction_metrics.base_accuracy is not None:
@@ -200,6 +216,7 @@ class PromptOptimizationPhase:
             char_limit=self.config.extraction_prompt_char_limit,
             compression_enabled=self.config.extraction_prompt_compression_enabled,
             ema_alpha=self.config.ema_alpha,
+            progress_reporter=self.progress,
         )
         extraction_metrics = extraction_stage.run()
         self.extraction_stages.append(extraction_stage)
@@ -237,6 +254,7 @@ class PromptOptimizationPhase:
             char_limit=self.config.analysis_prompt_char_limit,
             compression_enabled=self.config.analysis_prompt_compression_enabled,
             ema_alpha=self.config.ema_alpha,
+            progress_reporter=self.progress,
         )
         analysis_metrics = analysis_stage.run()
         self.analysis_stages.append(analysis_stage)

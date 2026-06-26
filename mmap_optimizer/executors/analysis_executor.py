@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from ..model.client import ModelClient
 from ..model.retry import FailurePolicyConfig, SampleFailureTracker
+from ..core.progress import NullProgressReporter, ProgressReporter
 
 from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionResult
 from ..data.sample import SampleAsset, SampleSet, SampleSpec
@@ -55,6 +56,7 @@ class AnalysisExecutor:
         self.sample_failure_tracker = sample_failure_tracker or SampleFailureTracker(
             self.failure_policy.max_consecutive_sample_failures
         )
+        self.progress_reporter: ProgressReporter = NullProgressReporter()
 
     def execute(
         self,
@@ -109,7 +111,11 @@ class AnalysisExecutor:
     ) -> list[AnalysisResult]:
         """对 batch 中所有样本执行盲评分析（不只错误样本）。"""
         results: list[AnalysisResult] = []
-        for extraction_result in extraction_results:
+        for extraction_result in self.progress_reporter.iter(
+            extraction_results,
+            desc="Analyzing samples",
+            total=len(extraction_results),
+        ):
             spec = sample_set.specs.get(extraction_result.sample_id)
             if spec is None:
                 continue

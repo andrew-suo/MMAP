@@ -21,6 +21,8 @@ from ..stages.analysis_prompt_optimization import AnalysisMetrics
 from ..stages.batch_size_controller import BatchSizeController
 from ..core.checkpoint import CheckpointStore, RunCheckpoint
 from ..core.config import RefactoredConfig
+from ..core.logging import configure_run_logging, get_logger, log_stage
+from ..core.progress import ProgressReporter
 from ..data.dataset_loader import DatasetLoader
 from ..executors import create_executors
 from ..stages.extraction_prompt_optimization import ExtractionMetrics
@@ -317,6 +319,12 @@ class MMAPRunner:
         # 输出目录
         self.output_dir = Path(config.run.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.log_path = configure_run_logging(
+            self.output_dir,
+            level=config.run.log_level,
+        )
+        self.logger = get_logger(__name__)
+        self.progress = ProgressReporter(enabled=config.run.progress_enabled)
 
         # 创建 Run Plan
         self.run_plan = self._create_run_plan()
@@ -337,6 +345,7 @@ class MMAPRunner:
 
         # 构建 executor 字典（根据 config.models 决定使用真实实现或 mock）
         self.executors = self._build_executors()
+        self._attach_progress_reporter()
 
         # PR4: 真实运行模式下校验 model_client 可用
         # 仅当 use_mock 显式为 False 时才强制要求 model_client；
@@ -352,6 +361,11 @@ class MMAPRunner:
     def _build_executors(self) -> dict[str, Any]:
         """根据配置构建 executor 字典。"""
         return create_executors(self.config.to_dict(), use_mock=self.use_mock)
+
+    def _attach_progress_reporter(self) -> None:
+        for executor in self.executors.values():
+            if hasattr(executor, "__dict__"):
+                setattr(executor, "progress_reporter", self.progress)
 
     def _create_run_plan(self) -> RunPlan:
         """创建 Run Plan。"""
@@ -389,6 +403,14 @@ class MMAPRunner:
         # PR4: 记录开始时间
         start_ts = time.time()
         self.run_summary.start_time = datetime.now(timezone.utc).isoformat()
+        log_stage(
+            self.logger,
+            "run_start",
+            "运行开始",
+            output_dir=self.output_dir,
+            resume=resume,
+            log_path=self.log_path,
+        )
 
         if resume and self.checkpoint_store.exists():
             self._restore_from_checkpoint()
@@ -406,33 +428,38 @@ class MMAPRunner:
 
         # Phase 1: Prompt Structuring
         if self.run_plan.current_step_index == 0:
-            print(f"\n{'='*60}\n🚀 Phase 1: Prompt Structuring 开始\n{'='*60}")
+            self.progress.phase_start("Phase 1: Prompt Structuring")
             self._run_prompt_structuring()
-            print(f"\n{'='*60}\n✅ Phase 1: Prompt Structuring 完成\n{'='*60}")
+            self.progress.phase_done("Phase 1: Prompt Structuring")
         elif self.sample_set is None:
             self._load_sample_set()
 
         # Phase 2: Prompt Optimization
         prompt_start = self._next_iteration_for_phase("prompt_optimization")
         if self.config.prompt_optimization.enabled and prompt_start <= self.config.prompt_optimization.rounds:
-            print(f"\n{'='*60}\n🚀 Phase 2: Prompt Optimization 开始\n{'='*60}")
+            self.progress.phase_start("Phase 2: Prompt Optimization")
             self._run_prompt_optimization(start_iteration=prompt_start)
             po_summary = self.run_summary.prompt_optimization
+            metrics: list[str] = []
             if po_summary.final_accuracy_last is not None:
-                print(f"当前 Extraction 准确率: {po_summary.final_accuracy_last:.2%}")
+                metrics.append(f"Extraction 准确率: {po_summary.final_accuracy_last:.2%}")
             if self.run_summary.analysis_prompt.final_accuracy_last is not None:
-                print(f"当前 Analysis 准确率: {self.run_summary.analysis_prompt.final_accuracy_last:.2%}")
-            print(f"{'='*60}\n✅ Phase 2: Prompt Optimization 完成\n{'='*60}")
+                metrics.append(f"Analysis 准确率: {self.run_summary.analysis_prompt.final_accuracy_last:.2%}")
+            self.progress.phase_done(
+                "Phase 2: Prompt Optimization",
+                ", ".join(metrics) if metrics else None,
+            )
 
         # Phase 3: Few-shot Optimization
         fewshot_start = self._next_iteration_for_phase("fewshot_optimization")
         if self.config.fewshot_optimization.enabled and fewshot_start <= self.config.fewshot_optimization.rounds:
-            print(f"\n{'='*60}\n🚀 Phase 3: Few-shot Optimization 开始\n{'='*60}")
+            self.progress.phase_start("Phase 3: Few-shot Optimization")
             self._run_fewshot_optimization(start_iteration=fewshot_start)
             fo_summary = self.run_summary.fewshot_optimization
+            fewshot_metrics: str | None = None
             if fo_summary.final_accuracy_last is not None:
-                print(f"当前 Few-shot 准确率: {fo_summary.final_accuracy_last:.2%}")
-            print(f"{'='*60}\n✅ Phase 3: Few-shot Optimization 完成\n{'='*60}")
+                fewshot_metrics = f"Few-shot 准确率: {fo_summary.final_accuracy_last:.2%}"
+            self.progress.phase_done("Phase 3: Few-shot Optimization", fewshot_metrics)
 
         # 完成
         end_ts = time.time()
@@ -441,6 +468,13 @@ class MMAPRunner:
         self.run_summary.status = "completed"
         self._save_final_artifacts()
         self._save_checkpoint(run_status="completed", event="run_completed")
+        log_stage(
+            self.logger,
+            "run_completed",
+            "运行完成",
+            duration_seconds=self.run_summary.duration_seconds,
+            status=self.run_summary.status,
+        )
 
         return self.run_summary
 
@@ -479,6 +513,7 @@ class MMAPRunner:
         step = self.run_plan.get_current_step()
         if step is None:
             return
+        log_stage(self.logger, "prompt_structuring_start", step_id=step.id)
 
         step.status = "running"
         self._save_run_plan()
@@ -551,6 +586,13 @@ class MMAPRunner:
             current_stage="completed",
             event="prompt_structuring_completed",
         )
+        log_stage(
+            self.logger,
+            "prompt_structuring_done",
+            extraction_sections=len(self.structured_extraction_prompt.sections),
+            analysis_sections=len(self.structured_analysis_prompt.sections),
+            issues=len(extraction_issues) + len(analysis_issues),
+        )
 
     def _run_prompt_optimization(self, start_iteration: int = 1) -> None:
         """执行 Prompt Optimization Phase。"""
@@ -558,6 +600,13 @@ class MMAPRunner:
             return
         if self.sample_set is None:
             return
+        log_stage(
+            self.logger,
+            "prompt_optimization_start",
+            start_iteration=start_iteration,
+            rounds=self.config.prompt_optimization.rounds,
+            samples=len(self.sample_set.specs),
+        )
 
         # 创建 Prompt Optimization Phase
         phase = PromptOptimizationPhase(
@@ -569,6 +618,7 @@ class MMAPRunner:
             seed=self.config.run.seed,
             executors=self.executors,
             checkpoint_callback=self._on_prompt_iteration_completed,
+            progress_reporter=self.progress,
         )
         self._restore_batch_size_controller(phase, start_iteration)
 
@@ -670,6 +720,13 @@ class MMAPRunner:
         self._save_sample_states()
         self._save_sample_traces()
         self._save_current_prompts()
+        log_stage(
+            self.logger,
+            "prompt_optimization_done",
+            iterations=len(results),
+            extraction_accuracy=po_summary.final_accuracy_last,
+            analysis_accuracy=ap_summary.final_accuracy_last,
+        )
 
     def _run_fewshot_optimization(self, start_iteration: int = 1) -> None:
         """执行 Few-shot Optimization Phase。"""
@@ -677,6 +734,13 @@ class MMAPRunner:
             return
         if self.sample_set is None:
             return
+        log_stage(
+            self.logger,
+            "fewshot_optimization_start",
+            start_iteration=start_iteration,
+            rounds=self.config.fewshot_optimization.rounds,
+            samples=len(self.sample_set.specs),
+        )
 
         # 创建 Few-shot Optimization Phase
         phase = FewshotOptimizationPhase(
@@ -688,6 +752,7 @@ class MMAPRunner:
             initial_fewshot_examples=self._load_fewshot_examples(),
             fewshot_executor=self.executors.get("fewshot"),
             checkpoint_callback=self._on_fewshot_iteration_completed,
+            progress_reporter=self.progress,
         )
 
         # 执行
@@ -736,6 +801,13 @@ class MMAPRunner:
         with open(fewshot_file, "w", encoding="utf-8") as f:
             for example in phase.fewshot_examples:
                 f.write(json.dumps(example.to_dict(), ensure_ascii=False) + "\n")
+        log_stage(
+            self.logger,
+            "fewshot_optimization_done",
+            iterations=len(results),
+            final_accuracy=fo_summary.final_accuracy_last,
+            selected_examples=len(phase.fewshot_examples),
+        )
 
     def _save_run_plan(self) -> None:
         """保存 Run Plan。"""

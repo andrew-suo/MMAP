@@ -464,7 +464,7 @@ class MMAPRunner:
 
         # 保存 Run Plan
         (self.output_dir / "run_plan.json").write_text(
-            json.dumps(self.run_plan.to_dict(), indent=2),
+            json.dumps(self.run_plan.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -518,11 +518,11 @@ class MMAPRunner:
         # 保存结构化 prompt
         import json
         (self.output_dir / "structured_extraction_prompt.json").write_text(
-            json.dumps(self.structured_extraction_prompt.to_dict(), indent=2),
+            json.dumps(self.structured_extraction_prompt.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
         (self.output_dir / "structured_analysis_prompt.json").write_text(
-            json.dumps(self.structured_analysis_prompt.to_dict(), indent=2),
+            json.dumps(self.structured_analysis_prompt.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -741,7 +741,7 @@ class MMAPRunner:
         """保存 Run Plan。"""
         import json
         (self.output_dir / "run_plan.json").write_text(
-            json.dumps(self.run_plan.to_dict(), indent=2),
+            json.dumps(self.run_plan.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -756,7 +756,7 @@ class MMAPRunner:
         }
 
         (self.output_dir / "sample_states.json").write_text(
-            json.dumps(states_dict, indent=2),
+            json.dumps(states_dict, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -980,19 +980,19 @@ class MMAPRunner:
 
         # 保存 Run Summary
         (self.output_dir / "run_summary.json").write_text(
-            json.dumps(self.run_summary.to_dict(), indent=2),
+            json.dumps(self.run_summary.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
         # 保存最终的 prompt
         if self.structured_extraction_prompt:
             (self.output_dir / "final_extraction_prompt.json").write_text(
-                json.dumps(self.structured_extraction_prompt.to_dict(), indent=2),
+                json.dumps(self.structured_extraction_prompt.to_dict(), indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
 
         if self.structured_analysis_prompt:
             (self.output_dir / "final_analysis_prompt.json").write_text(
-                json.dumps(self.structured_analysis_prompt.to_dict(), indent=2),
+                json.dumps(self.structured_analysis_prompt.to_dict(), indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )

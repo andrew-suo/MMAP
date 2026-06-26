@@ -18,25 +18,34 @@ logger = get_logger(__name__)
 
 
 class OpenAICompatibleClient:
-    def __init__(self, base_url: str, api_key: str | None = None, model: str | None = None, verify_ssl: bool = True):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str | None = None,
+        model: str | None = None,
+        verify_ssl: bool = True,
+        default_model_config: dict[str, Any] | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.verify_ssl = verify_ssl
+        self.default_model_config = default_model_config or {}
 
     def complete(self, messages: list[dict[str, Any]], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:
-        payload = self._build_payload(messages=messages, model_config=model_config, response_format=response_format)
+        cfg = self._effective_model_config(model_config)
+        payload = self._build_payload(messages=messages, model_config=cfg, response_format=response_format)
         log_stage(logger, "model_request_start", "模型请求开始",
             model=payload.get("model"), message_count=len(messages),
             temperature=payload.get("temperature"), max_tokens=payload.get("max_tokens"),
-            timeout=(model_config or {}).get("timeout", 120),
+            timeout=cfg.get("timeout", 120),
             has_response_format=response_format is not None,
             has_chat_template_kwargs="chat_template_kwargs" in payload,
             enable_thinking=payload.get("chat_template_kwargs", {}).get("enable_thinking") if payload.get("chat_template_kwargs") else None,
         )
         start_time = time.perf_counter()
         try:
-            body = self._post_json(payload, timeout=(model_config or {}).get("timeout", 120))
+            body = self._post_json(payload, timeout=cfg.get("timeout", 120))
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             content = body["choices"][0]["message"]["content"]
             if content is None:
@@ -58,19 +67,20 @@ class OpenAICompatibleClient:
 
     def complete_multimodal(self, messages: list[dict[str, Any]], assets: list[Any], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:
         prepared_messages = self._messages_with_assets(messages, assets)
-        payload = self._build_payload(messages=prepared_messages, model_config=model_config, response_format=response_format)
+        cfg = self._effective_model_config(model_config)
+        payload = self._build_payload(messages=prepared_messages, model_config=cfg, response_format=response_format)
         log_stage(logger, "model_request_start", "模型请求开始",
             model=payload.get("model"), message_count=len(prepared_messages),
             asset_count=len(assets) if assets else 0,
             temperature=payload.get("temperature"), max_tokens=payload.get("max_tokens"),
-            timeout=(model_config or {}).get("timeout", 120),
+            timeout=cfg.get("timeout", 120),
             has_response_format=response_format is not None,
             has_chat_template_kwargs="chat_template_kwargs" in payload,
             enable_thinking=payload.get("chat_template_kwargs", {}).get("enable_thinking") if payload.get("chat_template_kwargs") else None,
         )
         start_time = time.perf_counter()
         try:
-            body = self._post_json(payload, timeout=(model_config or {}).get("timeout", 120))
+            body = self._post_json(payload, timeout=cfg.get("timeout", 120))
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             content = body["choices"][0]["message"]["content"]
             if content is None:
@@ -93,8 +103,14 @@ class OpenAICompatibleClient:
             logger.exception("[stage=model_request_failed] model=%s duration_ms=%d error=%s: %s", payload.get("model"), duration_ms, type(exc).__name__, exc)
             raise
 
+    def _effective_model_config(self, model_config: dict[str, Any] | None = None) -> dict[str, Any]:
+        cfg = dict(self.default_model_config)
+        if model_config:
+            cfg.update(model_config)
+        return cfg
+
     def _build_payload(self, *, messages: list[dict[str, Any]], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> dict[str, Any]:
-        cfg = model_config or {}
+        cfg = self._effective_model_config(model_config)
         chat_template_kwargs = cfg.get("chat_template_kwargs")
         if chat_template_kwargs is None:
             chat_template_kwargs = {"enable_thinking": False}

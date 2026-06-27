@@ -17,7 +17,8 @@ from typing import Any, Literal, TypeVar, cast
 
 from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionResult
 from ..patch.types import AnalysisPatch, ExtractionPatch, SemanticPatchDraft
-from ..data.sample import SamplePatchMemoryItem, SampleSet
+from ..data.sample import SampleSet
+from ..prompt.sample_trajectory import SampleTrajectoryRenderer
 from ..prompt.structured_prompt import PromptSection, StructuredPrompt
 from ..prompt.output_repair import parse_model_json_output
 from .patch_validator import PatchValidator
@@ -66,6 +67,7 @@ class PatchGenerationExecutor:
         self.semantic_patch_drafts: list[SemanticPatchDraft] = []
         self.translated_patches: list[ExtractionPatch | AnalysisPatch] = []
         self.model_output_repairs: list[dict[str, Any]] = []
+        self.sample_trajectory_renderer = SampleTrajectoryRenderer()
 
     def generate_extraction_patches(
         self,
@@ -420,14 +422,14 @@ class PatchGenerationExecutor:
             extraction_result=extraction_result,
             reflection_result=reflection_result,
         )
-        history = self._get_sample_patch_history(
+        trajectory = self.sample_trajectory_renderer.render(
+            sample_set=sample_set,
             sample_id=sample_id,
             prompt_type=prompt_type,
-            sample_set=sample_set,
         )
-        if history:
-            parts.append("\n# Sample Patch History")
-            parts.append(self._render_sample_patch_history(history))
+        if trajectory:
+            parts.append("\n# Sample Optimization Trajectory")
+            parts.append(trajectory)
 
         return "\n".join(parts)
 
@@ -442,40 +444,6 @@ class PatchGenerationExecutor:
         if prompt_type == "analysis" and reflection_result is not None:
             return getattr(reflection_result, "sample_id", None)
         return None
-
-    def _get_sample_patch_history(
-        self,
-        sample_id: str | None,
-        prompt_type: str,
-        sample_set: SampleSet | None,
-        limit: int = 8,
-    ) -> list[SamplePatchMemoryItem]:
-        if not sample_id or sample_set is None:
-            return []
-        state = sample_set.states.get(sample_id)
-        if state is None:
-            return []
-        return state.get_patch_memory(prompt_type, limit=limit)
-
-    def _render_sample_patch_history(self, history: list[SamplePatchMemoryItem]) -> str:
-        lines = [
-            "Use this history to avoid repeating toxic or ineffective changes. "
-            "Prefer narrow follow-ups to accepted/fixed directions when they are relevant."
-        ]
-        for item in history:
-            lines.append(
-                "- "
-                f"iteration={item.iteration}; "
-                f"decision={item.final_decision}; "
-                f"transition={item.transition}; "
-                f"toxicity={item.toxicity}; "
-                f"section={item.target_section_id}; "
-                f"op={item.operation_type}; "
-                f"direction={self._compact_text(item.direction, 180)}; "
-                f"content={self._compact_text(item.content, 240)}; "
-                f"reason={self._compact_text(item.rejection_reason or item.rationale, 180)}"
-            )
-        return "\n".join(lines)
 
     def _compact_text(self, text: str | None, limit: int) -> str:
         value = " ".join(str(text or "").split())

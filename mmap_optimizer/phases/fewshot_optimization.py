@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from ..core.artifacts import to_artifact_data, write_json_artifact, write_jsonl_artifact
 from ..core.logging import get_logger, log_stage
 from ..core.progress import NullProgressReporter, ProgressReporter
 from ..stages.extraction_prompt_optimization import ExtractionResult
@@ -522,10 +523,7 @@ class FewshotOptimizationPhase:
         iteration_dir.mkdir(parents=True, exist_ok=True)
 
         # 保存 batch
-        (iteration_dir / "sample_batch.json").write_text(
-            json.dumps(result.batch.__dict__, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        write_json_artifact(iteration_dir / "sample_batch.json", result.batch.__dict__)
 
         # PR4: 保存 sample traces
         traces = self.sample_set.get_traces_for_iteration("fewshot_optimization", iteration)
@@ -537,21 +535,17 @@ class FewshotOptimizationPhase:
                     "iteration": trace.iteration,
                     "selected": trace.selected,
                 }
-                f.write(json.dumps(trace_dict, ensure_ascii=False) + "\n")
+                f.write(json.dumps(to_artifact_data(trace_dict), ensure_ascii=False) + "\n")
 
         # PR4: 保存 fewshot/ 子目录
         fewshot_dir = iteration_dir / "fewshot"
         fewshot_dir.mkdir(parents=True, exist_ok=True)
 
         def _write_jsonl(path, items):
-            with open(path, "w", encoding="utf-8") as f:
-                for item in items:
-                    data = item.to_dict() if hasattr(item, "to_dict") else item
-                    f.write(json.dumps(data, ensure_ascii=False) + "\n")
+            write_jsonl_artifact(path, items)
 
         def _write_json(path, data):
-            d = data.to_dict() if hasattr(data, "to_dict") else data
-            path.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+            write_json_artifact(path, data)
 
         # 保存 base_results 和 base_eval (from result)
         _write_jsonl(fewshot_dir / "base_results.jsonl", getattr(result, "base_results", []))

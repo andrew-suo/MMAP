@@ -48,8 +48,8 @@
    - 如果某个案例通过了测试，定位起作用的指令，**绝对不要修改或删除它**。
    - 只能增强或保持不变，绝不移除产生正确结果的指引。
 
-4. **Learn From Sample Patch History (利用样本历史经验)**：
-   - 如果输入中包含 `Sample Patch History`，必须把它当作当前样本的历史优化反馈。
+4. **Learn From Sample Optimization Trajectory (利用样本优化轨迹)**：
+   - 如果输入中包含 `Sample Optimization Trajectory`，必须把它当作当前样本的历史优化反馈。
    - 不要重复生成历史中标记为 toxic、ineffective、broken 或 rejected 的方向，除非你明确收窄了修改并规避了记录中的失败原因。
    - 如果历史中存在 accepted / fixed 的方向，且与当前错误相关，应优先沿该方向做更小、更具体的增强。
 

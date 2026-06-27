@@ -17,7 +17,7 @@ from ..patch.types import (
 from ..data.sample import (
     SampleBatch,
     SampleOutcomeHistoryItem,
-    SamplePatchMemoryItem,
+    SamplePatchAttempt,
     SampleSet,
     SampleTrace,
 )
@@ -252,12 +252,21 @@ class AnalysisPromptOptimizationStage:
                 continue
 
             if self.analysis_executor is not None:
-                reflection = self.analysis_executor.reflect(
-                    self.analysis_prompt,
-                    extraction_result,
-                    base_analysis,
-                    spec,
-                )
+                try:
+                    reflection = self.analysis_executor.reflect(
+                        self.analysis_prompt,
+                        extraction_result,
+                        base_analysis,
+                        spec,
+                        self.sample_set,
+                    )
+                except TypeError:
+                    reflection = self.analysis_executor.reflect(
+                        self.analysis_prompt,
+                        extraction_result,
+                        base_analysis,
+                        spec,
+                    )
             else:
                 reflection = ReflectionResult(
                     sample_id=sample_id,
@@ -270,6 +279,22 @@ class AnalysisPromptOptimizationStage:
                     },
                 )
             self.reflection_results.append(reflection)
+            state = self.sample_set.states.get(sample_id)
+            if state is not None:
+                trajectory = state.get_or_create_trajectory("analysis", self.iteration)
+                trajectory.base_status = "pass" if base_analysis.analysis_correct else "fail"
+                trajectory.analysis_summary = {
+                    "analysis_correct": base_analysis.analysis_correct,
+                    "error_reason": base_analysis.error_reason,
+                    "confirmed_facts": list(base_analysis.confirmed_facts),
+                    "hypothesized_error_causes": list(base_analysis.hypothesized_error_causes),
+                }
+                trajectory.reflection_summary = {
+                    "reflection_success": reflection.reflection_success,
+                    "error_reason": reflection.error_reason,
+                    "patch_suggestion": reflection.patch_suggestion,
+                    "notes": list(reflection.notes),
+                }
 
             traces = self.sample_set.get_traces_for_iteration("prompt_optimization", self.iteration)
             for trace in traces:
@@ -309,6 +334,7 @@ class AnalysisPromptOptimizationStage:
                 for trace in traces:
                     if trace.sample_id in patch.source_sample_ids:
                         trace.generated_analysis_patch_ids.append(patch.id)
+            self._record_generated_patch_attempts()
             return
 
         for reflection in self.reflection_results:
@@ -331,6 +357,69 @@ class AnalysisPromptOptimizationStage:
             for trace in traces:
                 if trace.sample_id == reflection.sample_id:
                     trace.generated_analysis_patch_ids.append(patch.id)
+        self._record_generated_patch_attempts()
+
+    def _record_generated_patch_attempts(self) -> None:
+        """记录当前 sample 触发生成过的 analysis patch，包括校验失败。"""
+        patch_by_id = {patch.id: patch for patch in self.draft_patches}
+        validated_ids = {patch.id for patch in self.validated_patches}
+        rejected_ids = {patch.id for patch in self.rejected_patches}
+        for patch in self.draft_patches + self.rejected_patches:
+            if patch.id in patch_by_id and patch is not patch_by_id[patch.id]:
+                continue
+            validation_status = "validated" if patch.id in validated_ids else "unknown"
+            if patch.id in rejected_ids or getattr(patch, "status", None) == "rejected":
+                validation_status = "rejected"
+            for sample_id in getattr(patch, "source_sample_ids", []):
+                state = self.sample_set.states.get(sample_id)
+                if state is None:
+                    continue
+                trajectory = state.get_or_create_trajectory("analysis", self.iteration)
+                trajectory.add_patch_attempt(
+                    self._build_patch_attempt(
+                        patch=patch,
+                        generation_status="generated",
+                        validation_status=validation_status,
+                        merge_status="not_merged",
+                        final_decision="rejected" if validation_status == "rejected" else "unknown",
+                    )
+                )
+
+    def _build_patch_attempt(
+        self,
+        patch: AnalysisPatch,
+        generation_status: str = "generated",
+        validation_status: str = "unknown",
+        merge_status: str = "unknown",
+        regression_effect: str = "unknown",
+        toxicity_status: str = "not_tested",
+        final_decision: str = "unknown",
+        evidence_scope: str = "sample",
+    ) -> SamplePatchAttempt:
+        metadata = dict(getattr(patch, "metadata", {}))
+        return SamplePatchAttempt(
+            patch_id=patch.id,
+            prompt_type="analysis",
+            iteration=self.iteration,
+            target_section_id=patch.target_section_id,
+            operation_type=patch.operation_type,
+            direction=str(metadata.get("source_reason") or patch.rationale or "")[:500],
+            content=patch.content[:800],
+            rationale=patch.rationale[:800],
+            generation_status=generation_status,
+            validation_status=validation_status,
+            merge_status=merge_status,
+            regression_effect=regression_effect,
+            toxicity_status=toxicity_status,
+            final_decision=final_decision,
+            rejection_reason=getattr(patch, "rejection_reason", None),
+            evidence_scope=evidence_scope,
+            metadata={
+                "semantic_draft_id": metadata.get("semantic_draft_id"),
+                "translation_status": metadata.get("translation_status"),
+                "source_phase": metadata.get("source_phase"),
+            },
+        )
 
     def _step4_initial_merge(self) -> None:
         """Step 4: Tree Merge 生成 analysis patch。"""
@@ -524,7 +613,7 @@ class AnalysisPromptOptimizationStage:
                     trace.transition = "unchanged_wrong"
                 else:
                     trace.transition = "unchanged_correct"
-            self._record_sample_patch_memory(
+            self._record_sample_patch_attempts(
                 patches=self.initial_merged_patches,
                 fixed_sample_ids=fixed_ids,
                 broken_sample_ids=broken_ids,
@@ -627,7 +716,7 @@ class AnalysisPromptOptimizationStage:
                     trace.transition = "unchanged_wrong"
                 else:
                     trace.transition = "unchanged_correct"
-            self._record_sample_patch_memory(
+            self._record_sample_patch_attempts(
                 patches=self.initial_merged_patches,
                 fixed_sample_ids=fixed_ids,
                 broken_sample_ids=broken_ids,
@@ -701,7 +790,7 @@ class AnalysisPromptOptimizationStage:
             toxic_sample_ids=toxic_sample_ids,
         )
 
-        self._record_sample_patch_memory(
+        self._record_sample_patch_attempts(
             patches=self.initial_merged_patches,
             fixed_sample_ids=fixed_ids,
             broken_sample_ids=broken_ids,
@@ -709,7 +798,7 @@ class AnalysisPromptOptimizationStage:
             unchanged_correct_ids=unchanged_correct_ids,
         )
 
-    def _record_sample_patch_memory(
+    def _record_sample_patch_attempts(
         self,
         patches: list[AnalysisPatch],
         fixed_sample_ids: list[str],
@@ -717,25 +806,66 @@ class AnalysisPromptOptimizationStage:
         unchanged_wrong_ids: list[str],
         unchanged_correct_ids: list[str],
     ) -> None:
-        """把本轮 analysis patch 的最终结果写入 source sample 记忆。"""
+        """把本轮 analysis patch 的最终结果写入 source sample 轨迹。"""
         transition_by_sample = self._transition_map(
             fixed_sample_ids=fixed_sample_ids,
             broken_sample_ids=broken_sample_ids,
             unchanged_wrong_ids=unchanged_wrong_ids,
             unchanged_correct_ids=unchanged_correct_ids,
         )
+        final_patch_ids = {patch.id for patch in self.final_merged_patches}
+        safe_patch_ids = {patch.id for patch in self.safe_patches}
+        toxic_patch_ids = {patch.id for patch in self.toxic_patches}
+        rejected_patch_ids = {patch.id for patch in self.rejected_patches}
+        test_record_by_patch = self._toxicity_test_record_map()
         for patch in patches:
             for sample_id in patch.source_sample_ids:
                 state = self.sample_set.states.get(sample_id)
                 if state is None:
                     continue
-                item = self._build_patch_memory_item(
+                final_decision = self._patch_final_decision(patch)
+                if patch.id not in final_patch_ids and final_decision == "accepted":
+                    final_decision = "dropped"
+                toxicity = self._patch_toxicity(patch, final_decision)
+                if toxicity == "safe":
+                    toxicity = "tested_safe"
+                if patch.id in safe_patch_ids and toxicity == "not_tested":
+                    toxicity = "tested_safe"
+                if patch.id in toxic_patch_ids:
+                    toxicity = "toxic"
+                record = test_record_by_patch.get(patch.id, {})
+                if record.get("status") == "skipped":
+                    toxicity = "skipped_no_toxic_samples"
+                trajectory = state.get_or_create_trajectory("analysis", self.iteration)
+                attempt = self._build_patch_attempt(
                     patch=patch,
-                    sample_id=sample_id,
-                    transition=transition_by_sample.get(sample_id, "unknown"),
+                    validation_status="validated" if patch.id not in rejected_patch_ids else "rejected",
+                    merge_status="final_merged" if patch.id in final_patch_ids else (
+                        "initial_merged" if patch in self.initial_merged_patches else "not_merged"
+                    ),
+                    regression_effect=transition_by_sample.get(sample_id, "unknown"),
+                    toxicity_status=toxicity,
+                    final_decision=final_decision,
+                    evidence_scope="batch",
                 )
-                state.add_patch_memory(item)
+                attempt.tested_sample_ids = [str(sid) for sid in record.get("tested_sample_ids", [])]
+                attempt.broken_sample_ids = [str(sid) for sid in record.get("broken_sample_ids", [])]
+                attempt.fixed_sample_ids = [str(sid) for sid in record.get("fixed_sample_ids", [])]
+                attempt.stop_reason = record.get("stop_reason")
+                trajectory.add_patch_attempt(attempt)
                 state.generated_analysis_patch_count += 1
+
+    def _toxicity_test_record_map(self) -> dict[str, dict[str, Any]]:
+        if self.toxicity_report is None:
+            return {}
+        records = getattr(self.toxicity_report, "patch_test_records", []) or []
+        record_map: dict[str, dict[str, Any]] = {}
+        for record in records:
+            if isinstance(record, dict):
+                patch_id = str(record.get("patch_id", ""))
+                if patch_id:
+                    record_map[patch_id] = record
+        return record_map
 
     def _transition_map(
         self,
@@ -749,36 +879,6 @@ class AnalysisPromptOptimizationStage:
         transition_by_sample.update({sid: "unchanged_wrong" for sid in unchanged_wrong_ids})
         transition_by_sample.update({sid: "unchanged_correct" for sid in unchanged_correct_ids})
         return transition_by_sample
-
-    def _build_patch_memory_item(
-        self,
-        patch: AnalysisPatch,
-        sample_id: str,
-        transition: str,
-    ) -> SamplePatchMemoryItem:
-        metadata = dict(getattr(patch, "metadata", {}))
-        rejection_reason = getattr(patch, "rejection_reason", None)
-        final_decision = self._patch_final_decision(patch)
-        return SamplePatchMemoryItem(
-            sample_id=sample_id,
-            prompt_type="analysis",
-            iteration=self.iteration,
-            patch_id=patch.id,
-            source_patch_id=metadata.get("semantic_draft_id"),
-            target_section_id=patch.target_section_id,
-            operation_type=patch.operation_type,
-            direction=str(metadata.get("source_reason") or patch.rationale or "")[:500],
-            content=patch.content[:800],
-            rationale=patch.rationale[:800],
-            final_decision=final_decision,
-            transition=transition,
-            toxicity=self._patch_toxicity(patch, final_decision),
-            rejection_reason=rejection_reason,
-            metadata={
-                "translation_status": metadata.get("translation_status"),
-                "source_phase": metadata.get("source_phase"),
-            },
-        )
 
     def _patch_final_decision(self, patch: AnalysisPatch) -> str:
         if patch.rejection_reason == "TOXIC":
@@ -936,6 +1036,13 @@ class AnalysisPromptOptimizationStage:
                 continue
             if raw_status is not None:
                 state.last_analysis_status = "correct" if raw_status else "wrong"
+            trajectory = state.get_or_create_trajectory("analysis", self.iteration)
+            if sample_id in base_status_by_sample:
+                trajectory.base_status = "pass" if base_status_by_sample[sample_id] else "fail"
+            trajectory.final_status = outcome_status
+            trajectory.sample_transition = (
+                getattr(trace_by_sample.get(sample_id), "transition", None) or "unknown"
+            )
             state.add_outcome_history(
                 SampleOutcomeHistoryItem(
                     sample_id=sample_id,

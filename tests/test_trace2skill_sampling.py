@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from mmap_optimizer.data.sample import (
     SampleOutcomeHistoryItem,
-    SamplePatchMemoryItem,
+    SampleOptimizationTrajectory,
+    SamplePatchAttempt,
     SampleSet,
     SampleSpec,
     SampleState,
@@ -120,18 +121,24 @@ def test_apex_trace_sampler_prioritizes_mixed_fail_pool():
         state = sample_set.states[sid]
         state.add_outcome_history(SampleOutcomeHistoryItem(sid, "extraction", 1, "pass"))
         state.add_outcome_history(SampleOutcomeHistoryItem(sid, "extraction", 2, "fail"))
-        state.add_patch_memory(
-            SamplePatchMemoryItem(
-                sample_id=sid,
+        trajectory = SampleOptimizationTrajectory(
+            sample_id=sid,
+            prompt_type="extraction",
+            iteration=2,
+            sample_transition="fixed",
+        )
+        trajectory.add_patch_attempt(
+            SamplePatchAttempt(
+                patch_id=f"p-{sid}",
                 prompt_type="extraction",
                 iteration=2,
-                patch_id=f"p-{sid}",
                 target_section_id="task",
                 operation_type="replace",
                 final_decision="accepted",
-                transition="fixed",
+                regression_effect="fixed",
             )
         )
+        state.add_optimization_trajectory(trajectory)
 
     for sid in ("hard", "hard2"):
         state = sample_set.states[sid]
@@ -160,4 +167,5 @@ def test_apex_trace_sampler_prioritizes_mixed_fail_pool():
     assert batch.metadata["apex_pool_counts"]["mixed_fail"] == 2
     assert set(batch.sample_ids[:2]) == {"mixed", "mixed2"}
     assert batch.scores["mixed"]["apex_classification"] == "mixed_fail"
+    assert "trajectory_score" in batch.scores["mixed"]
     assert batch.metadata["lookback_window"] == 5

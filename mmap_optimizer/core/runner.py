@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..core.artifacts import write_json_artifact, write_jsonl_artifact
 from ..stages.analysis_prompt_optimization import AnalysisMetrics
 from ..stages.batch_size_controller import BatchSizeController
 from ..core.checkpoint import CheckpointStore, RunCheckpoint
@@ -483,7 +484,8 @@ class MMAPRunner:
         import json
 
         # 保存配置
-        config_json = json.dumps(self.config.to_dict(), indent=2, ensure_ascii=False)
+        config_data = self.config.to_dict()
+        config_json = json.dumps(config_data, indent=2, ensure_ascii=False)
         if yaml is not None:
             (self.output_dir / "run_config.yaml").write_text(
                 yaml.dump(self.config.to_dict(), allow_unicode=True),
@@ -494,13 +496,10 @@ class MMAPRunner:
                 config_json,
                 encoding="utf-8",
             )
-        (self.output_dir / "run_config.json").write_text(config_json, encoding="utf-8")
+        write_json_artifact(self.output_dir / "run_config.json", config_data)
 
         # 保存 Run Plan
-        (self.output_dir / "run_plan.json").write_text(
-            json.dumps(self.run_plan.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        write_json_artifact(self.output_dir / "run_plan.json", self.run_plan)
 
         # PR4: 确保 Run 级 JSONL 文件存在（即使为空），保证 artifact 结构完整
         for name in ("prompt_versions.jsonl", "patch_apply_reports.jsonl", "model_call_failures.jsonl"):
@@ -552,14 +551,8 @@ class MMAPRunner:
 
         # 保存结构化 prompt
         import json
-        (self.output_dir / "structured_extraction_prompt.json").write_text(
-            json.dumps(self.structured_extraction_prompt.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        (self.output_dir / "structured_analysis_prompt.json").write_text(
-            json.dumps(self.structured_analysis_prompt.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        write_json_artifact(self.output_dir / "structured_extraction_prompt.json", self.structured_extraction_prompt)
+        write_json_artifact(self.output_dir / "structured_analysis_prompt.json", self.structured_analysis_prompt)
 
         # 加载样本
         loader = DatasetLoader(
@@ -796,11 +789,8 @@ class MMAPRunner:
         self._save_sample_states()
 
         # PR4: 保存 final_fewshot_examples.jsonl
-        import json
         fewshot_file = self.output_dir / "final_fewshot_examples.jsonl"
-        with open(fewshot_file, "w", encoding="utf-8") as f:
-            for example in phase.fewshot_examples:
-                f.write(json.dumps(example.to_dict(), ensure_ascii=False) + "\n")
+        write_jsonl_artifact(fewshot_file, phase.fewshot_examples)
         log_stage(
             self.logger,
             "fewshot_optimization_done",
@@ -812,10 +802,7 @@ class MMAPRunner:
     def _save_run_plan(self) -> None:
         """保存 Run Plan。"""
         import json
-        (self.output_dir / "run_plan.json").write_text(
-            json.dumps(self.run_plan.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        write_json_artifact(self.output_dir / "run_plan.json", self.run_plan)
 
     def _save_sample_states(self) -> None:
         """保存样本状态。"""
@@ -827,30 +814,19 @@ class MMAPRunner:
             for sample_id, state in self.sample_set.states.items()
         }
 
-        (self.output_dir / "sample_states.json").write_text(
-            json.dumps(states_dict, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        write_json_artifact(self.output_dir / "sample_states.json", states_dict)
 
     def _save_sample_traces(self) -> None:
         if self.sample_set is None:
             return
         traces_file = self.output_dir / "sample_traces.jsonl"
-        with open(traces_file, "w", encoding="utf-8") as f:
-            for trace in self.sample_set.traces:
-                f.write(json.dumps(trace.to_dict(), ensure_ascii=False) + "\n")
+        write_jsonl_artifact(traces_file, self.sample_set.traces)
 
     def _save_current_prompts(self) -> None:
         if self.structured_extraction_prompt is not None:
-            (self.output_dir / "current_extraction_prompt.json").write_text(
-                json.dumps(self.structured_extraction_prompt.to_dict(), indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            write_json_artifact(self.output_dir / "current_extraction_prompt.json", self.structured_extraction_prompt)
         if self.structured_analysis_prompt is not None:
-            (self.output_dir / "current_analysis_prompt.json").write_text(
-                json.dumps(self.structured_analysis_prompt.to_dict(), indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            write_json_artifact(self.output_dir / "current_analysis_prompt.json", self.structured_analysis_prompt)
 
     def _save_checkpoint(
         self,
@@ -1032,9 +1008,7 @@ class MMAPRunner:
 
     def _save_fewshot_examples(self, examples: list[FewshotExample]) -> None:
         fewshot_file = self.output_dir / "final_fewshot_examples.jsonl"
-        with open(fewshot_file, "w", encoding="utf-8") as f:
-            for example in examples:
-                f.write(json.dumps(example.to_dict(), ensure_ascii=False) + "\n")
+        write_jsonl_artifact(fewshot_file, examples)
 
     def _load_fewshot_examples(self) -> list[FewshotExample]:
         fewshot_file = self.output_dir / "final_fewshot_examples.jsonl"
@@ -1051,20 +1025,11 @@ class MMAPRunner:
         import json
 
         # 保存 Run Summary
-        (self.output_dir / "run_summary.json").write_text(
-            json.dumps(self.run_summary.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        write_json_artifact(self.output_dir / "run_summary.json", self.run_summary)
 
         # 保存最终的 prompt
         if self.structured_extraction_prompt:
-            (self.output_dir / "final_extraction_prompt.json").write_text(
-                json.dumps(self.structured_extraction_prompt.to_dict(), indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            write_json_artifact(self.output_dir / "final_extraction_prompt.json", self.structured_extraction_prompt)
 
         if self.structured_analysis_prompt:
-            (self.output_dir / "final_analysis_prompt.json").write_text(
-                json.dumps(self.structured_analysis_prompt.to_dict(), indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            write_json_artifact(self.output_dir / "final_analysis_prompt.json", self.structured_analysis_prompt)

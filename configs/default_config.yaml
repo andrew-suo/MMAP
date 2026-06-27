@@ -71,7 +71,7 @@ sampling:
   hard_fail_ratio: 0.20
   unknown_ratio: 0.15
   easy_ratio: 0.10
-  patch_memory_weight: 0.30
+  trajectory_weight: 0.30
 
 # ============================================================
 # Prompt Optimization: Prompt 优化阶段
@@ -106,7 +106,7 @@ prompt_optimization:
     hard_fail_ratio: 0.20
     unknown_ratio: 0.15
     easy_ratio: 0.10
-    patch_memory_weight: 0.30
+    trajectory_weight: 0.30
 
   # Extraction Prompt 压缩配置
   extraction_prompt:

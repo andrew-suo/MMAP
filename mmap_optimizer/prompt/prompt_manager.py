@@ -49,6 +49,10 @@ class PromptManager:
             渲染后的文本。
         """
         template = self.load_prompt(template_path)
+        kwargs.setdefault(
+            "sample_optimization_trajectory",
+            "No prior trajectory for this sample.",
+        )
         return template.format(**kwargs)
 
     def clear_cache(self) -> None:

@@ -57,60 +57,142 @@ class SampleOutcomeHistoryItem:
 
 
 @dataclass
-class SamplePatchMemoryItem:
-    """单个样本的跨轮 patch 尝试记忆。"""
-    sample_id: str
+class SamplePatchAttempt:
+    """一个 sample 触发的一次 patch 尝试。"""
+    patch_id: str
     prompt_type: Literal["extraction", "analysis"]
     iteration: int
-    patch_id: str
-    target_section_id: str
-    operation_type: str
+    target_section_id: str = ""
+    operation_type: str = ""
     direction: str = ""
     content: str = ""
     rationale: str = ""
+    generation_status: str = "generated"
+    validation_status: str = "unknown"
+    merge_status: str = "unknown"
+    regression_effect: str = "unknown"
+    toxicity_status: str = "not_tested"
+    tested_sample_ids: list[str] = field(default_factory=list)
+    broken_sample_ids: list[str] = field(default_factory=list)
+    fixed_sample_ids: list[str] = field(default_factory=list)
+    stop_reason: str | None = None
     final_decision: str = "unknown"
-    transition: str = "unknown"
-    toxicity: str = "not_tested"
     rejection_reason: str | None = None
-    source_patch_id: str | None = None
+    evidence_scope: str = "sample"
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "patch_id": self.patch_id,
+            "prompt_type": self.prompt_type,
+            "iteration": self.iteration,
+            "target_section_id": self.target_section_id,
+            "operation_type": self.operation_type,
+            "direction": self.direction,
+            "content": self.content,
+            "rationale": self.rationale,
+            "generation_status": self.generation_status,
+            "validation_status": self.validation_status,
+            "merge_status": self.merge_status,
+            "regression_effect": self.regression_effect,
+            "toxicity_status": self.toxicity_status,
+            "tested_sample_ids": list(self.tested_sample_ids),
+            "broken_sample_ids": list(self.broken_sample_ids),
+            "fixed_sample_ids": list(self.fixed_sample_ids),
+            "stop_reason": self.stop_reason,
+            "final_decision": self.final_decision,
+            "rejection_reason": self.rejection_reason,
+            "evidence_scope": self.evidence_scope,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SamplePatchAttempt":
+        prompt_type = data.get("prompt_type", "extraction")
+        if prompt_type not in {"extraction", "analysis"}:
+            prompt_type = "extraction"
+        return cls(
+            patch_id=str(data.get("patch_id", "")),
+            prompt_type=cast(Literal["extraction", "analysis"], prompt_type),
+            iteration=int(data.get("iteration", 0)),
+            target_section_id=str(data.get("target_section_id", "")),
+            operation_type=str(data.get("operation_type", "")),
+            direction=str(data.get("direction", "")),
+            content=str(data.get("content", "")),
+            rationale=str(data.get("rationale", "")),
+            generation_status=str(data.get("generation_status", "generated")),
+            validation_status=str(data.get("validation_status", "unknown")),
+            merge_status=str(data.get("merge_status", "unknown")),
+            regression_effect=str(data.get("regression_effect", "unknown")),
+            toxicity_status=str(data.get("toxicity_status", "not_tested")),
+            tested_sample_ids=[str(sid) for sid in data.get("tested_sample_ids", [])],
+            broken_sample_ids=[str(sid) for sid in data.get("broken_sample_ids", [])],
+            fixed_sample_ids=[str(sid) for sid in data.get("fixed_sample_ids", [])],
+            stop_reason=data.get("stop_reason"),
+            final_decision=str(data.get("final_decision", "unknown")),
+            rejection_reason=data.get("rejection_reason"),
+            evidence_scope=str(data.get("evidence_scope", "sample")),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass
+class SampleOptimizationTrajectory:
+    """一个 sample 在某一轮某个 prompt 类型下的优化轨迹。"""
+    sample_id: str
+    prompt_type: Literal["extraction", "analysis"]
+    iteration: int
+    selected: bool = True
+    base_status: str = "unknown"
+    final_status: str = "unknown"
+    sample_transition: str = "unknown"
+    analysis_summary: dict[str, Any] = field(default_factory=dict)
+    reflection_summary: dict[str, Any] = field(default_factory=dict)
+    patch_attempts: list[SamplePatchAttempt] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def add_patch_attempt(self, attempt: SamplePatchAttempt) -> None:
+        for idx, existing in enumerate(self.patch_attempts):
+            if existing.patch_id == attempt.patch_id:
+                self.patch_attempts[idx] = attempt
+                return
+        self.patch_attempts.append(attempt)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "sample_id": self.sample_id,
             "prompt_type": self.prompt_type,
             "iteration": self.iteration,
-            "patch_id": self.patch_id,
-            "source_patch_id": self.source_patch_id,
-            "target_section_id": self.target_section_id,
-            "operation_type": self.operation_type,
-            "direction": self.direction,
-            "content": self.content,
-            "rationale": self.rationale,
-            "final_decision": self.final_decision,
-            "transition": self.transition,
-            "toxicity": self.toxicity,
-            "rejection_reason": self.rejection_reason,
+            "selected": self.selected,
+            "base_status": self.base_status,
+            "final_status": self.final_status,
+            "sample_transition": self.sample_transition,
+            "analysis_summary": dict(self.analysis_summary),
+            "reflection_summary": dict(self.reflection_summary),
+            "patch_attempts": [attempt.to_dict() for attempt in self.patch_attempts],
             "metadata": dict(self.metadata),
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SamplePatchMemoryItem":
+    def from_dict(cls, data: dict[str, Any]) -> "SampleOptimizationTrajectory":
+        prompt_type = data.get("prompt_type", "extraction")
+        if prompt_type not in {"extraction", "analysis"}:
+            prompt_type = "extraction"
         return cls(
             sample_id=str(data.get("sample_id", "")),
-            prompt_type=data.get("prompt_type", "extraction"),
+            prompt_type=cast(Literal["extraction", "analysis"], prompt_type),
             iteration=int(data.get("iteration", 0)),
-            patch_id=str(data.get("patch_id", "")),
-            source_patch_id=data.get("source_patch_id"),
-            target_section_id=str(data.get("target_section_id", "")),
-            operation_type=str(data.get("operation_type", "")),
-            direction=str(data.get("direction", "")),
-            content=str(data.get("content", "")),
-            rationale=str(data.get("rationale", "")),
-            final_decision=str(data.get("final_decision", "unknown")),
-            transition=str(data.get("transition", "unknown")),
-            toxicity=str(data.get("toxicity", "not_tested")),
-            rejection_reason=data.get("rejection_reason"),
+            selected=bool(data.get("selected", True)),
+            base_status=str(data.get("base_status", "unknown")),
+            final_status=str(data.get("final_status", "unknown")),
+            sample_transition=str(data.get("sample_transition", "unknown")),
+            analysis_summary=dict(data.get("analysis_summary", {})),
+            reflection_summary=dict(data.get("reflection_summary", {})),
+            patch_attempts=[
+                SamplePatchAttempt.from_dict(item)
+                for item in data.get("patch_attempts", [])
+                if isinstance(item, dict)
+            ],
             metadata=dict(data.get("metadata", {})),
         )
 
@@ -211,7 +293,7 @@ class SampleState:
     generated_extraction_patch_count: int = 0
     generated_analysis_patch_count: int = 0
     outcome_history: list[SampleOutcomeHistoryItem] = field(default_factory=list)
-    patch_memory: list[SamplePatchMemoryItem] = field(default_factory=list)
+    optimization_trajectory: list[SampleOptimizationTrajectory] = field(default_factory=list)
 
     def update_selection(self, selected: bool, iteration: int, alpha: float = 0.3) -> None:
         """更新抽样频率状态。"""
@@ -231,22 +313,6 @@ class SampleState:
 
         if has_error:
             self.error_count += 1
-
-    def add_patch_memory(self, item: SamplePatchMemoryItem, max_items_per_type: int = 20) -> None:
-        """追加 patch 尝试记忆，并按 prompt_type 保留最近记录。"""
-        self.patch_memory.append(item)
-        grouped: dict[str, list[SamplePatchMemoryItem]] = {}
-        for memory in self.patch_memory:
-            grouped.setdefault(memory.prompt_type, []).append(memory)
-
-        trimmed: list[SamplePatchMemoryItem] = []
-        for prompt_type in sorted(grouped):
-            memories = grouped[prompt_type]
-            trimmed.extend(memories[-max_items_per_type:])
-        self.patch_memory = sorted(
-            trimmed,
-            key=lambda memory: (memory.iteration, memory.prompt_type, memory.patch_id),
-        )
 
     def add_outcome_history(
         self,
@@ -283,16 +349,68 @@ class SampleState:
             return outcomes
         return outcomes[-limit:]
 
-    def get_patch_memory(
+    def get_or_create_trajectory(
         self,
-        prompt_type: str,
+        prompt_type: Literal["extraction", "analysis"],
+        iteration: int,
+    ) -> SampleOptimizationTrajectory:
+        """获取或创建当前 sample 的单轮优化轨迹。"""
+        for trajectory in self.optimization_trajectory:
+            if trajectory.prompt_type == prompt_type and trajectory.iteration == iteration:
+                return trajectory
+        trajectory = SampleOptimizationTrajectory(
+            sample_id=self.sample_id,
+            prompt_type=prompt_type,
+            iteration=iteration,
+        )
+        self.optimization_trajectory.append(trajectory)
+        self._trim_optimization_trajectory()
+        return trajectory
+
+    def add_optimization_trajectory(
+        self,
+        trajectory: SampleOptimizationTrajectory,
+        max_items_per_type: int = 20,
+    ) -> None:
+        """追加或替换 sample 优化轨迹。"""
+        self.optimization_trajectory = [
+            item for item in self.optimization_trajectory
+            if not (
+                item.prompt_type == trajectory.prompt_type
+                and item.iteration == trajectory.iteration
+            )
+        ]
+        self.optimization_trajectory.append(trajectory)
+        self._trim_optimization_trajectory(max_items_per_type=max_items_per_type)
+
+    def get_optimization_trajectory(
+        self,
+        prompt_type: str | None = None,
         limit: int | None = None,
-    ) -> list[SamplePatchMemoryItem]:
-        """获取指定 prompt_type 的最近 patch 记忆。"""
-        memories = [m for m in self.patch_memory if m.prompt_type == prompt_type]
+    ) -> list[SampleOptimizationTrajectory]:
+        """获取 sample 优化轨迹。"""
+        if prompt_type is None:
+            items = list(self.optimization_trajectory)
+        else:
+            items = [item for item in self.optimization_trajectory if item.prompt_type == prompt_type]
+        items = sorted(items, key=lambda item: (item.iteration, item.prompt_type))
         if limit is None:
-            return list(memories)
-        return memories[-limit:]
+            return items
+        return items[-limit:]
+
+    def _trim_optimization_trajectory(self, max_items_per_type: int = 20) -> None:
+        grouped: dict[str, list[SampleOptimizationTrajectory]] = {}
+        for trajectory in self.optimization_trajectory:
+            grouped.setdefault(trajectory.prompt_type, []).append(trajectory)
+
+        trimmed: list[SampleOptimizationTrajectory] = []
+        for prompt_type in sorted(grouped):
+            trajectories = sorted(grouped[prompt_type], key=lambda item: item.iteration)
+            trimmed.extend(trajectories[-max_items_per_type:])
+        self.optimization_trajectory = sorted(
+            trimmed,
+            key=lambda item: (item.iteration, item.prompt_type),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -311,7 +429,9 @@ class SampleState:
             "generated_extraction_patch_count": self.generated_extraction_patch_count,
             "generated_analysis_patch_count": self.generated_analysis_patch_count,
             "outcome_history": [item.to_dict() for item in self.outcome_history],
-            "patch_memory": [item.to_dict() for item in self.patch_memory],
+            "optimization_trajectory": [
+                item.to_dict() for item in self.optimization_trajectory
+            ],
         }
 
     @classmethod
@@ -334,14 +454,14 @@ class SampleState:
         ):
             if key in data:
                 setattr(state, key, data[key])
-        state.patch_memory = [
-            SamplePatchMemoryItem.from_dict(item)
-            for item in data.get("patch_memory", [])
-            if isinstance(item, dict)
-        ]
         state.outcome_history = [
             SampleOutcomeHistoryItem.from_dict(item)
             for item in data.get("outcome_history", [])
+            if isinstance(item, dict)
+        ]
+        state.optimization_trajectory = [
+            SampleOptimizationTrajectory.from_dict(item)
+            for item in data.get("optimization_trajectory", [])
             if isinstance(item, dict)
         ]
         return state

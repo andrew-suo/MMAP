@@ -20,13 +20,17 @@ error_reason: {error_reason}
 ## Ground Truth
 {ground_truth}
 
+## Sample Optimization Trajectory
+{sample_optimization_trajectory}
+
 # Required Reasoning Workflow
 
 1. Identify the mismatch between the analysis judgement and the actual extraction correctness.
 2. Ground the diagnosis in evidence from the extraction result, analysis judgement, sample input, and ground truth.
 3. Explain the analysis-prompt root cause: focus on why the analysis prompt allowed this misjudgement, not why the extraction prompt failed.
-4. Distill reusable memory items that would help the analysis prompt avoid similar mistakes.
-5. Propose one minimal patch suggestion for the analysis prompt. If no reliable fix can be identified, set `patch_suggestion` to null.
+4. Use the sample optimization trajectory to avoid repeating patch directions that were toxic, ineffective, rejected, or broken for this sample.
+5. Distill reusable memory items that would help the analysis prompt avoid similar mistakes.
+6. Propose one minimal patch suggestion for the analysis prompt. If no reliable fix can be identified, set `patch_suggestion` to null.
 
 # Output Rules
 
@@ -34,6 +38,7 @@ error_reason: {error_reason}
 - Do not invent facts not present in the inputs.
 - `memory_items` must contain at most 3 items.
 - Each memory item must be generalizable; do not write sample-specific workarounds.
+- The trajectory is prior optimization feedback, not visual evidence. Do not let it override the extraction result, sample input, or ground truth.
 - Prefer `operation: "append_to_section"` for patch suggestions.
 - Use `operation: "replace_in_section"` only if you can provide exact `old_text` copied from the target analysis prompt.
 - The patch content must improve analysis judgement behavior, not extraction behavior.

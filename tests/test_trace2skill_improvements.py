@@ -77,81 +77,106 @@ def test_semantic_patch_draft_translates_to_strict_patch():
     assert patch.metadata["translation_status"] == "translated"
 
 
-def test_sample_patch_memory_round_trips_and_trims_by_prompt_type():
-    from mmap_optimizer.data.sample import SamplePatchMemoryItem, SampleState
+def test_sample_optimization_trajectory_round_trips_and_renders():
+    from mmap_optimizer.data.sample import (
+        SampleOptimizationTrajectory,
+        SamplePatchAttempt,
+        SampleSet,
+        SampleSpec,
+        SampleState,
+    )
+    from mmap_optimizer.prompt.sample_trajectory import SampleTrajectoryRenderer
 
     state = SampleState(sample_id="s1")
-    for idx in range(25):
-        state.add_patch_memory(
-            SamplePatchMemoryItem(
-                sample_id="s1",
-                prompt_type="extraction",
-                iteration=idx,
-                patch_id=f"p{idx}",
-                target_section_id="task",
-                operation_type="append_to_section",
-                final_decision="accepted",
-            )
-        )
-    state.add_patch_memory(
-        SamplePatchMemoryItem(
-            sample_id="s1",
-            prompt_type="analysis",
-            iteration=1,
+    trajectory = SampleOptimizationTrajectory(
+        sample_id="s1",
+        prompt_type="analysis",
+        iteration=2,
+        base_status="fail",
+        final_status="pass",
+        sample_transition="fixed",
+        analysis_summary={"error_reason": "misjudged missing value"},
+    )
+    trajectory.add_patch_attempt(
+        SamplePatchAttempt(
             patch_id="a1",
+            prompt_type="analysis",
+            iteration=2,
             target_section_id="task",
             operation_type="append_to_section",
-            final_decision="toxic",
+            direction="tighten missing value checks",
+            content="Treat missing visible values as incorrect.",
+            final_decision="accepted",
+            toxicity_status="tested_safe",
         )
     )
-
+    state.add_optimization_trajectory(trajectory)
     restored = SampleState.from_dict(state.to_dict())
 
-    extraction_memory = restored.get_patch_memory("extraction")
-    analysis_memory = restored.get_patch_memory("analysis")
-    assert len(extraction_memory) == 20
-    assert extraction_memory[0].patch_id == "p5"
-    assert len(analysis_memory) == 1
-    assert analysis_memory[0].final_decision == "toxic"
+    sample_set = SampleSet()
+    sample_set.add_spec(SampleSpec(id="s1", input={}, ground_truth={}))
+    sample_set.states["s1"] = restored
+    rendered = SampleTrajectoryRenderer().render(sample_set, "s1", "analysis")
+
+    assert restored.get_optimization_trajectory("analysis")[0].sample_transition == "fixed"
+    assert "tighten missing value checks" in rendered
+    assert "decision=accepted" in rendered
 
 
 def test_patch_generation_user_message_includes_current_sample_history_only():
-    from mmap_optimizer.data.sample import SamplePatchMemoryItem, SampleSet, SampleSpec
+    from mmap_optimizer.data.sample import (
+        SampleOptimizationTrajectory,
+        SamplePatchAttempt,
+        SampleSet,
+        SampleSpec,
+    )
     from mmap_optimizer.stages.extraction_prompt_optimization import ExtractionResult
 
     sample_set = SampleSet()
     sample_set.add_spec(SampleSpec(id="s1", input={}, ground_truth={}))
     sample_set.add_spec(SampleSpec(id="s2", input={}, ground_truth={}))
-    sample_set.states["s1"].add_patch_memory(
-        SamplePatchMemoryItem(
-            sample_id="s1",
+    trajectory = SampleOptimizationTrajectory(
+        sample_id="s1",
+        prompt_type="extraction",
+        iteration=1,
+        sample_transition="fixed",
+    )
+    trajectory.add_patch_attempt(
+        SamplePatchAttempt(
+            patch_id="p1",
             prompt_type="extraction",
             iteration=1,
-            patch_id="p1",
             target_section_id="task",
             operation_type="append_to_section",
             direction="copy visible value exactly",
             content="Copy visible value exactly.",
             final_decision="accepted",
-            transition="fixed",
-            toxicity="safe",
+            regression_effect="fixed",
+            toxicity_status="tested_safe",
         )
     )
-    sample_set.states["s2"].add_patch_memory(
-        SamplePatchMemoryItem(
-            sample_id="s2",
+    sample_set.states["s1"].add_optimization_trajectory(trajectory)
+    unrelated = SampleOptimizationTrajectory(
+        sample_id="s2",
+        prompt_type="extraction",
+        iteration=1,
+        sample_transition="broken",
+    )
+    unrelated.add_patch_attempt(
+        SamplePatchAttempt(
+            patch_id="p2",
             prompt_type="extraction",
             iteration=1,
-            patch_id="p2",
             target_section_id="task",
             operation_type="append_to_section",
             direction="unrelated direction",
             content="Do something unrelated.",
             final_decision="toxic",
-            transition="broken",
-            toxicity="toxic",
+            regression_effect="broken",
+            toxicity_status="toxic",
         )
     )
+    sample_set.states["s2"].add_optimization_trajectory(unrelated)
     executor = PatchGenerationExecutor()
 
     message = executor._build_patch_generation_user_message(
@@ -161,9 +186,104 @@ def test_patch_generation_user_message_includes_current_sample_history_only():
         sample_set=sample_set,
     )
 
-    assert "# Sample Patch History" in message
+    assert "# Sample Optimization Trajectory" in message
     assert "copy visible value exactly" in message
     assert "unrelated direction" not in message
+
+
+def test_patch_generation_uses_sample_trajectory():
+    from mmap_optimizer.data.sample import (
+        SampleOptimizationTrajectory,
+        SamplePatchAttempt,
+        SampleSet,
+        SampleSpec,
+    )
+    from mmap_optimizer.stages.extraction_prompt_optimization import ExtractionResult
+
+    sample_set = SampleSet()
+    sample_set.add_spec(SampleSpec(id="s1", input={}, ground_truth={}))
+    trajectory = SampleOptimizationTrajectory(
+        sample_id="s1",
+        prompt_type="extraction",
+        iteration=2,
+        base_status="fail",
+        final_status="fail",
+        sample_transition="unchanged_wrong",
+    )
+    trajectory.add_patch_attempt(
+        SamplePatchAttempt(
+            patch_id="new",
+            prompt_type="extraction",
+            iteration=2,
+            direction="trajectory direction",
+            final_decision="ineffective",
+        )
+    )
+    sample_set.states["s1"].add_optimization_trajectory(trajectory)
+    executor = PatchGenerationExecutor()
+
+    message = executor._build_patch_generation_user_message(
+        prompt_type="extraction",
+        extraction_result=ExtractionResult("s1", "{}", {}, "wrong"),
+        current_prompt=_prompt(),
+        sample_set=sample_set,
+    )
+
+    assert "trajectory direction" in message
+
+
+def test_analysis_and_reflection_messages_include_sample_trajectory():
+    from mmap_optimizer.data.sample import (
+        SampleOptimizationTrajectory,
+        SamplePatchAttempt,
+        SampleSet,
+        SampleSpec,
+    )
+    from mmap_optimizer.executors.analysis_executor import AnalysisExecutor
+
+    sample_set = SampleSet()
+    sample_set.add_spec(SampleSpec(id="s1", input={"image": "x"}, ground_truth={"result": "OK"}))
+    trajectory = SampleOptimizationTrajectory(
+        sample_id="s1",
+        prompt_type="analysis",
+        iteration=1,
+        base_status="fail",
+        final_status="fail",
+        sample_transition="unchanged_wrong",
+    )
+    trajectory.add_patch_attempt(
+        SamplePatchAttempt(
+            patch_id="a1",
+            prompt_type="analysis",
+            iteration=1,
+            direction="avoid accepting missing values",
+            final_decision="ineffective",
+        )
+    )
+    sample_set.states["s1"].add_optimization_trajectory(trajectory)
+    executor = AnalysisExecutor(model_client=MockModelClient())
+    extraction_result = ExtractionResult("s1", "{}", {}, "wrong")
+    analysis_result = AnalysisResult("s1", {"judgement": {"is_correct": True}}, False)
+
+    analysis_messages, _ = executor._build_analysis_messages(
+        _prompt(),
+        _prompt(),
+        extraction_result,
+        sample_set.specs["s1"],
+        sample_set,
+    )
+    reflection_messages, _ = executor._build_reflection_messages(
+        _prompt(),
+        extraction_result,
+        analysis_result,
+        sample_set.specs["s1"],
+        sample_set,
+    )
+
+    assert "Sample Optimization Trajectory" in analysis_messages[1]["content"]
+    assert "avoid accepting missing values" in analysis_messages[1]["content"]
+    assert "Sample Optimization Trajectory" in reflection_messages[1]["content"]
+    assert "avoid accepting missing values" in reflection_messages[1]["content"]
 
 
 class _ApplyExecutor:
@@ -236,7 +356,7 @@ def test_extraction_stage_applies_merged_patch_set_directly():
     assert len(stage.patched_extraction_results) == 2
 
 
-def test_extraction_stage_records_patch_memory_after_regression_test():
+def test_extraction_stage_records_patch_attempt_after_regression_test():
     from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
 
     sample_set = SampleSet(
@@ -282,15 +402,16 @@ def test_extraction_stage_records_patch_memory_after_regression_test():
 
     stage._step7_regression_and_toxicity_test()
 
-    memory = sample_set.states["s1"].get_patch_memory("extraction")
-    assert len(memory) == 1
-    assert memory[0].patch_id == "p1"
-    assert memory[0].final_decision == "accepted"
-    assert memory[0].transition == "fixed"
-    assert memory[0].toxicity == "safe"
+    trajectories = sample_set.states["s1"].get_optimization_trajectory("extraction")
+    assert len(trajectories) == 1
+    attempt = trajectories[0].patch_attempts[0]
+    assert attempt.patch_id == "p1"
+    assert attempt.final_decision == "accepted"
+    assert attempt.regression_effect == "fixed"
+    assert attempt.toxicity_status in {"not_tested", "tested_safe"}
 
 
-def test_analysis_stage_records_patch_memory_after_regression_test():
+def test_analysis_stage_records_patch_attempt_after_regression_test():
     from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
     from mmap_optimizer.patch.types import AnalysisPatch
 
@@ -339,9 +460,10 @@ def test_analysis_stage_records_patch_memory_after_regression_test():
 
     stage._step6_regression_and_toxicity_test()
 
-    memory = sample_set.states["s1"].get_patch_memory("analysis")
-    assert len(memory) == 1
-    assert memory[0].patch_id == "a1"
-    assert memory[0].final_decision == "accepted"
-    assert memory[0].transition == "fixed"
-    assert memory[0].toxicity == "safe"
+    trajectories = sample_set.states["s1"].get_optimization_trajectory("analysis")
+    assert len(trajectories) == 1
+    attempt = trajectories[0].patch_attempts[0]
+    assert attempt.patch_id == "a1"
+    assert attempt.final_decision == "accepted"
+    assert attempt.regression_effect == "fixed"
+    assert attempt.toxicity_status in {"not_tested", "tested_safe"}

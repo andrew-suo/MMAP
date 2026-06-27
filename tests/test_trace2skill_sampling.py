@@ -261,6 +261,44 @@ def test_apex_trace_sampler_trajectory_score_filters_prompt_type():
     assert analysis_sampler._trajectory_score(state) < 0
 
 
+def test_apex_trace_sampler_uses_latest_attempt_event_only():
+    state = SampleState(sample_id="s1")
+    trajectory = SampleOptimizationTrajectory(
+        sample_id="s1",
+        prompt_type="extraction",
+        iteration=1,
+    )
+    trajectory.add_patch_attempt(
+        SamplePatchAttempt(
+            patch_id="p-ext",
+            prompt_type="extraction",
+            iteration=1,
+            attempt_id="s1::p-ext",
+            stage="validation",
+            stage_status="validated",
+            final_decision="unknown",
+        )
+    )
+    trajectory.add_patch_attempt(
+        SamplePatchAttempt(
+            patch_id="p-ext",
+            prompt_type="extraction",
+            iteration=1,
+            attempt_id="s1::p-ext",
+            stage="finalized",
+            stage_status="accepted",
+            regression_effect="fixed",
+            final_decision="accepted",
+        )
+    )
+    state.add_optimization_trajectory(trajectory)
+
+    sampler = create_sampler(SamplerConfig(type="apex_trace", apex_prompt_type="extraction"))
+
+    assert sampler._trajectory_score(state) > 0
+    assert len(trajectory.latest_patch_attempts()) == 1
+
+
 def test_apex_trace_recency_bonus_prefers_less_recently_selected_sample():
     sample_set = SampleSet()
     for sid in ("old", "recent"):

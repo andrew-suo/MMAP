@@ -58,10 +58,14 @@ class SampleOutcomeHistoryItem:
 
 @dataclass
 class SamplePatchAttempt:
-    """一个 sample 触发的一次 patch 尝试。"""
+    """一个 sample 触发的一次 patch 尝试事件。"""
     patch_id: str
     prompt_type: Literal["extraction", "analysis"]
     iteration: int
+    attempt_id: str = ""
+    stage: str = "generated"
+    stage_status: str = "generated"
+    event_index: int = 0
     target_section_id: str = ""
     operation_type: str = ""
     direction: str = ""
@@ -83,9 +87,13 @@ class SamplePatchAttempt:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "attempt_id": self.attempt_id,
             "patch_id": self.patch_id,
             "prompt_type": self.prompt_type,
             "iteration": self.iteration,
+            "stage": self.stage,
+            "stage_status": self.stage_status,
+            "event_index": self.event_index,
             "target_section_id": self.target_section_id,
             "operation_type": self.operation_type,
             "direction": self.direction,
@@ -111,10 +119,15 @@ class SamplePatchAttempt:
         prompt_type = data.get("prompt_type", "extraction")
         if prompt_type not in {"extraction", "analysis"}:
             prompt_type = "extraction"
+        attempt_id = str(data.get("attempt_id", "")) or str(data.get("patch_id", ""))
         return cls(
+            attempt_id=attempt_id,
             patch_id=str(data.get("patch_id", "")),
             prompt_type=cast(Literal["extraction", "analysis"], prompt_type),
             iteration=int(data.get("iteration", 0)),
+            stage=str(data.get("stage", "generated")),
+            stage_status=str(data.get("stage_status", data.get("generation_status", "generated"))),
+            event_index=int(data.get("event_index", 0)),
             target_section_id=str(data.get("target_section_id", "")),
             operation_type=str(data.get("operation_type", "")),
             direction=str(data.get("direction", "")),
@@ -152,11 +165,46 @@ class SampleOptimizationTrajectory:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def add_patch_attempt(self, attempt: SamplePatchAttempt) -> None:
-        for idx, existing in enumerate(self.patch_attempts):
-            if existing.patch_id == attempt.patch_id:
-                self.patch_attempts[idx] = attempt
-                return
+        if not attempt.attempt_id:
+            attempt.attempt_id = attempt.patch_id or f"{self.sample_id}:{len(self.patch_attempts) + 1}"
+        if attempt.event_index <= 0:
+            attempt.event_index = self._next_patch_event_index(attempt.attempt_id)
         self.patch_attempts.append(attempt)
+
+    def latest_patch_attempts(self, limit: int | None = None) -> list[SamplePatchAttempt]:
+        latest_by_attempt = self.latest_patch_attempt_map()
+        attempts = sorted(
+            latest_by_attempt.values(),
+            key=lambda item: (item.iteration, item.event_index, item.attempt_id),
+        )
+        if limit is None:
+            return attempts
+        return attempts[-limit:]
+
+    def latest_patch_attempt_map(self) -> dict[str, SamplePatchAttempt]:
+        latest: dict[str, SamplePatchAttempt] = {}
+        for attempt in sorted(
+            self.patch_attempts,
+            key=lambda item: (item.iteration, item.event_index, item.attempt_id),
+        ):
+            latest[attempt.attempt_id] = attempt
+        return latest
+
+    def patch_attempt_events(self, attempt_id: str) -> list[SamplePatchAttempt]:
+        return [
+            item for item in sorted(
+                self.patch_attempts,
+                key=lambda value: (value.iteration, value.event_index, value.attempt_id),
+            )
+            if item.attempt_id == attempt_id
+        ]
+
+    def _next_patch_event_index(self, attempt_id: str) -> int:
+        max_index = 0
+        for item in self.patch_attempts:
+            if item.attempt_id == attempt_id:
+                max_index = max(max_index, item.event_index)
+        return max_index + 1
 
     def to_dict(self) -> dict[str, Any]:
         return {

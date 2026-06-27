@@ -197,6 +197,7 @@ class PatchMergeReport:
     merged_patch_ids: list[str] = field(default_factory=list)
     dropped_patch_ids: list[str] = field(default_factory=list)
     conflict_patch_ids: list[str] = field(default_factory=list)
+    invalid_provenance_patch_ids: list[str] = field(default_factory=list)
     merge_reason: str = ""
     fallback_used: bool = False
     warnings: list[str] = field(default_factory=list)
@@ -217,6 +218,7 @@ class PatchMergeReport:
             "merged_patch_ids": list(self.merged_patch_ids),
             "dropped_patch_ids": list(self.dropped_patch_ids),
             "conflict_patch_ids": list(self.conflict_patch_ids),
+            "invalid_provenance_patch_ids": list(self.invalid_provenance_patch_ids),
             "merge_reason": self.merge_reason,
             "fallback_used": self.fallback_used,
             "warnings": list(self.warnings),
@@ -239,6 +241,7 @@ class PatchMergeReport:
             merged_patch_ids=data.get("merged_patch_ids", []),
             dropped_patch_ids=data.get("dropped_patch_ids", []),
             conflict_patch_ids=data.get("conflict_patch_ids", []),
+            invalid_provenance_patch_ids=data.get("invalid_provenance_patch_ids", []),
             merge_reason=data.get("merge_reason", ""),
             fallback_used=data.get("fallback_used", False),
             warnings=data.get("warnings", []),

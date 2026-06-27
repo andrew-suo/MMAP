@@ -508,20 +508,50 @@ class ExtractionPromptOptimizationStage:
                 state = self.sample_set.states.get(sample_id)
                 if state is None:
                     continue
-                trajectory = state.get_or_create_trajectory("extraction", self.iteration)
-                trajectory.add_patch_attempt(
-                    self._build_patch_attempt(
-                        patch=patch,
-                        generation_status="generated",
-                        validation_status=validation_status,
-                        merge_status="not_merged",
-                        final_decision="rejected" if validation_status == "rejected" else "unknown",
-                    )
+                state.generated_extraction_patch_count += 1
+                self._append_patch_attempt_event(
+                    state=state,
+                    sample_id=sample_id,
+                    patch=patch,
+                    stage="validation",
+                    stage_status=validation_status,
+                    generation_status="generated",
+                    validation_status=validation_status,
+                    merge_status="not_merged",
+                    final_decision="rejected" if validation_status == "rejected" else "unknown",
+                )
+        for record in getattr(self.patch_generation_executor, "translation_failed_attempts", []):
+            for sample_id in record.get("source_sample_ids", []):
+                state = self.sample_set.states.get(sample_id)
+                if state is None:
+                    continue
+                state.generated_extraction_patch_count += 1
+                self._append_external_attempt_event(
+                    state=state,
+                    sample_id=str(sample_id),
+                    attempt_id=str(record.get("attempt_id", "")),
+                    patch_id=str(record.get("patch_id", "")),
+                    stage="translated",
+                    stage_status="failed",
+                    generation_status=str(record.get("generation_status", "generated")),
+                    validation_status=str(record.get("validation_status", "translation_failed")),
+                    merge_status=str(record.get("merge_status", "not_merged")),
+                    final_decision=str(record.get("final_decision", "rejected")),
+                    rejection_reason=record.get("rejection_reason"),
+                    target_section_id=str(record.get("target_section_id", "")),
+                    operation_type=str(record.get("operation_type", "")),
+                    direction=str(record.get("direction", "")),
+                    content=str(record.get("content", "")),
+                    rationale=str(record.get("rationale", "")),
+                    metadata=dict(record.get("metadata", {})),
                 )
 
     def _build_patch_attempt(
         self,
         patch: ExtractionPatch,
+        sample_id: str,
+        stage: str = "finalized",
+        stage_status: str = "unknown",
         generation_status: str = "generated",
         validation_status: str = "unknown",
         merge_status: str = "unknown",
@@ -532,9 +562,12 @@ class ExtractionPromptOptimizationStage:
     ) -> SamplePatchAttempt:
         metadata = dict(getattr(patch, "metadata", {}))
         return SamplePatchAttempt(
+            attempt_id=self._patch_attempt_id(patch, sample_id),
             patch_id=patch.id,
             prompt_type="extraction",
             iteration=self.iteration,
+            stage=stage,
+            stage_status=stage_status,
             target_section_id=patch.target_section_id,
             operation_type=patch.operation_type,
             direction=str(metadata.get("source_reason") or patch.rationale or "")[:500],
@@ -1009,6 +1042,9 @@ class ExtractionPromptOptimizationStage:
                 trajectory = state.get_or_create_trajectory("extraction", self.iteration)
                 attempt = self._build_patch_attempt(
                     patch=patch,
+                    sample_id=sample_id,
+                    stage="finalized",
+                    stage_status=final_decision,
                     validation_status="validated" if patch.id not in {p.id for p in self.rejected_patches} else "rejected",
                     merge_status="final_merged" if patch.id in final_patch_ids else (
                         "initial_merged" if patch in self.initial_merged_patches else "not_merged"
@@ -1023,11 +1059,14 @@ class ExtractionPromptOptimizationStage:
                 attempt.fixed_sample_ids = [str(sid) for sid in record.get("fixed_sample_ids", [])]
                 attempt.stop_reason = record.get("stop_reason")
                 trajectory.add_patch_attempt(attempt)
-                state.generated_extraction_patch_count += 1
 
     def _record_initial_merge_outcomes(self) -> None:
         """把 validated patch 在 initial merge 阶段的消费结果写回轨迹。"""
-        merged_ids = {patch.id for patch in self.initial_merged_patches}
+        merged_ids = {
+            source_patch_id
+            for patch in self.initial_merged_patches
+            for source_patch_id in self._source_patch_ids(patch)
+        }
         dropped_ids = set(getattr(self.initial_merge_report, "dropped_patch_ids", []) or [])
         for patch in self.validated_patches:
             if patch.id in merged_ids:
@@ -1038,22 +1077,28 @@ class ExtractionPromptOptimizationStage:
                 final_decision = "dropped"
                 if patch.id in dropped_ids and patch.rejection_reason == "MERGED_PATCH_VALIDATION_FAILED":
                     final_decision = "rejected"
+                if getattr(patch, "rejection_reason", None) == "MERGE_PROVENANCE_INVALID":
+                    final_decision = "rejected"
             if patch.rejection_reason == "MERGED_PATCH_VALIDATION_FAILED":
+                merge_status = "not_merged"
+                final_decision = "rejected"
+            if patch.rejection_reason == "MERGE_PROVENANCE_INVALID":
                 merge_status = "not_merged"
                 final_decision = "rejected"
             for sample_id in patch.source_sample_ids:
                 state = self.sample_set.states.get(sample_id)
                 if state is None:
                     continue
-                trajectory = state.get_or_create_trajectory("extraction", self.iteration)
-                trajectory.add_patch_attempt(
-                    self._build_patch_attempt(
-                        patch=patch,
-                        validation_status="validated",
-                        merge_status=merge_status,
-                        final_decision=final_decision,
-                        evidence_scope="batch",
-                    )
+                self._append_patch_attempt_event(
+                    state=state,
+                    sample_id=sample_id,
+                    patch=patch,
+                    stage="initial_merge",
+                    stage_status=merge_status,
+                    validation_status="validated",
+                    merge_status=merge_status,
+                    final_decision=final_decision,
+                    evidence_scope="batch",
                 )
 
     def _mark_apply_no_change(self) -> None:
@@ -1103,6 +1148,92 @@ class ExtractionPromptOptimizationStage:
         transition_by_sample.update({sid: "unchanged_correct" for sid in unchanged_correct_ids})
         return transition_by_sample
 
+    def _append_patch_attempt_event(
+        self,
+        state: SampleState,
+        sample_id: str,
+        patch: ExtractionPatch,
+        stage: str,
+        stage_status: str,
+        generation_status: str = "generated",
+        validation_status: str = "unknown",
+        merge_status: str = "unknown",
+        regression_effect: str = "unknown",
+        toxicity_status: str = "not_tested",
+        final_decision: str = "unknown",
+        evidence_scope: str = "sample",
+    ) -> None:
+        trajectory = state.get_or_create_trajectory("extraction", self.iteration)
+        trajectory.add_patch_attempt(
+            self._build_patch_attempt(
+                patch=patch,
+                sample_id=sample_id,
+                stage=stage,
+                stage_status=stage_status,
+                generation_status=generation_status,
+                validation_status=validation_status,
+                merge_status=merge_status,
+                regression_effect=regression_effect,
+                toxicity_status=toxicity_status,
+                final_decision=final_decision,
+                evidence_scope=evidence_scope,
+            )
+        )
+
+    def _append_external_attempt_event(
+        self,
+        state: SampleState,
+        sample_id: str,
+        attempt_id: str,
+        patch_id: str,
+        stage: str,
+        stage_status: str,
+        generation_status: str,
+        validation_status: str,
+        merge_status: str,
+        final_decision: str,
+        rejection_reason: str | None,
+        target_section_id: str,
+        operation_type: str,
+        direction: str,
+        content: str,
+        rationale: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        trajectory = state.get_or_create_trajectory("extraction", self.iteration)
+        trajectory.add_patch_attempt(
+            SamplePatchAttempt(
+                attempt_id=attempt_id,
+                patch_id=patch_id,
+                prompt_type="extraction",
+                iteration=self.iteration,
+                stage=stage,
+                stage_status=stage_status,
+                target_section_id=target_section_id,
+                operation_type=operation_type,
+                direction=direction,
+                content=content,
+                rationale=rationale,
+                generation_status=generation_status,
+                validation_status=validation_status,
+                merge_status=merge_status,
+                final_decision=final_decision,
+                rejection_reason=rejection_reason,
+                evidence_scope="sample",
+                metadata=metadata,
+            )
+        )
+
+    def _patch_attempt_id(self, patch: ExtractionPatch, sample_id: str) -> str:
+        return f"{sample_id}::{patch.id}"
+
+    def _source_patch_ids(self, patch: ExtractionPatch) -> list[str]:
+        metadata = getattr(patch, "metadata", {}) or {}
+        source_patch_ids = metadata.get("source_patch_ids", [])
+        if isinstance(source_patch_ids, list) and source_patch_ids:
+            return [str(item) for item in source_patch_ids if str(item)]
+        return [patch.id]
+
     def _patch_final_decision(self, patch: ExtractionPatch) -> str:
         if patch.rejection_reason == "TOXIC":
             return "toxic"
@@ -1111,6 +1242,8 @@ class ExtractionPromptOptimizationStage:
         if patch.rejection_reason == "APPLY_NO_CHANGE":
             return "ineffective"
         if patch.rejection_reason == "MERGED_PATCH_VALIDATION_FAILED":
+            return "rejected"
+        if patch.rejection_reason == "MERGE_PROVENANCE_INVALID":
             return "rejected"
         if patch.status == "accepted":
             return "accepted"

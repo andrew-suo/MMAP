@@ -54,10 +54,10 @@ class SampleTrajectoryRenderer:
         if reflection_reason:
             lines.append(f"  reflection_reason={self._compact(reflection_reason, 180)}")
 
-        attempts = trajectory.patch_attempts[-self.patch_limit:]
-        for attempt in attempts:
+        latest_attempts = trajectory.latest_patch_attempts(limit=self.patch_limit)
+        for attempt in latest_attempts:
             lines.append(self._render_attempt(attempt))
-        if not attempts:
+        if not latest_attempts:
             reason = trajectory.metadata.get("no_patch_reason")
             if reason:
                 lines.append(f"  no_patch_reason={self._compact(reason, 180)}")
@@ -66,7 +66,8 @@ class SampleTrajectoryRenderer:
     def _render_attempt(self, attempt: SamplePatchAttempt) -> str:
         return (
             "  patch="
-            f"{attempt.patch_id}; gen={attempt.generation_status}; "
+            f"{attempt.patch_id or attempt.attempt_id}; attempt={attempt.attempt_id}; "
+            f"stage={attempt.stage}; stage_status={attempt.stage_status}; gen={attempt.generation_status}; "
             f"validation={attempt.validation_status}; merge={attempt.merge_status}; "
             f"decision={attempt.final_decision}; regression={attempt.regression_effect}; "
             f"toxicity={attempt.toxicity_status}; section={attempt.target_section_id}; "

@@ -34,6 +34,7 @@ class SamplerConfig:
     unknown_ratio: float = 0.15
     easy_ratio: float = 0.10
     trajectory_weight: float = 0.30
+    apex_prompt_type: str = "combined"
 
 
 class BaseSampler(ABC):
@@ -384,7 +385,7 @@ class ApexTraceSampler(BaseSampler):
             "unknown": 0.45,
             "easy_pass": 0.2,
         }.get(pool, 0.0)
-        return self._score_for_pool(state, pool, rng) + pool_bonus
+        return self._score_for_pool(state, pool, rng, iteration=None) + pool_bonus
 
     def sample(
         self,
@@ -417,7 +418,7 @@ class ApexTraceSampler(BaseSampler):
 
         for pool_name, pool_specs in pools.items():
             pool_specs.sort(
-                key=lambda spec: self._score_for_pool(states[spec.id], pool_name, rng),
+                key=lambda spec: self._score_for_pool(states[spec.id], pool_name, rng, iteration),
                 reverse=True,
             )
 
@@ -461,8 +462,16 @@ class ApexTraceSampler(BaseSampler):
                 "selected_count": states[spec.id].selected_count,
                 "pool": source_by_id.get(spec.id, "unknown"),
                 "apex_classification": self._classify_state(states[spec.id]),
-                "recent_statuses": self._recent_statuses(states[spec.id]),
+                "apex_classifications_by_prompt_type": self._classifications_by_prompt_type(states[spec.id]),
+                "recent_statuses_by_prompt_type": {
+                    prompt_type: self._recent_statuses(states[spec.id], prompt_type)
+                    for prompt_type in self._prompt_types()
+                },
                 "trajectory_score": self._trajectory_score(states[spec.id]),
+                "trajectory_scores_by_prompt_type": {
+                    prompt_type: self._trajectory_score_for_prompt_type(states[spec.id], prompt_type)
+                    for prompt_type in self._prompt_types()
+                },
             }
             for spec in selected
         }
@@ -491,6 +500,7 @@ class ApexTraceSampler(BaseSampler):
                     "easy_pass": self.config.easy_ratio,
                 },
                 "lookback_window": self.config.lookback_window,
+                "apex_prompt_type": self.config.apex_prompt_type,
                 "filled_by_fallback_count": fallback_count,
             },
         )
@@ -522,12 +532,34 @@ class ApexTraceSampler(BaseSampler):
         }
 
     def _classify_state(self, state: SampleState) -> str:
-        statuses = self._recent_statuses(state)
+        classifications = self._classifications_by_prompt_type(state)
+        priority = {
+            "mixed_fail": 4,
+            "hard_fail": 3,
+            "unknown": 2,
+            "easy_pass": 1,
+        }
+        return max(classifications.values(), key=lambda label: priority.get(label, 0))
+
+    def _classifications_by_prompt_type(self, state: SampleState) -> dict[str, str]:
+        return {
+            prompt_type: self._classify_prompt_type_state(state, prompt_type)
+            for prompt_type in self._prompt_types()
+        }
+
+    def _classify_prompt_type_state(self, state: SampleState, prompt_type: str) -> str:
+        statuses = self._recent_statuses(state, prompt_type)
         if not statuses:
-            if state.last_extraction_status in {"wrong", "invalid"} or state.last_analysis_status == "wrong":
-                return "hard_fail"
-            if state.last_extraction_status == "correct" or state.last_analysis_status == "correct":
-                return "easy_pass"
+            if prompt_type == "extraction":
+                if state.last_extraction_status in {"wrong", "invalid"}:
+                    return "hard_fail"
+                if state.last_extraction_status == "correct":
+                    return "easy_pass"
+            elif prompt_type == "analysis":
+                if state.last_analysis_status == "wrong":
+                    return "hard_fail"
+                if state.last_analysis_status == "correct":
+                    return "easy_pass"
             return "unknown"
 
         has_pass = "pass" in statuses
@@ -543,12 +575,22 @@ class ApexTraceSampler(BaseSampler):
             return "easy_pass"
         return "unknown"
 
-    def _recent_statuses(self, state: SampleState) -> list[str]:
-        outcomes = state.get_outcome_history(limit=max(1, self.config.lookback_window))
+    def _recent_statuses(self, state: SampleState, prompt_type: str) -> list[str]:
+        outcomes = state.get_outcome_history(
+            prompt_type=prompt_type,
+            limit=max(1, self.config.lookback_window),
+        )
         return [outcome.status for outcome in outcomes if outcome.status in {"pass", "fail"}]
 
     def _trajectory_score(self, state: SampleState) -> float:
-        trajectories = state.get_optimization_trajectory(limit=5)
+        scores = [
+            self._trajectory_score_for_prompt_type(state, prompt_type)
+            for prompt_type in self._prompt_types()
+        ]
+        return sum(scores) / max(1, len(scores))
+
+    def _trajectory_score_for_prompt_type(self, state: SampleState, prompt_type: str) -> float:
+        trajectories = state.get_optimization_trajectory(prompt_type=prompt_type, limit=5)
         attempts = []
         for trajectory in trajectories:
             attempts.extend(trajectory.patch_attempts[-5:])
@@ -568,11 +610,18 @@ class ApexTraceSampler(BaseSampler):
                 score -= 0.3
         return max(-1.0, min(1.0, score / max(1, len(attempts))))
 
-    def _score_for_pool(self, state: SampleState, pool_name: str, rng: random.Random) -> float:
+    def _score_for_pool(
+        self,
+        state: SampleState,
+        pool_name: str,
+        rng: random.Random,
+        iteration: int | None,
+    ) -> float:
         trajectory_score = self._trajectory_score(state)
         recency_bonus = 0.0
-        if state.last_selected_iteration is not None:
-            recency_bonus = min(1.0, 1 / (1 + state.last_selected_iteration))
+        if iteration is not None and state.last_selected_iteration is not None:
+            iterations_since_selected = max(0, iteration - state.last_selected_iteration)
+            recency_bonus = min(1.0, iterations_since_selected / max(1, iteration))
         if pool_name == "mixed_fail":
             difficulty_weight = 0.4
         elif pool_name == "hard_fail":
@@ -586,6 +635,14 @@ class ApexTraceSampler(BaseSampler):
             + 0.05 * recency_bonus
             + rng.random() * self.config.random_noise_scale
         )
+
+    def _prompt_types(self) -> tuple[str, ...]:
+        prompt_type = (self.config.apex_prompt_type or "combined").lower()
+        if prompt_type == "extraction":
+            return ("extraction",)
+        if prompt_type == "analysis":
+            return ("analysis",)
+        return ("extraction", "analysis")
 
 
 def create_sampler(config: SamplerConfig) -> BaseSampler:

@@ -11,6 +11,7 @@ from mmap_optimizer.data.sample import (
     SampleState,
 )
 from mmap_optimizer.data.sampler import SamplerConfig, create_sampler
+from mmap_optimizer.core.config import RefactoredConfig
 from mmap_optimizer.prompt.structured_prompt import PromptSection, StructuredPrompt
 
 
@@ -169,3 +170,135 @@ def test_apex_trace_sampler_prioritizes_mixed_fail_pool():
     assert batch.scores["mixed"]["apex_classification"] == "mixed_fail"
     assert "trajectory_score" in batch.scores["mixed"]
     assert batch.metadata["lookback_window"] == 5
+
+
+def test_apex_trace_sampler_keeps_prompt_type_histories_separate():
+    sample_set = SampleSet()
+    for sid in ("mixed_extraction", "analysis_only"):
+        sample_set.add_spec(SampleSpec(id=sid, input={}, ground_truth={}))
+
+    extraction_state = sample_set.states["mixed_extraction"]
+    extraction_state.add_outcome_history(
+        SampleOutcomeHistoryItem("mixed_extraction", "extraction", 1, "pass")
+    )
+    extraction_state.add_outcome_history(
+        SampleOutcomeHistoryItem("mixed_extraction", "extraction", 2, "fail")
+    )
+
+    analysis_state = sample_set.states["analysis_only"]
+    analysis_state.add_outcome_history(
+        SampleOutcomeHistoryItem("analysis_only", "analysis", 1, "pass")
+    )
+    analysis_state.add_outcome_history(
+        SampleOutcomeHistoryItem("analysis_only", "analysis", 2, "fail")
+    )
+
+    sampler = create_sampler(
+        SamplerConfig(
+            type="apex_trace",
+            apex_prompt_type="extraction",
+            mixed_fail_ratio=1.0,
+            hard_fail_ratio=0.0,
+            unknown_ratio=0.0,
+            easy_ratio=0.0,
+            random_noise_scale=0.0,
+        )
+    )
+
+    batch = sampler.sample(sample_set, batch_size=1, iteration=3, seed=1)
+
+    assert batch.sample_ids == ["mixed_extraction"]
+    assert batch.scores["mixed_extraction"]["apex_classification"] == "mixed_fail"
+    assert batch.scores["mixed_extraction"]["recent_statuses_by_prompt_type"] == {
+        "extraction": ["pass", "fail"]
+    }
+
+
+def test_apex_trace_sampler_trajectory_score_filters_prompt_type():
+    state = SampleState(sample_id="s1")
+
+    extraction_trajectory = SampleOptimizationTrajectory(
+        sample_id="s1",
+        prompt_type="extraction",
+        iteration=1,
+    )
+    extraction_trajectory.add_patch_attempt(
+        SamplePatchAttempt(
+            patch_id="p-ext",
+            prompt_type="extraction",
+            iteration=1,
+            regression_effect="fixed",
+            final_decision="accepted",
+        )
+    )
+    state.add_optimization_trajectory(extraction_trajectory)
+
+    analysis_trajectory = SampleOptimizationTrajectory(
+        sample_id="s1",
+        prompt_type="analysis",
+        iteration=1,
+    )
+    analysis_trajectory.add_patch_attempt(
+        SamplePatchAttempt(
+            patch_id="p-ana",
+            prompt_type="analysis",
+            iteration=1,
+            regression_effect="broken",
+            final_decision="rejected",
+            toxicity_status="toxic",
+        )
+    )
+    state.add_optimization_trajectory(analysis_trajectory)
+
+    extraction_sampler = create_sampler(
+        SamplerConfig(type="apex_trace", apex_prompt_type="extraction")
+    )
+    analysis_sampler = create_sampler(
+        SamplerConfig(type="apex_trace", apex_prompt_type="analysis")
+    )
+
+    assert extraction_sampler._trajectory_score(state) > 0
+    assert analysis_sampler._trajectory_score(state) < 0
+
+
+def test_apex_trace_recency_bonus_prefers_less_recently_selected_sample():
+    sample_set = SampleSet()
+    for sid in ("old", "recent"):
+        sample_set.add_spec(SampleSpec(id=sid, input={}, ground_truth={}))
+        sample_set.states[sid].add_outcome_history(
+            SampleOutcomeHistoryItem(sid, "extraction", 1, "fail")
+        )
+        sample_set.states[sid].difficulty_score = 0.5
+        sample_set.states[sid].frequency_score = 0.5
+
+    sample_set.states["old"].last_selected_iteration = 1
+    sample_set.states["recent"].last_selected_iteration = 9
+
+    sampler = create_sampler(
+        SamplerConfig(
+            type="apex_trace",
+            apex_prompt_type="extraction",
+            hard_fail_ratio=1.0,
+            mixed_fail_ratio=0.0,
+            unknown_ratio=0.0,
+            easy_ratio=0.0,
+            random_noise_scale=0.0,
+        )
+    )
+
+    batch = sampler.sample(sample_set, batch_size=1, iteration=10, seed=1)
+
+    assert batch.sample_ids == ["old"]
+
+
+def test_top_level_sampling_random_noise_scale_config_is_honored():
+    config = RefactoredConfig.from_dict({
+        "sampling": {
+            "type": "apex_trace",
+            "random_noise_scale": 0.123,
+            "apex_prompt_type": "analysis",
+        }
+    })
+
+    assert config.sampling.random_noise_scale == 0.123
+    assert config.sampling.apex_prompt_type == "analysis"

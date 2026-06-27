@@ -47,6 +47,12 @@ class SampleTrajectoryRenderer:
             f"transition={trajectory.sample_transition}"
         )
         lines = [line]
+        if trajectory.base_raw_status not in {"", "unknown"} or trajectory.final_raw_status not in {"", "unknown"}:
+            lines.append(
+                "  raw_status="
+                f"base={self._compact(trajectory.base_raw_status, 60)}; "
+                f"final={self._compact(trajectory.final_raw_status, 60)}"
+            )
         analysis_reason = trajectory.analysis_summary.get("error_reason")
         if analysis_reason:
             lines.append(f"  analysis_error_reason={self._compact(analysis_reason, 180)}")

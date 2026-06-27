@@ -444,6 +444,8 @@ class PromptOptimizationPhase:
                 "phase": trace.phase,
                 "iteration": trace.iteration,
                 "selected": trace.selected,
+                "participated_in_extraction": trace.participated_in_extraction,
+                "participated_in_analysis": trace.participated_in_analysis,
             }
             for attr in [
                 "base_extraction_result_id",
@@ -459,7 +461,8 @@ class PromptOptimizationPhase:
                 "fixed_by_patch_ids",
                 "broken_by_patch_ids",
                 "toxic_trigger_patch_ids",
-                "transition",
+                "extraction_transition",
+                "analysis_transition",
                 "notes",
             ]:
                 val = getattr(trace, attr, None)

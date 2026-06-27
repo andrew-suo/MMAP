@@ -566,6 +566,7 @@ class ExtractionPromptOptimizationStage:
             )
             self.initial_merged_patches = merged_patches
             self.initial_merge_report = merge_report
+            self._record_initial_merge_outcomes()
             return
 
         if self.patch_generation_executor is not None:
@@ -579,6 +580,7 @@ class ExtractionPromptOptimizationStage:
                 merged_patches=[p.to_dict() for p in self.initial_merged_patches],
                 metadata={"merge_strategy": "passthrough"},
             )
+            self._record_initial_merge_outcomes()
             return
 
         if not self.draft_patches:
@@ -601,6 +603,7 @@ class ExtractionPromptOptimizationStage:
             conflict_count=0,
             merged_patches=[p.to_dict() for p in self.initial_merged_patches],
         )
+        self._record_initial_merge_outcomes()
 
     def _step6_apply_and_test(self) -> None:
         """Step 6: 应用初始 merged patch 并回归测试。"""
@@ -614,6 +617,7 @@ class ExtractionPromptOptimizationStage:
 
             if not apply_report.changed:
                 self.metrics.no_progress = True
+                self._mark_apply_no_change()
                 return
 
             if self.extraction_executor is not None:
@@ -643,6 +647,11 @@ class ExtractionPromptOptimizationStage:
 
     def _step7_regression_and_toxicity_test(self) -> None:
         """Step 7: 回归分析、无效剔除与测毒。"""
+        if (
+            self.patch_apply_report is not None
+            and getattr(self.patch_apply_report, "changed", True) is False
+        ):
+            return
         if self.patch_apply_executor is not None and self.toxicity_test_executor is not None:
             base_eval_map = {r.sample_id: r for r in self.base_eval_records}
             patched_eval_map = {r.sample_id: r for r in self.patched_eval_records}
@@ -1016,6 +1025,59 @@ class ExtractionPromptOptimizationStage:
                 trajectory.add_patch_attempt(attempt)
                 state.generated_extraction_patch_count += 1
 
+    def _record_initial_merge_outcomes(self) -> None:
+        """把 validated patch 在 initial merge 阶段的消费结果写回轨迹。"""
+        merged_ids = {patch.id for patch in self.initial_merged_patches}
+        dropped_ids = set(getattr(self.initial_merge_report, "dropped_patch_ids", []) or [])
+        for patch in self.validated_patches:
+            if patch.id in merged_ids:
+                merge_status = "initial_merged"
+                final_decision = "unknown"
+            else:
+                merge_status = "not_merged"
+                final_decision = "dropped"
+                if patch.id in dropped_ids and patch.rejection_reason == "MERGED_PATCH_VALIDATION_FAILED":
+                    final_decision = "rejected"
+            if patch.rejection_reason == "MERGED_PATCH_VALIDATION_FAILED":
+                merge_status = "not_merged"
+                final_decision = "rejected"
+            for sample_id in patch.source_sample_ids:
+                state = self.sample_set.states.get(sample_id)
+                if state is None:
+                    continue
+                trajectory = state.get_or_create_trajectory("extraction", self.iteration)
+                trajectory.add_patch_attempt(
+                    self._build_patch_attempt(
+                        patch=patch,
+                        validation_status="validated",
+                        merge_status=merge_status,
+                        final_decision=final_decision,
+                        evidence_scope="batch",
+                    )
+                )
+
+    def _mark_apply_no_change(self) -> None:
+        """Apply 没有修改 prompt 时，终止当前 patch 消费并写回轨迹。"""
+        self.accepted_prompt = None
+        self.final_prompt = None
+        self.final_merged_patches = []
+        self.safe_patches = []
+        self.toxic_patches = []
+        for patch in self.initial_merged_patches:
+            patch.status = "rejected"
+            patch.rejection_reason = "APPLY_NO_CHANGE"
+        self.metrics.accepted_patch_count = 0
+        self.metrics.rejected_patch_count = (
+            len(self.rejected_patches) + len(self.initial_merged_patches)
+        )
+        self._record_sample_patch_attempts(
+            patches=self.initial_merged_patches,
+            fixed_sample_ids=[],
+            broken_sample_ids=[],
+            unchanged_wrong_ids=[],
+            unchanged_correct_ids=[],
+        )
+
     def _toxicity_test_record_map(self) -> dict[str, dict[str, Any]]:
         if self.toxicity_report is None:
             return {}
@@ -1046,6 +1108,10 @@ class ExtractionPromptOptimizationStage:
             return "toxic"
         if patch.rejection_reason == "INEFFECTIVE":
             return "ineffective"
+        if patch.rejection_reason == "APPLY_NO_CHANGE":
+            return "ineffective"
+        if patch.rejection_reason == "MERGED_PATCH_VALIDATION_FAILED":
+            return "rejected"
         if patch.status == "accepted":
             return "accepted"
         if patch.status == "candidate_safe":

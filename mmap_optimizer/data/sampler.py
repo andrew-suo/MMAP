@@ -33,7 +33,7 @@ class SamplerConfig:
     hard_fail_ratio: float = 0.20
     unknown_ratio: float = 0.15
     easy_ratio: float = 0.10
-    patch_memory_weight: float = 0.30
+    trajectory_weight: float = 0.30
 
 
 class BaseSampler(ABC):
@@ -462,7 +462,7 @@ class ApexTraceSampler(BaseSampler):
                 "pool": source_by_id.get(spec.id, "unknown"),
                 "apex_classification": self._classify_state(states[spec.id]),
                 "recent_statuses": self._recent_statuses(states[spec.id]),
-                "patch_memory_score": self._patch_memory_score(states[spec.id]),
+                "trajectory_score": self._trajectory_score(states[spec.id]),
             }
             for spec in selected
         }
@@ -547,24 +547,29 @@ class ApexTraceSampler(BaseSampler):
         outcomes = state.get_outcome_history(limit=max(1, self.config.lookback_window))
         return [outcome.status for outcome in outcomes if outcome.status in {"pass", "fail"}]
 
-    def _patch_memory_score(self, state: SampleState) -> float:
-        memories = state.get_patch_memory("extraction", limit=5) + state.get_patch_memory("analysis", limit=5)
+    def _trajectory_score(self, state: SampleState) -> float:
+        trajectories = state.get_optimization_trajectory(limit=5)
+        attempts = []
+        for trajectory in trajectories:
+            attempts.extend(trajectory.patch_attempts[-5:])
         score = 0.0
-        for memory in memories:
-            if memory.final_decision in {"accepted", "merged"}:
+        for attempt in attempts:
+            if attempt.final_decision == "accepted" or attempt.merge_status == "final_merged":
                 score += 0.5
-            if memory.transition == "fixed":
+            if attempt.regression_effect == "fixed":
                 score += 1.0
-            elif memory.transition == "broken":
+            elif attempt.regression_effect == "broken":
                 score -= 1.0
-            elif memory.transition == "unchanged_wrong":
+            elif attempt.regression_effect == "unchanged_wrong":
                 score -= 0.2
-            if memory.toxicity == "toxic":
+            if attempt.toxicity_status == "toxic":
                 score -= 1.0
-        return max(-1.0, min(1.0, score / max(1, len(memories))))
+            if attempt.final_decision in {"ineffective", "rejected", "dropped"}:
+                score -= 0.3
+        return max(-1.0, min(1.0, score / max(1, len(attempts))))
 
     def _score_for_pool(self, state: SampleState, pool_name: str, rng: random.Random) -> float:
-        patch_score = self._patch_memory_score(state)
+        trajectory_score = self._trajectory_score(state)
         recency_bonus = 0.0
         if state.last_selected_iteration is not None:
             recency_bonus = min(1.0, 1 / (1 + state.last_selected_iteration))
@@ -577,7 +582,7 @@ class ApexTraceSampler(BaseSampler):
         return (
             difficulty_weight * state.difficulty_score
             + self.config.frequency_weight * state.frequency_score
-            + self.config.patch_memory_weight * patch_score
+            + self.config.trajectory_weight * trajectory_score
             + 0.05 * recency_bonus
             + rng.random() * self.config.random_noise_scale
         )

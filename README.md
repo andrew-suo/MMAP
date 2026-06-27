@@ -32,7 +32,7 @@ MMAP Optimizer 是一个面向多模态信息抽取任务的 Prompt 自动优化
 - **测毒与回归保护**：逐 patch 检查是否破坏原本正确样本，拒绝 toxic / ineffective patch。
 - **Prompt 压缩**：按行数和字符数阈值触发压缩，并用 LLM 验证压缩是否保留语义。
 - **Few-shot 优化**：维护候选示例池，按 slot 选择更优 few-shot 示例。
-- **可追踪产物**：每轮输出 sample traces、patch lifecycle、merge report、toxicity report、compression report 等 artifact。
+- **可追踪产物**：每轮输出 sample trajectory、sample traces、merge report、toxicity report、compression report 等 artifact。
 
 ## 工作流概览
 
@@ -252,7 +252,7 @@ runs/<run_id>/
         ├── sample_batch.json
         ├── sampling_plan.json
         ├── sample_traces.jsonl
-        ├── sample_patch_memory.jsonl
+        ├── sample_optimization_trajectory.jsonl
         ├── extraction/
         │   ├── base_results.jsonl
         │   ├── analysis_results.jsonl
@@ -261,7 +261,6 @@ runs/<run_id>/
         │   ├── draft_patches.jsonl
         │   ├── validated_patches.jsonl
         │   ├── rejected_patches.jsonl
-        │   ├── patch_lifecycle.jsonl
         │   ├── toxicity_report.json
         │   ├── compression_report.json
         │   └── metrics.json
@@ -274,12 +273,11 @@ runs/<run_id>/
 | 文件 | 说明 |
 | --- | --- |
 | `sample_traces.jsonl` | 每个样本在本轮中的选择、分析、patch、transition 记录 |
-| `sample_patch_memory.jsonl` | 本轮写入每个样本的 patch 经验记忆 |
+| `sample_optimization_trajectory.jsonl` | 以 sample 为中心的优化轨迹，包含分析、反思、patch 尝试、回归和测毒结果 |
 | `logs/mmap.log` | 运行调试日志，用于排查功能问题 |
 | `model_call_failures.jsonl` | 模型调用失败和重试记录 |
 | `semantic_patch_drafts.jsonl` | LLM 生成的语义 patch 草稿 |
 | `translated_patches.jsonl` | semantic patch 翻译后的严格 patch |
-| `patch_lifecycle.jsonl` | patch 从生成、校验、合并、测毒到最终接受/拒绝的生命周期 |
 | `model_output_repairs.jsonl` | LLM 输出解析修复记录 |
 | `toxicity_report.json` | patch 测毒结果 |
 | `compression_report.json` | Prompt 压缩触发、验证和接受情况 |
@@ -330,7 +328,7 @@ git diff --check
 - 默认配置优先保持 mock 可运行，方便本地验证流程和 artifact。
 - 真实模型调用通过 `models.*` 配置控制，`--no-mock` 会显式禁止 mock fallback。
 - 新增 LLM prompt 时，应同步更新 `PromptsConfig`、`prompts/README.md` 和相关测试。
-- 新增 artifact 时，应优先使用 `to_dict()` 保持 JSON 可序列化。
+- 新增 artifact 时，应优先使用统一 artifact writer，保证 JSON 可序列化且不落无意义空字段。
 - 新增采样策略时，应确保 `SampleBatch.metadata` 写明来源和 fallback 行为，便于复现实验。
 
 ## License

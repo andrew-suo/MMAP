@@ -19,6 +19,7 @@ from ..data.sample import SampleAsset, SampleSet, SampleSpec
 from ..prompt.structured_prompt import StructuredPrompt, StructuredPromptRenderer
 from ..prompt.prompt_manager import render_prompt
 from ..prompt.output_repair import parse_model_json_output
+from ..prompt.sample_trajectory import SampleTrajectoryRenderer
 from .evaluation_executor import normalize_label
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ class AnalysisExecutor:
             self.failure_policy.max_consecutive_sample_failures
         )
         self.progress_reporter: ProgressReporter = NullProgressReporter()
+        self.sample_trajectory_renderer = SampleTrajectoryRenderer()
 
     def execute(
         self,
@@ -64,10 +66,11 @@ class AnalysisExecutor:
         extraction_prompt: StructuredPrompt,
         extraction_result: ExtractionResult,
         sample_spec: SampleSpec,
+        sample_set: SampleSet | None = None,
     ) -> AnalysisResult:
         """对单个样本执行盲评分析。"""
         messages, assets = self._build_analysis_messages(
-            analysis_prompt, extraction_prompt, extraction_result, sample_spec
+            analysis_prompt, extraction_prompt, extraction_result, sample_spec, sample_set
         )
         response = self.model_client.complete_multimodal(
             messages, assets=assets, model_config=self.model_config
@@ -120,7 +123,13 @@ class AnalysisExecutor:
             if spec is None:
                 continue
             try:
-                result = self.execute(analysis_prompt, extraction_prompt, extraction_result, spec)
+                result = self.execute(
+                    analysis_prompt,
+                    extraction_prompt,
+                    extraction_result,
+                    spec,
+                    sample_set,
+                )
                 self.sample_failure_tracker.record_success()
             except Exception as exc:
                 if not self.failure_policy.skip_single_sample_failure:
@@ -149,12 +158,13 @@ class AnalysisExecutor:
         extraction_result: ExtractionResult,
         analysis_result: AnalysisResult,
         sample_spec: SampleSpec,
+        sample_set: SampleSet | None = None,
     ) -> ReflectionResult:
         """对分析错误的样本进行反思（多模态，带 GT）。"""
         from ..stages.analysis_prompt_optimization import ReflectionResult
 
         messages, assets = self._build_reflection_messages(
-            analysis_prompt, extraction_result, analysis_result, sample_spec
+            analysis_prompt, extraction_result, analysis_result, sample_spec, sample_set
         )
         try:
             response = self.model_client.complete_multimodal(
@@ -215,6 +225,7 @@ class AnalysisExecutor:
         extraction_prompt: StructuredPrompt,
         extraction_result: ExtractionResult,
         sample_spec: SampleSpec,
+        sample_set: SampleSet | None = None,
     ) -> tuple[list[dict[str, Any]], list[SampleAsset]]:
         """构建盲评分析消息（多模态，不带 GT）。"""
         system_content = self.renderer.render_system_message(analysis_prompt)
@@ -248,6 +259,15 @@ class AnalysisExecutor:
             user_parts.append(
                 json.dumps(sample_spec.metadata, ensure_ascii=False, indent=2)
             )
+        trajectory = self.sample_trajectory_renderer.render(
+            sample_set=sample_set,
+            sample_id=extraction_result.sample_id,
+            prompt_type="analysis",
+        )
+        if trajectory:
+            user_parts.append("")
+            user_parts.append("# Sample Optimization Trajectory")
+            user_parts.append(trajectory)
         user_content = "\n".join(user_parts)
 
         assets = self._build_assets(sample_spec)
@@ -263,6 +283,7 @@ class AnalysisExecutor:
         extraction_result: ExtractionResult,
         analysis_result: AnalysisResult,
         sample_spec: SampleSpec,
+        sample_set: SampleSet | None = None,
     ) -> tuple[list[dict[str, Any]], list[SampleAsset]]:
         """构建反思消息（多模态，带 GT）。"""
         system_content = self.renderer.render_system_message(analysis_prompt)
@@ -274,6 +295,11 @@ class AnalysisExecutor:
         )
         judgement_text = json.dumps(
             analysis_result.judgement, ensure_ascii=False
+        )
+        trajectory = self.sample_trajectory_renderer.render(
+            sample_set=sample_set,
+            sample_id=extraction_result.sample_id,
+            prompt_type="analysis",
         )
 
         if self.analysis_reflection_template_path:
@@ -288,6 +314,7 @@ class AnalysisExecutor:
                 error_reason=analysis_result.error_reason,
                 sample_input=json.dumps(sample_spec.input, ensure_ascii=False, indent=2),
                 ground_truth=json.dumps(sample_spec.ground_truth, ensure_ascii=False, indent=2),
+                sample_optimization_trajectory=trajectory or "No prior trajectory for this sample.",
             )
         else:
             user_parts: list[str] = []
@@ -309,6 +336,10 @@ class AnalysisExecutor:
             user_parts.append(
                 json.dumps(sample_spec.ground_truth, ensure_ascii=False, indent=2)
             )
+            if trajectory:
+                user_parts.append("")
+                user_parts.append("# Sample Optimization Trajectory")
+                user_parts.append(trajectory)
             user_parts.append("")
             user_parts.append("# Task")
             user_parts.append(

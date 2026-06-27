@@ -573,6 +573,7 @@ def test_acceptance_full_run_artifact_manifest(tmp_path):
     iter_files = [
         "sample_batch.json",
         "sample_traces.jsonl",
+        "sample_optimization_trajectory.jsonl",
         "sample_state_before.json",
         "sample_state_after.json",
         "batch_size_controller_before.json",
@@ -595,7 +596,6 @@ def test_acceptance_full_run_artifact_manifest(tmp_path):
     # Analysis artifact（spec 7.4 关键文件）
     ana_dir = iter_dir / "analysis"
     ana_files = [
-        "base_metrics.json",
         "compression_report.json",
         "metrics.json",
     ]

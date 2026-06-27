@@ -232,7 +232,6 @@ def test_smoke_run_analysis_artifacts_exist(tmp_path):
     ana_dir = output_dir / "prompt_optimization" / "iteration_1" / "analysis"
     assert ana_dir.exists()
 
-    assert (ana_dir / "base_metrics.json").exists()
     assert (ana_dir / "metrics.json").exists()
     assert (ana_dir / "compression_report.json").exists()
 
@@ -276,6 +275,37 @@ def test_smoke_run_sample_traces_jsonl_parseable(tmp_path):
         trace = json.loads(line)
         assert "sample_id" in trace
         assert "phase" in trace
+        assert "generated_patch_ids" not in trace
+
+
+def test_smoke_run_json_artifacts_do_not_write_null_fields(tmp_path):
+    """代表性 JSON/JSONL artifact 不落空值字段。"""
+    runner, output_dir = _run_smoke(tmp_path)
+
+    ignored_empty_event_logs = {
+        "prompt_versions.jsonl",
+        "patch_apply_reports.jsonl",
+        "model_call_failures.jsonl",
+    }
+
+    def assert_no_null(value, path: Path) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                assert item is not None, f"{path} 包含 null 字段: {key}"
+                assert_no_null(item, path)
+        elif isinstance(value, list):
+            for item in value:
+                assert_no_null(item, path)
+
+    for path in output_dir.rglob("*.json"):
+        assert_no_null(json.loads(path.read_text(encoding="utf-8")), path)
+
+    for path in output_dir.rglob("*.jsonl"):
+        if path.name in ignored_empty_event_logs and not path.read_text(encoding="utf-8").strip():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                assert_no_null(json.loads(line), path)
 
 
 def test_smoke_run_compression_report_parseable(tmp_path):
@@ -324,31 +354,26 @@ def test_smoke_run_patch_apply_reports_jsonl_exists(tmp_path):
         assert "stage" in record
 
 
-def test_smoke_run_prompt_memory_and_lifecycle_artifacts_exist(tmp_path):
-    """prompt 优化阶段输出 success memory 和 patch lifecycle artifact。"""
+def test_smoke_run_sample_trajectory_artifact_exists(tmp_path):
+    """prompt 优化阶段输出 sample-centered trajectory artifact。"""
     runner, output_dir = _run_smoke(tmp_path)
 
     iter_dir = output_dir / "prompt_optimization" / "iteration_1"
+    trajectory_file = iter_dir / "sample_optimization_trajectory.jsonl"
+    assert trajectory_file.exists()
+
+    lines = [line for line in trajectory_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert lines
+    for line in lines:
+        item = json.loads(line)
+        assert "sample_id" in item
+        assert item["prompt_type"] in {"extraction", "analysis"}
+        assert "patch_attempts" in item
+
     for prompt_type in ("extraction", "analysis"):
         artifact_dir = iter_dir / prompt_type
-        success_memory_file = artifact_dir / "success_memory_items.jsonl"
-        patch_lifecycle_file = artifact_dir / "patch_lifecycle.jsonl"
-
-        assert success_memory_file.exists()
-        assert patch_lifecycle_file.exists()
-
-        for line in success_memory_file.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                item = json.loads(line)
-                assert item["prompt_type"] == prompt_type
-                assert "section_id" in item
-                assert "generalized_lesson" in item
-
-        for line in patch_lifecycle_file.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                item = json.loads(line)
-                assert item["prompt_type"] == prompt_type
-                assert "final_decision" in item
+        assert not (artifact_dir / "success_memory_items.jsonl").exists()
+        assert not (artifact_dir / "patch_lifecycle.jsonl").exists()
 
 
 # ============================================================

@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .artifacts import to_artifact_data
+
 
 @dataclass
 class RunCheckpoint:
@@ -77,7 +79,7 @@ def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
+        json.dumps(to_artifact_data(data), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     tmp_path.replace(path)
@@ -106,7 +108,7 @@ class CheckpointStore:
                 "checkpoint": checkpoint.to_dict(),
             }
             with open(self.events_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f.write(json.dumps(to_artifact_data(record), ensure_ascii=False) + "\n")
 
 
 __all__ = ["CheckpointStore", "RunCheckpoint", "atomic_write_json"]

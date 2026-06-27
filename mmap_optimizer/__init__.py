@@ -21,7 +21,8 @@
 from .data.sample import (
     SampleAsset,
     SampleOutcomeHistoryItem,
-    SamplePatchMemoryItem,
+    SampleOptimizationTrajectory,
+    SamplePatchAttempt,
     SampleSpec,
     SampleState,
     SampleTrace,
@@ -119,7 +120,8 @@ __all__ = [
     # Sample
     "SampleAsset",
     "SampleOutcomeHistoryItem",
-    "SamplePatchMemoryItem",
+    "SampleOptimizationTrajectory",
+    "SamplePatchAttempt",
     "SampleSpec",
     "SampleState",
     "SampleTrace",

@@ -188,7 +188,7 @@ class RefactoredConfig:
                 "hard_fail_ratio": self.sampling.hard_fail_ratio,
                 "unknown_ratio": self.sampling.unknown_ratio,
                 "easy_ratio": self.sampling.easy_ratio,
-                "patch_memory_weight": self.sampling.patch_memory_weight,
+                "trajectory_weight": self.sampling.trajectory_weight,
             },
             "prompt_optimization": {
                 "enabled": self.prompt_optimization.enabled,
@@ -217,7 +217,7 @@ class RefactoredConfig:
                 "hard_fail_ratio": self.prompt_optimization.sampler.hard_fail_ratio,
                 "unknown_ratio": self.prompt_optimization.sampler.unknown_ratio,
                 "easy_ratio": self.prompt_optimization.sampler.easy_ratio,
-                "patch_memory_weight": self.prompt_optimization.sampler.patch_memory_weight,
+                    "trajectory_weight": self.prompt_optimization.sampler.trajectory_weight,
             },
                 "extraction_prompt": {
                     "line_limit": self.prompt_optimization.extraction_prompt_line_limit,
@@ -326,7 +326,7 @@ class RefactoredConfig:
             hard_fail_ratio=sampling_data.get("hard_fail_ratio", 0.20),
             unknown_ratio=sampling_data.get("unknown_ratio", 0.15),
             easy_ratio=sampling_data.get("easy_ratio", 0.10),
-            patch_memory_weight=sampling_data.get("patch_memory_weight", 0.30),
+            trajectory_weight=sampling_data.get("trajectory_weight", 0.30),
         )
 
         # 构建 PromptOptimizationConfig
@@ -368,7 +368,7 @@ class RefactoredConfig:
                 hard_fail_ratio=po_sampler_data.get("hard_fail_ratio", 0.20),
                 unknown_ratio=po_sampler_data.get("unknown_ratio", 0.15),
                 easy_ratio=po_sampler_data.get("easy_ratio", 0.10),
-                patch_memory_weight=po_sampler_data.get("patch_memory_weight", 0.30),
+                trajectory_weight=po_sampler_data.get("trajectory_weight", 0.30),
             ),
             extraction_prompt_line_limit=po_extraction_prompt_data.get("line_limit", 300),
             extraction_prompt_char_limit=po_extraction_prompt_data.get("char_limit", 20000),

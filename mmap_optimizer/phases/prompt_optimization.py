@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from ..core.artifacts import to_artifact_data, write_json_artifact, write_jsonl_artifact
 from ..core.logging import get_logger, log_stage
 from ..core.progress import NullProgressReporter, ProgressReporter
 from ..stages.analysis_prompt_optimization import AnalysisMetrics, AnalysisPromptOptimizationStage
@@ -373,17 +374,17 @@ class PromptOptimizationPhase:
             lineage_file = self.output_dir / "prompt_versions.jsonl"
             lineage_file.parent.mkdir(parents=True, exist_ok=True)
             with open(lineage_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(lineage, ensure_ascii=False) + "\n")
+                f.write(json.dumps(to_artifact_data(lineage), ensure_ascii=False) + "\n")
 
             report_file = self.output_dir / "patch_apply_reports.jsonl"
             with open(report_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(report_dict, ensure_ascii=False) + "\n")
+                f.write(json.dumps(to_artifact_data(report_dict), ensure_ascii=False) + "\n")
         else:
             # 即使无 apply_report 也需保存 prompt lineage
             lineage_file = self.output_dir / "prompt_versions.jsonl"
             lineage_file.parent.mkdir(parents=True, exist_ok=True)
             with open(lineage_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(lineage, ensure_ascii=False) + "\n")
+                f.write(json.dumps(to_artifact_data(lineage), ensure_ascii=False) + "\n")
 
     def _save_iteration_artifacts(
         self,
@@ -399,45 +400,11 @@ class PromptOptimizationPhase:
 
         def _write_jsonl(path: Path, items: list) -> None:
             """将列表写入 JSONL 文件。"""
-            with open(path, "w", encoding="utf-8") as f:
-                for item in items:
-                    data = item.to_dict() if hasattr(item, "to_dict") else item
-                    f.write(json.dumps(data, ensure_ascii=False) + "\n")
+            write_jsonl_artifact(path, items)
 
         def _write_json(path: Path, data: Any) -> None:
             """将数据写入 JSON 文件。"""
-            d = data.to_dict() if hasattr(data, "to_dict") else data
-            path.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
-
-        def _success_memory_items(results: list, prompt_type: str) -> list[dict[str, Any]]:
-            """从正确样本的 section attribution 中提炼成功记忆 artifact。"""
-            items: list[dict[str, Any]] = []
-            for result in results:
-                if not getattr(result, "analysis_correct", False):
-                    continue
-                judgement = getattr(result, "judgement", {})
-                if not isinstance(judgement, dict):
-                    continue
-                attributions = judgement.get("prompt_section_attribution", [])
-                if not isinstance(attributions, list):
-                    continue
-                for attribution in attributions:
-                    if not isinstance(attribution, dict):
-                        continue
-                    section_id = attribution.get("section_id")
-                    if not section_id:
-                        continue
-                    reason = attribution.get("reason", "")
-                    section_name = attribution.get("section_name", "")
-                    items.append({
-                        "sample_id": getattr(result, "sample_id", ""),
-                        "prompt_type": prompt_type,
-                        "section_id": section_id,
-                        "section_name": section_name,
-                        "reason": reason,
-                        "generalized_lesson": reason,
-                    })
-            return items
+            write_json_artifact(path, data)
 
         def _annotate_merge_report(report: Any) -> None:
             """为 merge report 附加简要决策摘要。"""
@@ -451,69 +418,21 @@ class PromptOptimizationPhase:
                 "fallback_used": getattr(report, "fallback_used", False),
             }
 
-        def _patch_lifecycle(stage: Any, prompt_type: str) -> list[dict[str, Any]]:
-            """生成 patch 生命周期 artifact，并补充 final decision metadata。"""
-            ordered: dict[str, Any] = {}
-            phases = [
-                ("draft", getattr(stage, "draft_patches", [])),
-                ("validated", getattr(stage, "validated_patches", [])),
-                ("rejected", getattr(stage, "rejected_patches", [])),
-                ("initial_merged", getattr(stage, "initial_merged_patches", [])),
-                ("safe", getattr(stage, "safe_patches", [])),
-                ("toxic", getattr(stage, "toxic_patches", [])),
-                ("final_merged", getattr(stage, "final_merged_patches", [])),
-            ]
-            phase_by_id: dict[str, list[str]] = {}
-            for phase, patches in phases:
-                for patch in patches:
-                    ordered.setdefault(patch.id, patch)
-                    phase_by_id.setdefault(patch.id, []).append(phase)
-
-            records: list[dict[str, Any]] = []
-            for patch_id, patch in ordered.items():
-                phases_seen = phase_by_id.get(patch_id, [])
-                if "final_merged" in phases_seen or getattr(patch, "status", None) == "accepted":
-                    final_decision = "accepted"
-                elif "toxic" in phases_seen or getattr(patch, "rejection_reason", None) == "TOXIC":
-                    final_decision = "toxic"
-                elif getattr(patch, "rejection_reason", None) == "INEFFECTIVE":
-                    final_decision = "ineffective"
-                elif getattr(patch, "status", None) == "rejected" or "rejected" in phases_seen:
-                    final_decision = "rejected"
-                else:
-                    final_decision = getattr(patch, "status", "unknown")
-
-                decision_reason = getattr(patch, "rejection_reason", None) or final_decision
-                metadata = getattr(patch, "metadata", {})
-                metadata["final_decision"] = final_decision
-                metadata["decision_reason"] = decision_reason
-                if "source_phase" not in metadata:
-                    metadata["source_phase"] = f"{prompt_type}_patch_generation"
-
-                records.append({
-                    "patch_id": patch.id,
-                    "prompt_type": prompt_type,
-                    "phases": phases_seen,
-                    "status": getattr(patch, "status", None),
-                    "final_decision": final_decision,
-                    "decision_reason": decision_reason,
-                    "source_sample_ids": list(getattr(patch, "source_sample_ids", [])),
-                    "fixed_sample_ids": list(getattr(patch, "fixed_sample_ids", [])),
-                    "broken_sample_ids": list(getattr(patch, "broken_sample_ids", [])),
-                    "toxic_sample_ids": list(getattr(patch, "toxic_sample_ids", [])),
-                    "rejection_reason": getattr(patch, "rejection_reason", None),
-                    "metadata": dict(metadata),
-                })
-            return records
+        def _patch_test_records(records: list[Any]) -> list[dict[str, Any]]:
+            """Normalize toxicity test records for standalone artifact output."""
+            normalized = []
+            for record in records:
+                data = record.to_dict() if hasattr(record, "to_dict") else dict(record)
+                if data.get("stop_reason") is None:
+                    data["stop_reason"] = "not_stopped"
+                normalized.append(data)
+            return normalized
 
         iteration_dir = self.output_dir / "prompt_optimization" / f"iteration_{iteration}"
         iteration_dir.mkdir(parents=True, exist_ok=True)
 
         # 保存 batch
-        (iteration_dir / "sample_batch.json").write_text(
-            json.dumps(result.batch.__dict__, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        _write_json(iteration_dir / "sample_batch.json", result.batch.__dict__)
         _write_json(iteration_dir / "sampling_plan.json", self.sampling_plans.get(iteration, {}))
 
         # PR4: 保存 sample traces
@@ -526,23 +445,37 @@ class PromptOptimizationPhase:
                 "iteration": trace.iteration,
                 "selected": trace.selected,
             }
-            for attr in ["base_extraction_result_id", "base_extraction_status", "reflection_result_id",
-                         "reflection_success", "generated_patch_ids", "generated_analysis_patch_ids",
-                         "transition"]:
+            for attr in [
+                "base_extraction_result_id",
+                "base_extraction_status",
+                "final_extraction_result_id",
+                "final_extraction_status",
+                "analysis_result_id",
+                "analysis_correct",
+                "reflection_result_id",
+                "reflection_success",
+                "generated_extraction_patch_ids",
+                "generated_analysis_patch_ids",
+                "fixed_by_patch_ids",
+                "broken_by_patch_ids",
+                "toxic_trigger_patch_ids",
+                "transition",
+                "notes",
+            ]:
                 val = getattr(trace, attr, None)
-                if val is not None:
+                if val is not None and val != []:
                     trace_dict[attr] = list(val) if isinstance(val, list) else val
             traces_data.append(trace_dict)
         with open(iteration_dir / "sample_traces.jsonl", "w", encoding="utf-8") as f:
             for t in traces_data:
-                f.write(json.dumps(t, ensure_ascii=False) + "\n")
+                f.write(json.dumps(to_artifact_data(t), ensure_ascii=False) + "\n")
 
-        sample_patch_memory_records = []
+        sample_trajectory_records = []
         for state in self.sample_set.states.values():
-            for memory in getattr(state, "patch_memory", []):
-                if getattr(memory, "iteration", None) == iteration:
-                    sample_patch_memory_records.append(memory)
-        _write_jsonl(iteration_dir / "sample_patch_memory.jsonl", sample_patch_memory_records)
+            for trajectory in getattr(state, "optimization_trajectory", []):
+                if getattr(trajectory, "iteration", None) == iteration:
+                    sample_trajectory_records.append(trajectory)
+        _write_jsonl(iteration_dir / "sample_optimization_trajectory.jsonl", sample_trajectory_records)
 
         # PR4: 保存 sample state before/after
         def _serialize_state(state):
@@ -613,13 +546,11 @@ class PromptOptimizationPhase:
         if getattr(extraction_stage, "final_merge_report", None) is not None:
             _write_json(extraction_dir / "final_merge_report.json", extraction_stage.final_merge_report)
         _write_jsonl(extraction_dir / "final_merged_patches.jsonl", getattr(extraction_stage, "final_merged_patches", []))
-        _write_jsonl(extraction_dir / "success_memory_items.jsonl", _success_memory_items(extraction_stage.analysis_results, "extraction"))
-        _write_jsonl(extraction_dir / "patch_lifecycle.jsonl", _patch_lifecycle(extraction_stage, "extraction"))
         extraction_toxicity_report = getattr(extraction_stage, "toxicity_report", None)
         if extraction_toxicity_report is not None:
             _write_jsonl(
                 extraction_dir / "patch_test_records.jsonl",
-                extraction_toxicity_report.patch_test_records,
+                _patch_test_records(extraction_toxicity_report.patch_test_records),
             )
 
         # PR4: Compression report
@@ -630,7 +561,6 @@ class PromptOptimizationPhase:
         analysis_dir = iteration_dir / "analysis"
         analysis_dir.mkdir(parents=True, exist_ok=True)
 
-        _write_json(analysis_dir / "base_metrics.json", analysis_stage.metrics)
         _write_jsonl(analysis_dir / "reflection_results.jsonl", analysis_stage.reflection_results)
         _write_jsonl(analysis_dir / "semantic_patch_drafts.jsonl", getattr(analysis_stage, "semantic_patch_drafts", []))
         _write_jsonl(analysis_dir / "translated_patches.jsonl", getattr(analysis_stage, "translated_patches", []))
@@ -664,13 +594,11 @@ class PromptOptimizationPhase:
         if getattr(analysis_stage, "final_merge_report", None) is not None:
             _write_json(analysis_dir / "final_merge_report.json", analysis_stage.final_merge_report)
         _write_jsonl(analysis_dir / "final_merged_patches.jsonl", getattr(analysis_stage, "final_merged_patches", []))
-        _write_jsonl(analysis_dir / "success_memory_items.jsonl", _success_memory_items(analysis_stage.base_analysis_results, "analysis"))
-        _write_jsonl(analysis_dir / "patch_lifecycle.jsonl", _patch_lifecycle(analysis_stage, "analysis"))
         analysis_toxicity_report = getattr(analysis_stage, "toxicity_report", None)
         if analysis_toxicity_report is not None:
             _write_jsonl(
                 analysis_dir / "patch_test_records.jsonl",
-                analysis_toxicity_report.patch_test_records,
+                _patch_test_records(analysis_toxicity_report.patch_test_records),
             )
 
         # PR4: Compression report

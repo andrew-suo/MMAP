@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from ..core.artifacts import to_artifact_data
 from .client import ModelResponse
 
 
@@ -192,7 +193,7 @@ class RetryingModelClient:
             "error": str(error),
         }
         with open(self.failure_log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            f.write(json.dumps(to_artifact_data(record), ensure_ascii=False) + "\n")
 
 
 __all__ = [

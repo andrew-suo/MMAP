@@ -72,6 +72,7 @@ sampling:
   unknown_ratio: 0.15
   easy_ratio: 0.10
   trajectory_weight: 0.30
+  apex_prompt_type: combined # combined / extraction / analysis
 
 # ============================================================
 # Prompt Optimization: Prompt 优化阶段
@@ -107,6 +108,7 @@ prompt_optimization:
     unknown_ratio: 0.15
     easy_ratio: 0.10
     trajectory_weight: 0.30
+    apex_prompt_type: combined # combined / extraction / analysis
 
   # Extraction Prompt 压缩配置
   extraction_prompt:

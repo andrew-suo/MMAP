@@ -131,10 +131,17 @@ class MergeExecutor:
             merge_reason = "passthrough (no model_client or strategy != tree_merge)"
 
         # 合并后校验：如果提供 sample_set，对 merged patches 跑 PatchValidator
-        validation_warnings = self._post_merge_validate(
+        validation_warnings, validation_rejected_patches = self._post_merge_validate(
             merged_patches, prompt, sample_set
         )
         warnings.extend(validation_warnings)
+        if validation_rejected_patches:
+            rejected_ids = {getattr(p, "id", "") for p in validation_rejected_patches}
+            merged_patches = [
+                p for p in merged_patches
+                if getattr(p, "id", "") not in rejected_ids
+            ]
+            dropped_patches.extend(validation_rejected_patches)
 
         merged_patch_ids = [getattr(p, "id", "") for p in merged_patches]
         dropped_patch_ids = [getattr(p, "id", "") for p in dropped_patches]
@@ -263,25 +270,28 @@ class MergeExecutor:
         merged_patches: list,
         prompt: StructuredPrompt,
         sample_set: SampleSet | None,
-    ) -> list[str]:
+    ) -> tuple[list[str], list]:
         """对 merged patches 跑 PatchValidator，失败的 patch 标记 rejection_reason。
 
         Returns:
-            校验过程中产生的 warning 列表。
+            (warning 列表, post-merge 校验失败 patch 列表)。
         """
         warnings: list[str] = []
+        rejected_patches: list = []
         if sample_set is None or not merged_patches:
-            return warnings
+            return warnings, rejected_patches
 
         _, rejected = self.patch_validator.validate_batch(
             merged_patches, prompt, sample_set
         )
         for patch in rejected:
+            patch.status = "rejected"
             patch.rejection_reason = "MERGED_PATCH_VALIDATION_FAILED"
+            rejected_patches.append(patch)
             warnings.append(
                 f"merged patch {getattr(patch, 'id', '?')} failed post-merge validation"
             )
-        return warnings
+        return warnings, rejected_patches
 
     # ------------------------------------------------------------------
     # 数据结构转换

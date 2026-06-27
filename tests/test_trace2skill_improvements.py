@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from mmap_optimizer.executors.patch_generation_executor import PatchGenerationExecutor
+from mmap_optimizer.executors.merge_executor import MergeExecutor
 from mmap_optimizer.model.client import MockModelClient
-from mmap_optimizer.patch.types import ExtractionPatch
+from mmap_optimizer.patch.types import AnalysisPatch, ExtractionPatch, PatchMergeReport
 from mmap_optimizer.prompt.output_repair import parse_model_json_output
 from mmap_optimizer.prompt.structured_prompt import PromptSection, StructuredPrompt
 from mmap_optimizer.stages.analysis_prompt_optimization import AnalysisPromptOptimizationStage
@@ -292,6 +293,11 @@ class _ApplyExecutor:
         return prompt, type("Report", (), {"changed": changed})()
 
 
+class _NoChangeApplyExecutor:
+    def apply(self, prompt, patches):
+        return prompt, type("Report", (), {"changed": False})()
+
+
 class _EvaluationExecutor:
     def evaluate_batch(self, results, sample_set):
         return [
@@ -411,6 +417,107 @@ def test_extraction_stage_records_patch_attempt_after_regression_test():
     assert attempt.toxicity_status in {"not_tested", "tested_safe"}
 
 
+def test_merge_executor_filters_post_merge_validation_failed_patch():
+    from mmap_optimizer.data.sample import SampleSet, SampleSpec, SampleState
+
+    sample_set = SampleSet(
+        specs={"s1": SampleSpec(id="s1", input={}, ground_truth={})},
+        states={"s1": SampleState(sample_id="s1")},
+    )
+    invalid_patch = ExtractionPatch(
+        "p-invalid",
+        "missing_section",
+        "append_to_section",
+        "This cannot be applied.",
+        "bad target",
+        ["s1"],
+    )
+
+    merged, report = MergeExecutor().merge(
+        patches=[invalid_patch],
+        prompt=_prompt(),
+        sample_set=sample_set,
+    )
+
+    assert merged == []
+    assert invalid_patch.status == "rejected"
+    assert invalid_patch.rejection_reason == "MERGED_PATCH_VALIDATION_FAILED"
+    assert report.merged_patch_ids == []
+    assert report.dropped_patch_ids == ["p-invalid"]
+
+
+def test_extraction_stage_records_merge_dropped_patch_attempt():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
+
+    sample_set = SampleSet(
+        specs={sid: SampleSpec(id=sid, input={}, ground_truth={}) for sid in ("s1", "s2")},
+        states={sid: SampleState(sample_id=sid) for sid in ("s1", "s2")},
+    )
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 4, ["s1", "s2"], "test"),
+        iteration=4,
+    )
+    kept = ExtractionPatch("p-kept", "task", "append_to_section", "A", "r", ["s1"])
+    dropped = ExtractionPatch("p-dropped", "task", "append_to_section", "B", "r", ["s2"])
+    stage.validated_patches = [kept, dropped]
+    stage.initial_merged_patches = [kept]
+    stage.initial_merge_report = PatchMergeReport(
+        id="merge",
+        input_patch_count=2,
+        merged_patch_count=1,
+        conflict_count=0,
+        input_patch_ids=["p-kept", "p-dropped"],
+        merged_patch_ids=["p-kept"],
+        dropped_patch_ids=["p-dropped"],
+    )
+
+    stage._record_initial_merge_outcomes()
+
+    kept_attempt = sample_set.states["s1"].get_optimization_trajectory("extraction")[0].patch_attempts[0]
+    dropped_attempt = sample_set.states["s2"].get_optimization_trajectory("extraction")[0].patch_attempts[0]
+    assert kept_attempt.merge_status == "initial_merged"
+    assert kept_attempt.final_decision == "unknown"
+    assert dropped_attempt.merge_status == "not_merged"
+    assert dropped_attempt.final_decision == "dropped"
+
+
+def test_extraction_apply_no_change_marks_patch_ineffective_and_stops_consumption():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
+
+    sample_set = SampleSet(
+        specs={"s1": SampleSpec(id="s1", input={}, ground_truth={})},
+        states={"s1": SampleState(sample_id="s1")},
+    )
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 5, ["s1"], "test"),
+        iteration=5,
+        patch_apply_executor=_NoChangeApplyExecutor(),
+    )
+    stage.initial_merged_patches = [
+        ExtractionPatch("p-no-change", "task", "append_to_section", "", "empty", ["s1"])
+    ]
+
+    stage._step6_apply_and_test()
+    stage._step7_regression_and_toxicity_test()
+
+    patch = stage.initial_merged_patches[0]
+    assert patch.status == "rejected"
+    assert patch.rejection_reason == "APPLY_NO_CHANGE"
+    assert stage.accepted_prompt is None
+    assert stage.final_merged_patches == []
+    assert stage.metrics.no_progress is True
+    attempt = sample_set.states["s1"].get_optimization_trajectory("extraction")[0].patch_attempts[0]
+    assert attempt.final_decision == "ineffective"
+    assert attempt.merge_status == "initial_merged"
+    assert attempt.toxicity_status == "not_tested"
+
+
 def test_analysis_stage_records_patch_attempt_after_regression_test():
     from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
     from mmap_optimizer.patch.types import AnalysisPatch
@@ -467,3 +574,38 @@ def test_analysis_stage_records_patch_attempt_after_regression_test():
     assert attempt.final_decision == "accepted"
     assert attempt.regression_effect == "fixed"
     assert attempt.toxicity_status in {"not_tested", "tested_safe"}
+
+
+def test_analysis_apply_no_change_marks_patch_ineffective_and_stops_consumption():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
+
+    sample_set = SampleSet(
+        specs={"s1": SampleSpec(id="s1", input={}, ground_truth={})},
+        states={"s1": SampleState(sample_id="s1")},
+    )
+    stage = AnalysisPromptOptimizationStage(
+        analysis_prompt=_prompt(),
+        extraction_results=[ExtractionResult("s1", "{}", {}, "wrong")],
+        base_analysis_results=[AnalysisResult("s1", {}, False)],
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 6, ["s1"], "test"),
+        iteration=6,
+        patch_apply_executor=_NoChangeApplyExecutor(),
+    )
+    stage.initial_merged_patches = [
+        AnalysisPatch("a-no-change", "task", "append_to_section", "", "empty", ["s1"])
+    ]
+
+    stage._step5_apply_and_test()
+    stage._step6_regression_and_toxicity_test()
+
+    patch = stage.initial_merged_patches[0]
+    assert patch.status == "rejected"
+    assert patch.rejection_reason == "APPLY_NO_CHANGE"
+    assert stage.accepted_prompt is None
+    assert stage.final_merged_patches == []
+    assert stage.metrics.no_progress is True
+    attempt = sample_set.states["s1"].get_optimization_trajectory("analysis")[0].patch_attempts[0]
+    assert attempt.final_decision == "ineffective"
+    assert attempt.merge_status == "initial_merged"
+    assert attempt.toxicity_status == "not_tested"

@@ -66,6 +66,7 @@ class PatchGenerationExecutor:
         self.patch_validator = patch_validator or PatchValidator()
         self.semantic_patch_drafts: list[SemanticPatchDraft] = []
         self.translated_patches: list[ExtractionPatch | AnalysisPatch] = []
+        self.translation_failed_attempts: list[dict[str, Any]] = []
         self.model_output_repairs: list[dict[str, Any]] = []
         self.sample_trajectory_renderer = SampleTrajectoryRenderer()
 
@@ -454,7 +455,32 @@ class PatchGenerationExecutor:
     def _reset_run_artifacts(self) -> None:
         self.semantic_patch_drafts = []
         self.translated_patches = []
+        self.translation_failed_attempts = []
         self.model_output_repairs = []
+
+    def _translation_failure_record(self, draft: SemanticPatchDraft) -> dict[str, Any]:
+        return {
+            "attempt_id": f"semantic::{draft.id}",
+            "patch_id": "",
+            "semantic_draft_id": draft.id,
+            "prompt_type": draft.prompt_type,
+            "source_sample_ids": list(draft.source_sample_ids),
+            "target_section_id": draft.target_section_hint,
+            "operation_type": "append_to_section",
+            "direction": draft.change_intent[:500],
+            "content": draft.proposed_text[:800],
+            "rationale": draft.rationale[:800],
+            "generation_status": "generated",
+            "validation_status": "translation_failed",
+            "merge_status": "not_merged",
+            "final_decision": "rejected",
+            "rejection_reason": draft.rejection_reason,
+            "metadata": {
+                "semantic_draft_id": draft.id,
+                "translation_status": "failed",
+                "source_phase": "semantic_patch_translation",
+            },
+        }
 
     def _build_semantic_draft(
         self,
@@ -493,10 +519,12 @@ class PatchGenerationExecutor:
         if not target_section:
             draft.status = "rejected"
             draft.rejection_reason = "TRANSLATION_FAILED:UNKNOWN_SECTION"
+            self.translation_failed_attempts.append(self._translation_failure_record(draft))
             return None
         if not draft.proposed_text.strip():
             draft.status = "rejected"
             draft.rejection_reason = "TRANSLATION_FAILED:EMPTY_CONTENT"
+            self.translation_failed_attempts.append(self._translation_failure_record(draft))
             return None
         draft.status = "translated"
         return {

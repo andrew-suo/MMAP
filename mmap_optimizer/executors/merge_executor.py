@@ -105,10 +105,11 @@ class MergeExecutor:
         conflicts: list[dict[str, Any]]
         fallback_used: bool = False
         merge_reason: str = ""
+        invalid_provenance_patch_ids: list[str] = []
 
         if self.model_client is not None and merge_strategy == "tree_merge":
             try:
-                merged_patches, dropped_patches, conflict_count, conflict_patch_ids, conflicts, merge_reason = (
+                merged_patches, dropped_patches, conflict_count, conflict_patch_ids, conflicts, merge_reason, invalid_provenance_patch_ids = (
                     self._parallel_merge(patches, prompt)
                 )
             except Exception as exc:
@@ -143,6 +144,17 @@ class MergeExecutor:
             ]
             dropped_patches.extend(validation_rejected_patches)
 
+        deduped_dropped: list[Any] = []
+        seen_dropped_ids: set[str] = set()
+        for patch in dropped_patches:
+            patch_id = getattr(patch, "id", "")
+            if patch_id and patch_id in seen_dropped_ids:
+                continue
+            if patch_id:
+                seen_dropped_ids.add(patch_id)
+            deduped_dropped.append(patch)
+        dropped_patches = deduped_dropped
+
         merged_patch_ids = [getattr(p, "id", "") for p in merged_patches]
         dropped_patch_ids = [getattr(p, "id", "") for p in dropped_patches]
 
@@ -162,6 +174,7 @@ class MergeExecutor:
             merged_patch_ids=merged_patch_ids,
             dropped_patch_ids=dropped_patch_ids,
             conflict_patch_ids=conflict_patch_ids,
+            invalid_provenance_patch_ids=invalid_provenance_patch_ids,
             merge_reason=merge_reason,
             fallback_used=fallback_used,
             warnings=warnings,
@@ -177,12 +190,13 @@ class MergeExecutor:
         self,
         patches: list,
         prompt: StructuredPrompt,
-    ) -> tuple[list, list, int, list[str], list[dict[str, Any]], str]:
+    ) -> tuple[list, list, int, list[str], list[dict[str, Any]], str, list[str]]:
         """调用 ParallelPatchMerger 进行 LLM 并行合并。
 
         Returns:
             (merged_patches, dropped_patches, conflict_count,
-             conflict_patch_ids, conflicts, merge_reason) 元组。
+             conflict_patch_ids, conflicts, merge_reason,
+             invalid_provenance_patch_ids) 元组。
         """
         # 生成 prompt_structure 字符串
         prompt_structure = self._build_prompt_structure(prompt)
@@ -202,17 +216,47 @@ class MergeExecutor:
 
         # 将 dict 转换回 ExtractionPatch / AnalysisPatch
         patch_class_map: dict[str, type] = {}
+        patch_by_id: dict[str, Any] = {}
         for p in patches:
             patch_class_map[getattr(p, "id", "")] = type(p)
+            patch_by_id[getattr(p, "id", "")] = p
+
+        input_patch_ids = {getattr(p, "id", "") for p in patches}
 
         merged_patches: list = []
-        for d in merged_dicts:
-            patch_id = d.get("id", "")
-            patch_class = patch_class_map.get(patch_id, ExtractionPatch)
-            merged_patches.append(self._dict_to_patch(d, patch_class))
-
-        # ParallelPatchMerger 不区分 dropped_patches
         dropped_patches: list = []
+        invalid_provenance_patch_ids: list[str] = []
+        for d in merged_dicts:
+            source_patch_ids = self._normalize_source_patch_ids(
+                d.get("source_patch_ids"),
+                fallback_patch_id=d.get("id", ""),
+            )
+            if (
+                not source_patch_ids
+                or any(source_patch_id not in input_patch_ids for source_patch_id in source_patch_ids)
+            ):
+                invalid_provenance_patch_ids.extend(source_patch_ids or [str(d.get("id", ""))])
+                mapped_any = False
+                for source_patch_id in source_patch_ids:
+                    original_patch = patch_by_id.get(source_patch_id)
+                    if original_patch is None:
+                        continue
+                    mapped_any = True
+                    original_patch.status = "rejected"
+                    original_patch.rejection_reason = "MERGE_PROVENANCE_INVALID"
+                    dropped_patches.append(original_patch)
+                if not mapped_any:
+                    for original_patch in patches:
+                        if original_patch in dropped_patches:
+                            continue
+                        original_patch.status = "rejected"
+                        original_patch.rejection_reason = "MERGE_PROVENANCE_INVALID"
+                        dropped_patches.append(original_patch)
+                continue
+            patch_id = d.get("id", "") or source_patch_ids[0]
+            patch_class = patch_class_map.get(source_patch_ids[0], ExtractionPatch)
+            merged_patches.append(self._dict_to_patch(d, patch_class, patch_id, source_patch_ids))
+
         conflict_count = 0
         conflict_patch_ids: list[str] = []
         conflicts: list[dict[str, Any]] = []
@@ -228,6 +272,7 @@ class MergeExecutor:
             conflict_patch_ids,
             conflicts,
             merge_reason,
+            invalid_provenance_patch_ids,
         )
 
     def _build_prompt_structure(self, prompt: StructuredPrompt) -> str:
@@ -247,19 +292,43 @@ class MergeExecutor:
             "content": getattr(patch, "content", ""),
             "rationale": getattr(patch, "rationale", ""),
             "source_sample_ids": list(getattr(patch, "source_sample_ids", [])),
+            "source_patch_ids": list(
+                getattr(patch, "metadata", {}).get("source_patch_ids", [getattr(patch, "id", "")])
+            ),
         }
 
-    def _dict_to_patch(self, d: dict[str, Any], patch_class: type) -> Any:
+    def _dict_to_patch(
+        self,
+        d: dict[str, Any],
+        patch_class: type,
+        patch_id: str,
+        source_patch_ids: list[str],
+    ) -> Any:
         """将合并后的 dict 转换回 patch 对象。"""
+        metadata = dict(d.get("metadata", {}))
+        metadata["source_patch_ids"] = list(source_patch_ids)
         return patch_class(
-            id=d.get("id", ""),
+            id=patch_id,
             target_section_id=d.get("target_section", d.get("target_section_id", "")),
             operation_type=d.get("op", d.get("operation_type", "append_to_section")),
             content=d.get("content", ""),
             rationale=d.get("rationale", d.get("reasoning", "")),
             source_sample_ids=d.get("source_sample_ids", []),
             status="merged",
+            metadata=metadata,
         )
+
+    def _normalize_source_patch_ids(
+        self,
+        source_patch_ids: Any,
+        fallback_patch_id: str,
+    ) -> list[str]:
+        if isinstance(source_patch_ids, list):
+            normalized = [str(item) for item in source_patch_ids if str(item)]
+            if normalized:
+                return normalized
+        fallback = str(fallback_patch_id or "")
+        return [fallback] if fallback else []
 
     # ------------------------------------------------------------------
     # 后置校验

@@ -78,6 +78,48 @@ def test_semantic_patch_draft_translates_to_strict_patch():
     assert patch.metadata["translation_status"] == "translated"
 
 
+def test_semantic_patch_translation_failure_is_recorded_for_sample_trajectory():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec
+
+    sample_set = SampleSet()
+    sample_set.add_spec(SampleSpec(id="s1", input={}, ground_truth={}))
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 1, ["s1"], "test"),
+        iteration=1,
+    )
+    stage.patch_generation_executor = PatchGenerationExecutor()
+    stage.patch_generation_executor.translation_failed_attempts = [
+        {
+            "attempt_id": "semantic::s1",
+            "patch_id": "",
+            "source_sample_ids": ["s1"],
+            "target_section_id": "unknown",
+            "operation_type": "append_to_section",
+            "direction": "bad section hint",
+            "content": "Some patch",
+            "rationale": "reason",
+            "generation_status": "generated",
+            "validation_status": "translation_failed",
+            "merge_status": "not_merged",
+            "final_decision": "rejected",
+            "rejection_reason": "TRANSLATION_FAILED:UNKNOWN_SECTION",
+            "metadata": {"translation_status": "failed"},
+        }
+    ]
+
+    stage._record_generated_patch_attempts()
+
+    attempt = sample_set.states["s1"].get_optimization_trajectory("extraction")[0].patch_attempts[0]
+    assert attempt.attempt_id == "semantic::s1"
+    assert attempt.stage == "translated"
+    assert attempt.stage_status == "failed"
+    assert attempt.validation_status == "translation_failed"
+    assert attempt.rejection_reason == "TRANSLATION_FAILED:UNKNOWN_SECTION"
+
+
 def test_sample_optimization_trajectory_round_trips_and_renders():
     from mmap_optimizer.data.sample import (
         SampleOptimizationTrajectory,
@@ -122,6 +164,47 @@ def test_sample_optimization_trajectory_round_trips_and_renders():
     assert restored.get_optimization_trajectory("analysis")[0].sample_transition == "fixed"
     assert "tighten missing value checks" in rendered
     assert "decision=accepted" in rendered
+
+
+def test_sample_optimization_trajectory_keeps_event_sequence_and_latest_rendering():
+    from mmap_optimizer.data.sample import SampleOptimizationTrajectory, SamplePatchAttempt
+    from mmap_optimizer.prompt.sample_trajectory import SampleTrajectoryRenderer
+
+    trajectory = SampleOptimizationTrajectory(
+        sample_id="s1",
+        prompt_type="extraction",
+        iteration=2,
+    )
+    trajectory.add_patch_attempt(
+        SamplePatchAttempt(
+            patch_id="p1",
+            prompt_type="extraction",
+            iteration=2,
+            attempt_id="s1::p1",
+            stage="validation",
+            stage_status="validated",
+            final_decision="unknown",
+        )
+    )
+    trajectory.add_patch_attempt(
+        SamplePatchAttempt(
+            patch_id="p1",
+            prompt_type="extraction",
+            iteration=2,
+            attempt_id="s1::p1",
+            stage="finalized",
+            stage_status="accepted",
+            final_decision="accepted",
+            regression_effect="fixed",
+        )
+    )
+
+    assert len(trajectory.patch_attempts) == 2
+    latest = trajectory.latest_patch_attempts()[0]
+    assert latest.stage == "finalized"
+    assert latest.final_decision == "accepted"
+    rendered = SampleTrajectoryRenderer()._render_trajectory(trajectory)
+    assert any("stage=finalized" in line for line in rendered)
 
 
 def test_patch_generation_user_message_includes_current_sample_history_only():
@@ -444,6 +527,35 @@ def test_merge_executor_filters_post_merge_validation_failed_patch():
     assert invalid_patch.rejection_reason == "MERGED_PATCH_VALIDATION_FAILED"
     assert report.merged_patch_ids == []
     assert report.dropped_patch_ids == ["p-invalid"]
+
+
+def test_merge_executor_rejects_invalid_provenance_output(monkeypatch):
+    from mmap_optimizer.patch.tree_reduce import ParallelPatchMerger
+
+    def _invalid_merge(self, patches, prompt_structure):
+        return [
+            {
+                "id": "merged_new",
+                "source_patch_ids": ["unknown"],
+                "target_section": "task",
+                "op": "append_to_section",
+                "content": "x",
+                "rationale": "y",
+                "source_sample_ids": ["s1"],
+            }
+        ]
+
+    monkeypatch.setattr(ParallelPatchMerger, "merge", _invalid_merge)
+    patch = ExtractionPatch("p1", "task", "append_to_section", "A", "r", ["s1"])
+    merged, report = MergeExecutor(model_client=object()).merge(
+        patches=[patch],
+        prompt=_prompt(),
+        sample_set=None,
+    )
+
+    assert merged == []
+    assert patch.rejection_reason == "MERGE_PROVENANCE_INVALID"
+    assert report.invalid_provenance_patch_ids == ["unknown"]
 
 
 def test_extraction_stage_records_merge_dropped_patch_attempt():

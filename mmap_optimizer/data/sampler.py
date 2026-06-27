@@ -593,7 +593,7 @@ class ApexTraceSampler(BaseSampler):
         trajectories = state.get_optimization_trajectory(prompt_type=prompt_type, limit=5)
         attempts = []
         for trajectory in trajectories:
-            attempts.extend(trajectory.patch_attempts[-5:])
+            attempts.extend(trajectory.latest_patch_attempts(limit=5))
         score = 0.0
         for attempt in attempts:
             if attempt.final_decision == "accepted" or attempt.merge_status == "final_merged":

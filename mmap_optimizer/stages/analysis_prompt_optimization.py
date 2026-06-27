@@ -207,6 +207,16 @@ class AnalysisPromptOptimizationStage:
         self.metrics.base_correct_count = correct_count
         self.metrics.base_wrong_count = wrong_count
         self.metrics.base_accuracy = correct_count / total if total > 0 else 0.0
+        trace_by_sample = {
+            trace.sample_id: trace
+            for trace in self.sample_set.get_traces_for_iteration(
+                "prompt_optimization", self.iteration
+            )
+        }
+        for result in self.base_analysis_results:
+            trace = trace_by_sample.get(result.sample_id)
+            if trace is not None:
+                trace.participated_in_analysis = True
 
     def _update_contribution_tracker(self) -> None:
         """从分析结果更新 section 贡献度追踪器。"""
@@ -284,6 +294,7 @@ class AnalysisPromptOptimizationStage:
             if state is not None:
                 trajectory = state.get_or_create_trajectory("analysis", self.iteration)
                 trajectory.base_status = "pass" if base_analysis.analysis_correct else "fail"
+                trajectory.base_raw_status = "correct" if base_analysis.analysis_correct else "wrong"
                 trajectory.analysis_summary = {
                     "analysis_correct": base_analysis.analysis_correct,
                     "error_reason": base_analysis.error_reason,
@@ -644,18 +655,15 @@ class AnalysisPromptOptimizationStage:
                 len(self.rejected_patches) + len(toxic_patches)
             )
 
-            traces = self.sample_set.get_traces_for_iteration(
+            for trace in self.sample_set.get_traces_for_iteration(
                 "prompt_optimization", self.iteration
-            )
-            for trace in traces:
-                if trace.sample_id in fixed_ids:
-                    trace.transition = "fixed"
-                elif trace.sample_id in broken_ids:
-                    trace.transition = "broken"
-                elif trace.sample_id in unchanged_wrong_ids:
-                    trace.transition = "unchanged_wrong"
-                else:
-                    trace.transition = "unchanged_correct"
+            ):
+                self._set_analysis_trace_transition(
+                    trace=trace,
+                    fixed_sample_ids=fixed_ids,
+                    broken_sample_ids=broken_ids,
+                    unchanged_wrong_ids=unchanged_wrong_ids,
+                )
             self._record_sample_patch_attempts(
                 patches=self.initial_merged_patches,
                 fixed_sample_ids=fixed_ids,
@@ -747,18 +755,15 @@ class AnalysisPromptOptimizationStage:
                 toxic_sample_ids=broken_ids,
             )
 
-            traces = self.sample_set.get_traces_for_iteration(
+            for trace in self.sample_set.get_traces_for_iteration(
                 "prompt_optimization", self.iteration
-            )
-            for trace in traces:
-                if trace.sample_id in fixed_ids:
-                    trace.transition = "fixed"
-                elif trace.sample_id in broken_ids:
-                    trace.transition = "broken"
-                elif trace.sample_id in unchanged_wrong_ids:
-                    trace.transition = "unchanged_wrong"
-                else:
-                    trace.transition = "unchanged_correct"
+            ):
+                self._set_analysis_trace_transition(
+                    trace=trace,
+                    fixed_sample_ids=fixed_ids,
+                    broken_sample_ids=broken_ids,
+                    unchanged_wrong_ids=unchanged_wrong_ids,
+                )
             self._record_sample_patch_attempts(
                 patches=self.initial_merged_patches,
                 fixed_sample_ids=fixed_ids,
@@ -879,6 +884,13 @@ class AnalysisPromptOptimizationStage:
                 record = test_record_by_patch.get(patch.id, {})
                 if record.get("status") == "skipped":
                     toxicity = "skipped_no_toxic_samples"
+                self._record_trace_patch_attribution(
+                    sample_id=sample_id,
+                    patch_id=patch.id,
+                    regression_effect=transition_by_sample.get(sample_id, "unknown"),
+                    toxicity=toxicity,
+                    record=record,
+                )
                 trajectory = state.get_or_create_trajectory("analysis", self.iteration)
                 attempt = self._build_patch_attempt(
                     patch=patch,
@@ -987,6 +999,51 @@ class AnalysisPromptOptimizationStage:
         transition_by_sample.update({sid: "unchanged_wrong" for sid in unchanged_wrong_ids})
         transition_by_sample.update({sid: "unchanged_correct" for sid in unchanged_correct_ids})
         return transition_by_sample
+
+    def _set_analysis_trace_transition(
+        self,
+        trace: SampleTrace,
+        fixed_sample_ids: list[str],
+        broken_sample_ids: list[str],
+        unchanged_wrong_ids: list[str],
+    ) -> None:
+        if trace.sample_id in fixed_sample_ids:
+            trace.analysis_transition = "fixed"
+        elif trace.sample_id in broken_sample_ids:
+            trace.analysis_transition = "broken"
+        elif trace.sample_id in unchanged_wrong_ids:
+            trace.analysis_transition = "unchanged_wrong"
+        else:
+            trace.analysis_transition = "unchanged_correct"
+
+    def _record_trace_patch_attribution(
+        self,
+        sample_id: str,
+        patch_id: str,
+        regression_effect: str,
+        toxicity: str,
+        record: dict[str, Any],
+    ) -> None:
+        trace = next(
+            (
+                item for item in self.sample_set.get_traces_for_iteration(
+                    "prompt_optimization", self.iteration
+                )
+                if item.sample_id == sample_id
+            ),
+            None,
+        )
+        if trace is None:
+            return
+        if regression_effect == "fixed" and patch_id not in trace.fixed_by_patch_ids:
+            trace.fixed_by_patch_ids.append(patch_id)
+        if regression_effect == "broken" and patch_id not in trace.broken_by_patch_ids:
+            trace.broken_by_patch_ids.append(patch_id)
+        broken_ids = {str(sid) for sid in record.get("broken_sample_ids", [])}
+        if (
+            toxicity == "toxic" or sample_id in broken_ids
+        ) and patch_id not in trace.toxic_trigger_patch_ids:
+            trace.toxic_trigger_patch_ids.append(patch_id)
 
     def _append_patch_attempt_event(
         self,
@@ -1239,9 +1296,11 @@ class AnalysisPromptOptimizationStage:
             trajectory = state.get_or_create_trajectory("analysis", self.iteration)
             if sample_id in base_status_by_sample:
                 trajectory.base_status = "pass" if base_status_by_sample[sample_id] else "fail"
+                trajectory.base_raw_status = "correct" if base_status_by_sample[sample_id] else "wrong"
             trajectory.final_status = outcome_status
+            trajectory.final_raw_status = "correct" if raw_status else "wrong" if raw_status is not None else trajectory.final_raw_status
             trajectory.sample_transition = (
-                getattr(trace_by_sample.get(sample_id), "transition", None) or "unknown"
+                getattr(trace_by_sample.get(sample_id), "analysis_transition", None) or "unknown"
             )
             state.add_outcome_history(
                 SampleOutcomeHistoryItem(
@@ -1249,7 +1308,7 @@ class AnalysisPromptOptimizationStage:
                     prompt_type="analysis",
                     iteration=self.iteration,
                     status=outcome_status,
-                    transition=getattr(trace_by_sample.get(sample_id), "transition", None) or "unknown",
+                    transition=getattr(trace_by_sample.get(sample_id), "analysis_transition", None) or "unknown",
                     selected=True,
                     patch_decision=patch_decision,
                     metadata={"analysis_correct": raw_status},

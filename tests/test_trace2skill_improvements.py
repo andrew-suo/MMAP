@@ -500,6 +500,111 @@ def test_extraction_stage_records_patch_attempt_after_regression_test():
     assert attempt.toxicity_status in {"not_tested", "tested_safe"}
 
 
+def test_sample_trace_keeps_extraction_and_analysis_transitions_separate():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState, SampleTrace
+
+    sample_set = SampleSet(
+        specs={"s1": SampleSpec(id="s1", input={}, ground_truth={})},
+        states={"s1": SampleState(sample_id="s1")},
+        traces=[SampleTrace(sample_id="s1", phase="prompt_optimization", iteration=1, selected=True)],
+    )
+    batch = SampleBatch("b1", "prompt_optimization", 1, ["s1"], "test")
+
+    extraction_stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=batch,
+        iteration=1,
+    )
+    extraction_stage._set_extraction_trace_transition(
+        trace=sample_set.traces[0],
+        fixed_sample_ids=["s1"],
+        broken_sample_ids=[],
+        unchanged_wrong_ids=[],
+    )
+
+    analysis_stage = AnalysisPromptOptimizationStage(
+        analysis_prompt=_prompt(),
+        extraction_results=[],
+        base_analysis_results=[],
+        sample_set=sample_set,
+        batch=batch,
+        iteration=1,
+        extraction_prompt=_prompt(),
+    )
+    analysis_stage._set_analysis_trace_transition(
+        trace=sample_set.traces[0],
+        fixed_sample_ids=[],
+        broken_sample_ids=["s1"],
+        unchanged_wrong_ids=[],
+    )
+
+    assert sample_set.traces[0].extraction_transition == "fixed"
+    assert sample_set.traces[0].analysis_transition == "broken"
+
+
+def test_extraction_outcome_history_normalizes_status_and_preserves_raw_status():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState, SampleTrace
+
+    sample_set = SampleSet(
+        specs={"s1": SampleSpec(id="s1", input={}, ground_truth={})},
+        states={"s1": SampleState(sample_id="s1")},
+        traces=[
+            SampleTrace(
+                sample_id="s1",
+                phase="prompt_optimization",
+                iteration=1,
+                selected=True,
+                participated_in_extraction=True,
+                extraction_transition="unchanged_wrong",
+            )
+        ],
+    )
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 1, ["s1"], "test"),
+        iteration=1,
+    )
+    stage.base_extraction_results = [ExtractionResult("s1", "{}", {}, "invalid")]
+    stage._record_extraction_outcome_history()
+
+    trajectory = sample_set.states["s1"].get_optimization_trajectory("extraction")[0]
+    outcome = sample_set.states["s1"].get_outcome_history("extraction")[0]
+    assert trajectory.base_status == "fail"
+    assert trajectory.base_raw_status == "invalid"
+    assert trajectory.final_status == "fail"
+    assert trajectory.final_raw_status == "invalid"
+    assert outcome.status == "fail"
+    assert outcome.metadata["raw_status"] == "invalid"
+
+
+def test_extraction_stage_updates_existing_trace_instead_of_duplicating():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState, SampleTrace
+
+    sample_set = SampleSet(
+        specs={"s1": SampleSpec(id="s1", input={}, ground_truth={})},
+        states={"s1": SampleState(sample_id="s1")},
+        traces=[SampleTrace(sample_id="s1", phase="prompt_optimization", iteration=1, selected=True)],
+    )
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 1, ["s1"], "test"),
+        iteration=1,
+    )
+
+    stage._step1_execute_extraction()
+
+    traces = sample_set.get_traces_for_iteration("prompt_optimization", 1)
+    assert len(traces) == 1
+    assert traces[0].participated_in_extraction is True
+    assert traces[0].base_extraction_status == "correct"
+
+
 def test_merge_executor_filters_post_merge_validation_failed_patch():
     from mmap_optimizer.data.sample import SampleSet, SampleSpec, SampleState
 

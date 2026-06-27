@@ -273,15 +273,11 @@ class ExtractionPromptOptimizationStage:
                 self.extraction_executor, "model_output_repairs", []
             ))
             for result in self.base_extraction_results:
-                trace = SampleTrace(
-                    sample_id=result.sample_id,
-                    phase="prompt_optimization",
-                    iteration=self.iteration,
-                    selected=True,
-                    base_extraction_result_id=result.sample_id,
-                    base_extraction_status=result.status,
-                )
-                self.sample_set.add_trace(trace)
+                trace = self._get_or_create_iteration_trace(result.sample_id)
+                trace.selected = True
+                trace.participated_in_extraction = True
+                trace.base_extraction_result_id = result.sample_id
+                trace.base_extraction_status = result.status
             return
 
         for sample_id in self.batch.sample_ids:
@@ -297,15 +293,11 @@ class ExtractionPromptOptimizationStage:
             )
             self.base_extraction_results.append(result)
 
-            trace = SampleTrace(
-                sample_id=sample_id,
-                phase="prompt_optimization",
-                iteration=self.iteration,
-                selected=True,
-                base_extraction_result_id=result.sample_id,
-                base_extraction_status=result.status,
-            )
-            self.sample_set.add_trace(trace)
+            trace = self._get_or_create_iteration_trace(sample_id)
+            trace.selected = True
+            trace.participated_in_extraction = True
+            trace.base_extraction_result_id = result.sample_id
+            trace.base_extraction_status = result.status
 
     def _step2_compute_base_metrics(self) -> None:
         """Step 2: 统计原始 prompt 指标。"""
@@ -330,7 +322,8 @@ class ExtractionPromptOptimizationStage:
                     state.update_error(has_error)
                     state.last_extraction_status = eval_record.status
                     trajectory = state.get_or_create_trajectory("extraction", self.iteration)
-                    trajectory.base_status = eval_record.status
+                    trajectory.base_status = self._normalize_extraction_status(eval_record.status)
+                    trajectory.base_raw_status = eval_record.status
                     trajectory.selected = True
             return
 
@@ -351,7 +344,8 @@ class ExtractionPromptOptimizationStage:
                 state.update_error(has_error)
                 state.last_extraction_status = result.status
                 trajectory = state.get_or_create_trajectory("extraction", self.iteration)
-                trajectory.base_status = result.status
+                trajectory.base_status = self._normalize_extraction_status(result.status)
+                trajectory.base_raw_status = result.status
                 trajectory.selected = True
 
     def _update_contribution_tracker(self) -> None:
@@ -786,25 +780,15 @@ class ExtractionPromptOptimizationStage:
             )
             self.metrics.toxic_patch_count = len(toxic_patches)
 
-            traces = self.sample_set.get_traces_for_iteration(
+            for trace in self.sample_set.get_traces_for_iteration(
                 "prompt_optimization", self.iteration
-            )
-            for trace in traces:
-                if trace.sample_id in fixed_sample_ids:
-                    trace.transition = "fixed"
-                elif trace.sample_id in broken_sample_ids:
-                    trace.transition = "broken"
-                elif trace.sample_id in unchanged_wrong_ids:
-                    trace.transition = "unchanged_wrong"
-                else:
-                    trace.transition = "unchanged_correct"
-
-                state = self.sample_set.states.get(trace.sample_id)
-                if state:
-                    if trace.transition == "fixed":
-                        state.historical_fixed_count += 1
-                    elif trace.transition == "broken":
-                        state.historical_broken_count += 1
+            ):
+                self._set_extraction_trace_transition(
+                    trace=trace,
+                    fixed_sample_ids=fixed_sample_ids,
+                    broken_sample_ids=broken_sample_ids,
+                    unchanged_wrong_ids=unchanged_wrong_ids,
+                )
             self._record_sample_patch_attempts(
                 patches=self.initial_merged_patches,
                 fixed_sample_ids=fixed_sample_ids,
@@ -871,25 +855,15 @@ class ExtractionPromptOptimizationStage:
                     len(self.rejected_patches) + len(self.initial_merged_patches)
                 )
 
-            traces = self.sample_set.get_traces_for_iteration(
+            for trace in self.sample_set.get_traces_for_iteration(
                 "prompt_optimization", self.iteration
-            )
-            for trace in traces:
-                if trace.sample_id in fixed_sample_ids:
-                    trace.transition = "fixed"
-                elif trace.sample_id in broken_sample_ids:
-                    trace.transition = "broken"
-                elif trace.sample_id in unchanged_wrong_ids:
-                    trace.transition = "unchanged_wrong"
-                else:
-                    trace.transition = "unchanged_correct"
-
-                state = self.sample_set.states.get(trace.sample_id)
-                if state:
-                    if trace.transition == "fixed":
-                        state.historical_fixed_count += 1
-                    elif trace.transition == "broken":
-                        state.historical_broken_count += 1
+            ):
+                self._set_extraction_trace_transition(
+                    trace=trace,
+                    fixed_sample_ids=fixed_sample_ids,
+                    broken_sample_ids=broken_sample_ids,
+                    unchanged_wrong_ids=unchanged_wrong_ids,
+                )
             self._record_sample_patch_attempts(
                 patches=self.initial_merged_patches,
                 fixed_sample_ids=fixed_sample_ids,
@@ -976,23 +950,15 @@ class ExtractionPromptOptimizationStage:
             toxic_sample_ids=toxic_sample_ids,
         )
 
-        traces = self.sample_set.get_traces_for_iteration("prompt_optimization", self.iteration)
-        for trace in traces:
-            if trace.sample_id in fixed_sample_ids:
-                trace.transition = "fixed"
-            elif trace.sample_id in broken_sample_ids:
-                trace.transition = "broken"
-            elif trace.sample_id in unchanged_wrong_ids:
-                trace.transition = "unchanged_wrong"
-            else:
-                trace.transition = "unchanged_correct"
-
-            state = self.sample_set.states.get(trace.sample_id)
-            if state:
-                if trace.transition == "fixed":
-                    state.historical_fixed_count += 1
-                elif trace.transition == "broken":
-                    state.historical_broken_count += 1
+        for trace in self.sample_set.get_traces_for_iteration(
+            "prompt_optimization", self.iteration
+        ):
+            self._set_extraction_trace_transition(
+                trace=trace,
+                fixed_sample_ids=fixed_sample_ids,
+                broken_sample_ids=broken_sample_ids,
+                unchanged_wrong_ids=unchanged_wrong_ids,
+            )
 
         self._record_sample_patch_attempts(
             patches=self.initial_merged_patches,
@@ -1039,6 +1005,13 @@ class ExtractionPromptOptimizationStage:
                 record = test_record_by_patch.get(patch.id, {})
                 if record.get("status") == "skipped":
                     toxicity = "skipped_no_toxic_samples"
+                self._record_trace_patch_attribution(
+                    sample_id=sample_id,
+                    patch_id=patch.id,
+                    regression_effect=transition_by_sample.get(sample_id, "unknown"),
+                    toxicity=toxicity,
+                    record=record,
+                )
                 trajectory = state.get_or_create_trajectory("extraction", self.iteration)
                 attempt = self._build_patch_attempt(
                     patch=patch,
@@ -1147,6 +1120,80 @@ class ExtractionPromptOptimizationStage:
         transition_by_sample.update({sid: "unchanged_wrong" for sid in unchanged_wrong_ids})
         transition_by_sample.update({sid: "unchanged_correct" for sid in unchanged_correct_ids})
         return transition_by_sample
+
+    def _get_or_create_iteration_trace(self, sample_id: str) -> SampleTrace:
+        for trace in self.sample_set.get_traces_for_iteration(
+            "prompt_optimization", self.iteration
+        ):
+            if trace.sample_id == sample_id:
+                return trace
+        trace = SampleTrace(
+            sample_id=sample_id,
+            phase="prompt_optimization",
+            iteration=self.iteration,
+            selected=True,
+        )
+        self.sample_set.add_trace(trace)
+        return trace
+
+    def _normalize_extraction_status(self, status: str | None) -> str:
+        if status == "correct":
+            return "pass"
+        if status in {"wrong", "invalid"}:
+            return "fail"
+        return "unknown"
+
+    def _set_extraction_trace_transition(
+        self,
+        trace: SampleTrace,
+        fixed_sample_ids: list[str],
+        broken_sample_ids: list[str],
+        unchanged_wrong_ids: list[str],
+    ) -> None:
+        if trace.sample_id in fixed_sample_ids:
+            trace.extraction_transition = "fixed"
+        elif trace.sample_id in broken_sample_ids:
+            trace.extraction_transition = "broken"
+        elif trace.sample_id in unchanged_wrong_ids:
+            trace.extraction_transition = "unchanged_wrong"
+        else:
+            trace.extraction_transition = "unchanged_correct"
+        state = self.sample_set.states.get(trace.sample_id)
+        if state is None:
+            return
+        if trace.extraction_transition == "fixed":
+            state.historical_fixed_count += 1
+        elif trace.extraction_transition == "broken":
+            state.historical_broken_count += 1
+
+    def _record_trace_patch_attribution(
+        self,
+        sample_id: str,
+        patch_id: str,
+        regression_effect: str,
+        toxicity: str,
+        record: dict[str, Any],
+    ) -> None:
+        trace = next(
+            (
+                item for item in self.sample_set.get_traces_for_iteration(
+                    "prompt_optimization", self.iteration
+                )
+                if item.sample_id == sample_id
+            ),
+            None,
+        )
+        if trace is None:
+            return
+        if regression_effect == "fixed" and patch_id not in trace.fixed_by_patch_ids:
+            trace.fixed_by_patch_ids.append(patch_id)
+        if regression_effect == "broken" and patch_id not in trace.broken_by_patch_ids:
+            trace.broken_by_patch_ids.append(patch_id)
+        broken_ids = {str(sid) for sid in record.get("broken_sample_ids", [])}
+        if (
+            toxicity == "toxic" or sample_id in broken_ids
+        ) and patch_id not in trace.toxic_trigger_patch_ids:
+            trace.toxic_trigger_patch_ids.append(patch_id)
 
     def _append_patch_attempt_event(
         self,
@@ -1349,6 +1396,7 @@ class ExtractionPromptOptimizationStage:
                     r.sample_id: r.status for r in self.final_extraction_results
                 }
                 for trace in traces:
+                    trace.participated_in_extraction = True
                     trace.final_extraction_status = final_status_map.get(
                         trace.sample_id, "correct"
                     )
@@ -1409,10 +1457,12 @@ class ExtractionPromptOptimizationStage:
             state.last_extraction_status = raw_status or state.last_extraction_status
             trajectory = state.get_or_create_trajectory("extraction", self.iteration)
             if base_status_by_sample.get(sample_id):
-                trajectory.base_status = base_status_by_sample[sample_id]
-            trajectory.final_status = raw_status or trajectory.final_status
+                trajectory.base_status = self._normalize_extraction_status(base_status_by_sample[sample_id])
+                trajectory.base_raw_status = base_status_by_sample[sample_id]
+            trajectory.final_status = outcome_status
+            trajectory.final_raw_status = raw_status or trajectory.final_raw_status
             trajectory.sample_transition = (
-                getattr(trace_by_sample.get(sample_id), "transition", None) or "unknown"
+                getattr(trace_by_sample.get(sample_id), "extraction_transition", None) or "unknown"
             )
             state.add_outcome_history(
                 SampleOutcomeHistoryItem(
@@ -1420,7 +1470,7 @@ class ExtractionPromptOptimizationStage:
                     prompt_type="extraction",
                     iteration=self.iteration,
                     status=outcome_status,
-                    transition=getattr(trace_by_sample.get(sample_id), "transition", None) or "unknown",
+                    transition=getattr(trace_by_sample.get(sample_id), "extraction_transition", None) or "unknown",
                     selected=True,
                     patch_decision=patch_decision,
                     metadata={"raw_status": raw_status},

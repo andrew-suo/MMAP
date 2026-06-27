@@ -158,6 +158,8 @@ class SampleOptimizationTrajectory:
     selected: bool = True
     base_status: str = "unknown"
     final_status: str = "unknown"
+    base_raw_status: str = "unknown"
+    final_raw_status: str = "unknown"
     sample_transition: str = "unknown"
     analysis_summary: dict[str, Any] = field(default_factory=dict)
     reflection_summary: dict[str, Any] = field(default_factory=dict)
@@ -214,6 +216,8 @@ class SampleOptimizationTrajectory:
             "selected": self.selected,
             "base_status": self.base_status,
             "final_status": self.final_status,
+            "base_raw_status": self.base_raw_status,
+            "final_raw_status": self.final_raw_status,
             "sample_transition": self.sample_transition,
             "analysis_summary": dict(self.analysis_summary),
             "reflection_summary": dict(self.reflection_summary),
@@ -233,6 +237,8 @@ class SampleOptimizationTrajectory:
             selected=bool(data.get("selected", True)),
             base_status=str(data.get("base_status", "unknown")),
             final_status=str(data.get("final_status", "unknown")),
+            base_raw_status=str(data.get("base_raw_status", "unknown")),
+            final_raw_status=str(data.get("final_raw_status", "unknown")),
             sample_transition=str(data.get("sample_transition", "unknown")),
             analysis_summary=dict(data.get("analysis_summary", {})),
             reflection_summary=dict(data.get("reflection_summary", {})),
@@ -522,6 +528,8 @@ class SampleTrace:
     phase: str  # "prompt_optimization" 或 "fewshot_optimization"
     iteration: int
     selected: bool = False
+    participated_in_extraction: bool = False
+    participated_in_analysis: bool = False
 
     # 抽取结果
     base_extraction_result_id: str | None = None
@@ -547,7 +555,8 @@ class SampleTrace:
     toxic_trigger_patch_ids: list[str] = field(default_factory=list)
 
     # 转换类型
-    transition: str | None = None  # "fixed", "broken", "unchanged_wrong", "unchanged_correct"
+    extraction_transition: str | None = None  # "fixed", "broken", "unchanged_wrong", "unchanged_correct"
+    analysis_transition: str | None = None  # "fixed", "broken", "unchanged_wrong", "unchanged_correct"
 
     # 其他
     notes: list[str] = field(default_factory=list)
@@ -558,6 +567,8 @@ class SampleTrace:
             "phase": self.phase,
             "iteration": self.iteration,
             "selected": self.selected,
+            "participated_in_extraction": self.participated_in_extraction,
+            "participated_in_analysis": self.participated_in_analysis,
             "base_extraction_result_id": self.base_extraction_result_id,
             "base_extraction_status": self.base_extraction_status,
             "final_extraction_result_id": self.final_extraction_result_id,
@@ -571,7 +582,8 @@ class SampleTrace:
             "fixed_by_patch_ids": list(self.fixed_by_patch_ids),
             "broken_by_patch_ids": list(self.broken_by_patch_ids),
             "toxic_trigger_patch_ids": list(self.toxic_trigger_patch_ids),
-            "transition": self.transition,
+            "extraction_transition": self.extraction_transition,
+            "analysis_transition": self.analysis_transition,
             "notes": list(self.notes),
         }
 
@@ -582,6 +594,8 @@ class SampleTrace:
             phase=data.get("phase", ""),
             iteration=int(data.get("iteration", 0)),
             selected=bool(data.get("selected", False)),
+            participated_in_extraction=bool(data.get("participated_in_extraction", False)),
+            participated_in_analysis=bool(data.get("participated_in_analysis", False)),
             base_extraction_result_id=data.get("base_extraction_result_id"),
             base_extraction_status=data.get("base_extraction_status"),
             final_extraction_result_id=data.get("final_extraction_result_id"),
@@ -595,7 +609,8 @@ class SampleTrace:
             fixed_by_patch_ids=list(data.get("fixed_by_patch_ids", [])),
             broken_by_patch_ids=list(data.get("broken_by_patch_ids", [])),
             toxic_trigger_patch_ids=list(data.get("toxic_trigger_patch_ids", [])),
-            transition=data.get("transition"),
+            extraction_transition=data.get("extraction_transition", data.get("transition")),
+            analysis_transition=data.get("analysis_transition"),
             notes=list(data.get("notes", [])),
         )
 

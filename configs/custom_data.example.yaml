@@ -1,0 +1,92 @@
+# 自定义数据接入示例配置
+#
+# 这份配置适合“把自己的数据接到 MMAP 里先跑通”的场景。
+# 建议流程：
+# 1. 先把 dataset.path / dataset.image_root / dataset.ground_truth_path 改成自己的路径
+# 2. 先用 use_mock: true 跑通数据格式
+# 3. 再补 models.*，把 use_mock 改成 false 运行真实模型
+
+run:
+  seed: 42
+  output_dir: runs/custom_data_demo
+  use_mock: true
+  log_level: INFO
+  progress_enabled: true
+
+dataset:
+  path: data/custom_samples.example.jsonl
+  format: jsonl
+  image_root: data/custom_images
+  ground_truth_path: data/custom_ground_truth.example.jsonl
+
+prompt_structuring:
+  enabled: true
+  use_model_when_structure_poor: true
+
+sampling:
+  type: difficulty_frequency
+  difficulty_weight: 0.7
+  frequency_weight: 0.3
+  ema_alpha: 0.01
+
+prompt_optimization:
+  enabled: true
+  rounds: 1
+  initial_batch_size: 8
+  min_batch_size: 4
+  max_batch_size: 16
+
+  batch_size_controller:
+    enabled: true
+    growth_factor: 2.0
+    decrease_factor: 0.8
+    improvement_epsilon: 0.0
+    shrink_on_rollback: true
+    shrink_on_no_progress: true
+
+  sampler:
+    type: difficulty_frequency
+    difficulty_weight: 0.7
+    frequency_weight: 0.3
+
+  extraction_prompt:
+    line_limit: 300
+    char_limit: 20000
+    compression_enabled: true
+
+  analysis_prompt:
+    line_limit: 250
+    char_limit: 16000
+    compression_enabled: true
+
+  patch:
+    merge_strategy: tree_merge
+    toxicity_test:
+      enabled: true
+      early_stop: true
+      sort_by_source_difficulty: true
+
+fewshot_optimization:
+  enabled: true
+  rounds: 1
+  batch_size: 8
+  slot_count: 3
+  sampler:
+    type: frequency
+
+models: {}
+
+# 真实模型配置示例（复制后把占位值替换成你的环境）
+# models:
+#   extraction:
+#     provider: openai_compatible
+#     base_url: https://api.openai.com/v1
+#     model: gpt-4o
+#     api_key_env: OPENAI_API_KEY
+#     verify_ssl: true
+#   optimizer:
+#     provider: openai_compatible
+#     base_url: https://api.openai.com/v1
+#     model: gpt-4o
+#     api_key_env: OPENAI_API_KEY
+#     verify_ssl: true

@@ -104,6 +104,8 @@ python -m mmap_optimizer.core.cli info --config configs/smoke.yaml
 mmap-optimizer run --config configs/smoke.yaml --use-mock
 ```
 
+如果你要接入自己的数据，建议先复制 `configs/custom_data.example.yaml`，再把数据路径、图片根目录和模型配置替换成你的环境。
+
 ## 真实模型配置
 
 真实 executor 通过 `models.extraction` 和 `models.optimizer` 构建模型客户端。当前支持：
@@ -139,16 +141,20 @@ models:
 ```bash
 export OPENAI_API_KEY=...
 python -m mmap_optimizer.core.cli run \
-  --config configs/default_config.yaml \
+  --config configs/custom_data.example.yaml \
   --output-dir runs/real_run \
   --no-mock
 ```
+
+上面的命令要求你已经把 `configs/custom_data.example.yaml` 里的 `models.extraction` 和 `models.optimizer` 补好；如果还没配模型，先保持 `use_mock: true`，用 `--use-mock` 验证数据格式。
 
 `--no-mock` 会强制使用真实 executor；如果配置中没有有效模型客户端，程序会直接报错，避免静默退回 mock。
 
 ## 数据格式
 
-默认数据集使用 JSONL，每行一个样本。示例：
+默认数据集使用 JSONL，每行一个样本。推荐先参考 `data/custom_samples.example.jsonl`，它覆盖了纯文本、单图和多图三种输入形态。
+
+### 样本示例
 
 ```json
 {
@@ -180,20 +186,36 @@ python -m mmap_optimizer.core.cli run \
 }
 ```
 
-`assets` 是样本级图片集合：单图样本可直接放 1 张图，多图样本则按数组顺序提供同一样本的多张图片，模型需要综合全部图片后输出一个最终标签。
+`assets` 是样本级图片集合：单图样本可直接放 1 张图，多图样本则按数组顺序提供同一样本的多张图片，模型需要综合全部图片后输出一个最终标签。`assets` 缺省时表示纯文本样本。
+
+### 自定义接入方式
+
+推荐把自己的数据拆成下面 3 个文件：
+
+- `dataset.path` 指向样本 JSONL，例如 `data/custom_samples.jsonl`
+- `dataset.image_root` 指向图片目录根，例如 `data/custom_images`
+- `dataset.ground_truth_path` 指向独立标签文件，例如 `data/custom_ground_truth.jsonl`
+
+如果你的 ground truth 已经内嵌在样本里，可以把 `ground_truth_path` 留空。`DatasetLoader` 也兼容旧字段：
+
+- `input` 是推荐的样本输入字段，历史数据里如果写成 `data` 也能读
+- `ground_truth` 是推荐的标签字段，历史数据里如果写成 `gt` 也能读
+- `assets[*].local_path` 会在读取时按 `image_root` 逐个补全
+
+`data/custom_samples.example.jsonl` 和 `data/custom_ground_truth.example.jsonl` 已经给出可复制的模板。
 
 字段说明：
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `id` | 是 | 样本唯一 ID |
-| `input` | 是 | 文本或结构化输入 |
-| `ground_truth` | 是 | 评估用标准答案 |
+| `input` | 是 | 推荐的文本或结构化输入字段；兼容旧字段 `data` |
+| `ground_truth` | 是 | 推荐的评估标签字段；若使用外部标签文件则可留空并由 `ground_truth_path` 合并 |
 | `assets` | 否 | 样本级图片等多模态资产，支持 0/1/N 张图 |
 | `tags` | 否 | 样本标签，可用于分析或扩展采样 |
 | `metadata` | 否 | 额外元数据 |
 
-参考样例见 `data/smoke_samples.jsonl`。
+参考样例见 `data/smoke_samples.jsonl`（smoke 回归数据）和 `data/custom_samples.example.jsonl`（自定义接入模板）。
 
 ## 配置说明
 
@@ -235,6 +257,7 @@ prompt_optimization:
 ```
 
 完整示例见 `configs/default_config.yaml` 和 `configs/smoke.yaml`。
+如果你要接自己的数据，建议优先从 `configs/custom_data.example.yaml` 复制一份。
 
 ## 运行输出与日志
 

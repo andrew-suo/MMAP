@@ -1,0 +1,3 @@
+{"sample_id":"text_001","value":{"result":"OK","product_id":"T001"}}
+{"sample_id":"image_001","value":{"result":"NG","product_id":"I001","defect":"scratch"}}
+{"sample_id":"multi_001","value":{"result":"NG","product_id":"M001","defect":"scratch"}}

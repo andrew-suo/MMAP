@@ -239,6 +239,7 @@ class AnalysisExecutor:
             if extraction_result.parsed_output is not None
             else "null"
         )
+        evaluation_status = extraction_result.evaluation_status or extraction_result.status
 
         user_parts: list[str] = []
         user_parts.append("# Extraction Prompt (for reference)")
@@ -246,7 +247,8 @@ class AnalysisExecutor:
         user_parts.append("")
         user_parts.append("# Extraction Result")
         user_parts.append(f"sample_id: {extraction_result.sample_id}")
-        user_parts.append(f"status: {extraction_result.status}")
+        user_parts.append(f"parse_status: {extraction_result.status}")
+        user_parts.append(f"evaluation_status: {evaluation_status}")
         user_parts.append(f"raw_output: {extraction_result.raw_output}")
         user_parts.append(f"parsed_output: {parsed_output_text}")
         if extraction_result.error_details:
@@ -311,7 +313,7 @@ class AnalysisExecutor:
                 sample_id=extraction_result.sample_id,
                 raw_output=extraction_result.raw_output,
                 parsed_output=parsed_output_text,
-                status=extraction_result.status,
+                status=extraction_result.evaluation_status or extraction_result.status,
                 judgement=judgement_text,
                 analysis_correct=analysis_result.analysis_correct,
                 error_reason=analysis_result.error_reason,
@@ -325,7 +327,10 @@ class AnalysisExecutor:
             user_parts.append(f"sample_id: {extraction_result.sample_id}")
             user_parts.append(f"raw_output: {extraction_result.raw_output}")
             user_parts.append(f"parsed_output: {parsed_output_text}")
-            user_parts.append(f"status: {extraction_result.status}")
+            user_parts.append(f"parse_status: {extraction_result.status}")
+            user_parts.append(
+                f"evaluation_status: {extraction_result.evaluation_status or extraction_result.status}"
+            )
             user_parts.append("")
             user_parts.append("# Analysis Result (to reflect on)")
             user_parts.append(f"judgement: {judgement_text}")
@@ -411,6 +416,8 @@ class AnalysisExecutor:
         ground_truth: dict[str, Any] | None,
     ) -> bool:
         """计算 ground truth 对 extraction result 的实际判断。"""
+        if extraction_result.evaluation_status is not None:
+            return extraction_result.evaluation_status == "correct"
         parsed = extraction_result.parsed_output
         if not isinstance(parsed, dict) or not isinstance(ground_truth, dict):
             return False

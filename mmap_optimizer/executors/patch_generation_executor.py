@@ -372,9 +372,11 @@ class PatchGenerationExecutor:
         # 3. Case Execution
         if prompt_type == "extraction":
             if extraction_result:
+                effective_status = extraction_result.evaluation_status or extraction_result.status
                 parts.append("# Case Execution")
                 parts.append(f"- **Sample ID**: {extraction_result.sample_id}")
-                parts.append(f"- **Status**: {extraction_result.status}")
+                parts.append(f"- **Parse Status**: {extraction_result.status}")
+                parts.append(f"- **Evaluation Status**: {effective_status}")
                 if extraction_result.raw_output:
                     parts.append(f"- **Raw Output**: {extraction_result.raw_output}")
                 if extraction_result.parsed_output:
@@ -658,7 +660,8 @@ class PatchGenerationExecutor:
         只有抽取结果真实错误或不可解析时才生成 patch；
         解析正确且与 GT 一致的样本不应进入 patch 候选集。
         """
-        return extraction_result.status in {"wrong", "invalid"}
+        effective_status = extraction_result.evaluation_status or extraction_result.status
+        return effective_status in {"wrong", "invalid"}
 
     def _generate_analysis_patches_by_code(
         self,

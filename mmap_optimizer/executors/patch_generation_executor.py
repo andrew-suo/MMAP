@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal, TypeVar, cast
 
+from ..core.progress import NullProgressReporter, ProgressReporter
 from ..stages.extraction_prompt_optimization import AnalysisResult, ExtractionResult
 from ..patch.types import AnalysisPatch, ExtractionPatch, SemanticPatchDraft
 from ..data.sample import SampleSet
@@ -69,6 +70,8 @@ class PatchGenerationExecutor:
         self.translation_failed_attempts: list[dict[str, Any]] = []
         self.model_output_repairs: list[dict[str, Any]] = []
         self.sample_trajectory_renderer = SampleTrajectoryRenderer()
+        self._patch_id_counters: dict[str, int] = {}
+        self.progress_reporter: ProgressReporter = NullProgressReporter()
 
     def generate_extraction_patches(
         self,
@@ -139,7 +142,11 @@ class PatchGenerationExecutor:
         self._reset_run_artifacts()
         extraction_result_map = {r.sample_id: r for r in extraction_results}
 
-        for analysis_result in analysis_results:
+        for analysis_result in self.progress_reporter.iter(
+            analysis_results,
+            desc="Generating extraction patches",
+            total=len(analysis_results),
+        ):
             if not analysis_result.analysis_correct:
                 continue
 
@@ -196,7 +203,11 @@ class PatchGenerationExecutor:
         draft_patches: list[AnalysisPatch] = []
         self._reset_run_artifacts()
 
-        for reflection in reflection_results:
+        for reflection in self.progress_reporter.iter(
+            reflection_results,
+            desc="Generating analysis patches",
+            total=len(reflection_results),
+        ):
             if not isinstance(reflection, ReflectionResult):
                 continue
             if not reflection.reflection_success:
@@ -456,6 +467,7 @@ class PatchGenerationExecutor:
         self.translated_patches = []
         self.translation_failed_attempts = []
         self.model_output_repairs = []
+        self._patch_id_counters = {}
 
     def _translation_failure_record(self, draft: SemanticPatchDraft) -> dict[str, Any]:
         return {
@@ -599,7 +611,11 @@ class PatchGenerationExecutor:
         default_section_id = mutable_section_ids[0] if mutable_section_ids else "section_1"
         extraction_result_map = {r.sample_id: r for r in extraction_results}
 
-        for analysis_result in analysis_results:
+        for analysis_result in self.progress_reporter.iter(
+            analysis_results,
+            desc="Generating extraction patches",
+            total=len(analysis_results),
+        ):
             if not analysis_result.analysis_correct:
                 continue
 
@@ -674,7 +690,11 @@ class PatchGenerationExecutor:
 
         draft_patches: list[AnalysisPatch] = []
 
-        for reflection in reflection_results:
+        for reflection in self.progress_reporter.iter(
+            reflection_results,
+            desc="Generating analysis patches",
+            total=len(reflection_results),
+        ):
             if not isinstance(reflection, ReflectionResult):
                 continue
             if not reflection.reflection_success:
@@ -770,8 +790,14 @@ class PatchGenerationExecutor:
             metadata["semantic_draft_id"] = suggestion["semantic_draft_id"]
             metadata["translation_status"] = "translated"
 
+        patch_id = self._next_patch_id(
+            patch_id_prefix=patch_id_prefix,
+            sample_id=sample_id,
+            semantic_draft_id=suggestion.get("semantic_draft_id"),
+        )
+
         patch = patch_class(
-            id=f"{patch_id_prefix}_{sample_id}",
+            id=patch_id,
             target_section_id=target_section_id,
             operation_type=operation_type,
             content=content,
@@ -787,6 +813,19 @@ class PatchGenerationExecutor:
         if suggestion.get("semantic_draft_id"):
             self.translated_patches.append(patch)
         return cast(_T_Patch, patch)
+
+    def _next_patch_id(
+        self,
+        patch_id_prefix: str,
+        sample_id: str,
+        semantic_draft_id: Any = None,
+    ) -> str:
+        if semantic_draft_id:
+            return f"{patch_id_prefix}_{sample_id}_{semantic_draft_id}"
+        counter_key = f"{patch_id_prefix}:{sample_id}"
+        next_index = self._patch_id_counters.get(counter_key, 0) + 1
+        self._patch_id_counters[counter_key] = next_index
+        return f"{patch_id_prefix}_{sample_id}_{next_index}"
 
     def _normalize_operation(
         self, operation: Any

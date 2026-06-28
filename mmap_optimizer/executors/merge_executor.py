@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..core.progress import NullProgressReporter, ProgressReporter
 from ..patch.types import ExtractionPatch, PatchMergeReport
 from ..data.sample import SampleSet
 from ..prompt.structured_prompt import StructuredPrompt
@@ -56,6 +57,7 @@ class MergeExecutor:
         self.model_config = model_config
         self.merge_prompt_path = merge_prompt_path or "prompts/patch_merge.txt"
         self.root_merge_prompt_path = root_merge_prompt_path or "prompts/patch_root_merge.txt"
+        self.progress_reporter: ProgressReporter = NullProgressReporter()
 
     def merge(
         self,
@@ -106,6 +108,10 @@ class MergeExecutor:
         fallback_used: bool = False
         merge_reason: str = ""
         invalid_provenance_patch_ids: list[str] = []
+
+        self.progress_reporter.step(
+            f"    [Merge] strategy={merge_strategy} input_patches={len(patches)}"
+        )
 
         if self.model_client is not None and merge_strategy == "tree_merge":
             try:
@@ -180,6 +186,12 @@ class MergeExecutor:
             warnings=warnings,
         )
 
+        self.progress_reporter.step(
+            "    [Merge] done "
+            f"merged={len(merged_patches)} dropped={len(dropped_patches)} "
+            f"invalid_provenance={len(invalid_provenance_patch_ids)}"
+        )
+
         return merged_patches, report
 
     # ------------------------------------------------------------------
@@ -210,6 +222,7 @@ class MergeExecutor:
             model_config=self.model_config,
             merge_prompt_path=self.merge_prompt_path,
             root_merge_prompt_path=self.root_merge_prompt_path,
+            progress_reporter=self.progress_reporter,
         )
 
         merged_dicts = merger.merge(patch_dicts, prompt_structure)

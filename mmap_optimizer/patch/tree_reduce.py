@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from ..core.progress import NullProgressReporter, ProgressReporter
 from ..prompt.output_repair import parse_model_json_output
 from .clusterer import categorize_by_section
 from .conflict import deterministic_guardrail
@@ -54,6 +55,7 @@ class ParallelPatchMerger:
         max_layers: int = 10,
         max_retries: int = 2,
         fallback_threshold: float = 0.5,
+        progress_reporter: ProgressReporter | None = None,
     ):
         self.model_client = model_client
         self.model_config = model_config
@@ -63,6 +65,7 @@ class ParallelPatchMerger:
         self.max_layers = max_layers
         self.max_retries = max_retries
         self.fallback_threshold = fallback_threshold
+        self.progress_reporter = progress_reporter or NullProgressReporter()
 
     # ------------------------------------------------------------------
     # 主入口
@@ -91,6 +94,9 @@ class ParallelPatchMerger:
 
         # 2-4. 分层迭代合并
         for layer in range(self.max_layers):
+            self.progress_reporter.step(
+                f"      [Tree Merge] layer={layer} input_patches={len(current)}"
+            )
             merged, failure_count = self._run_parallel_merge(current, prompt_structure, layer)
 
             logger.info(
@@ -118,6 +124,9 @@ class ParallelPatchMerger:
 
         # 5. Root Merge：如果有多组结果则进行跨 section 一致性审查
         if len(current) > 1:
+            self.progress_reporter.step(
+                f"      [Tree Merge] root merge groups={len(current)}"
+            )
             current = self._root_merge(current, prompt_structure)
 
         return current
@@ -159,19 +168,24 @@ class ParallelPatchMerger:
                     executor.submit(self._merge_single_group, group, prompt_structure, layer): group
                     for group in groupable_groups
                 }
-                for future in as_completed(future_to_group):
-                    group = future_to_group[future]
-                    try:
-                        result = future.result()
-                        merged_results.extend(result)
-                    except Exception as exc:
-                        failure_count += 1
-                        logger.warning(
-                            "分组合并失败 (layer=%d, group_size=%d): %s",
-                            layer, len(group), exc,
-                        )
-                        # 回退：直接使用原始分组
-                        merged_results.extend(group)
+                with self.progress_reporter.progress(
+                    total=len(groupable_groups),
+                    desc=f"Merge layer {layer}",
+                ) as bar:
+                    for future in as_completed(future_to_group):
+                        group = future_to_group[future]
+                        try:
+                            result = future.result()
+                            merged_results.extend(result)
+                        except Exception as exc:
+                            failure_count += 1
+                            logger.warning(
+                                "分组合并失败 (layer=%d, group_size=%d): %s",
+                                layer, len(group), exc,
+                            )
+                            # 回退：直接使用原始分组
+                            merged_results.extend(group)
+                        bar.update(1)
 
         # 4. single_pass 直接传递
         merged_results.extend(single_pass)
@@ -273,14 +287,14 @@ class ParallelPatchMerger:
                 continue
 
             # 成功：输出未膨胀
-            return parsed
+            return self._backfill_group_provenance(parsed, group, layer)
 
         # 8. 重试耗尽
         if last_parsed is not None:
             logger.warning(
                 "Layer %d: 重试耗尽，使用最后一次输出（可能膨胀）", layer
             )
-            return last_parsed
+            return self._backfill_group_provenance(last_parsed, group, layer)
 
         # 完全失败：从未获得有效输出
         raise RuntimeError(
@@ -318,7 +332,81 @@ class ParallelPatchMerger:
             logger.warning("Root merge JSON 解析失败，返回原始 patches")
             return patches
 
-        return parsed
+        return self._backfill_group_provenance(parsed, patches, layer=-1)
+
+    def _backfill_group_provenance(
+        self,
+        merged_patches: list[dict],
+        input_group: list[dict],
+        layer: int,
+    ) -> list[dict]:
+        """Best-effort provenance repair for LLM merge outputs.
+
+        The merge pipeline requires every output patch to carry valid
+        ``source_patch_ids``. Real model outputs sometimes omit that field
+        entirely, which would otherwise make the whole merged patch invalid.
+        This helper repairs only the low-risk cases:
+        - single-output merge: missing provenance inherits the whole input group
+        - single-input group: missing provenance inherits that sole input patch
+
+        It also fills a stable synthetic ``id`` when the model omits it.
+        """
+        if not merged_patches:
+            return merged_patches
+
+        input_patch_ids = [
+            str(patch.get("id", ""))
+            for patch in input_group
+            if str(patch.get("id", ""))
+        ]
+        input_sample_ids = sorted({
+            str(sample_id)
+            for patch in input_group
+            for sample_id in patch.get("source_sample_ids", [])
+            if str(sample_id)
+        })
+        patch_to_samples = {
+            str(patch.get("id", "")): [
+                str(sample_id)
+                for sample_id in patch.get("source_sample_ids", [])
+                if str(sample_id)
+            ]
+            for patch in input_group
+            if str(patch.get("id", ""))
+        }
+
+        for idx, merged in enumerate(merged_patches, start=1):
+            raw_source_patch_ids = merged.get("source_patch_ids")
+            normalized_source_patch_ids = []
+            if isinstance(raw_source_patch_ids, list):
+                normalized_source_patch_ids = [
+                    str(item) for item in raw_source_patch_ids if str(item)
+                ]
+
+            if not normalized_source_patch_ids:
+                if len(merged_patches) == 1 and input_patch_ids:
+                    normalized_source_patch_ids = list(input_patch_ids)
+                elif len(input_patch_ids) == 1:
+                    normalized_source_patch_ids = [input_patch_ids[0]]
+                if normalized_source_patch_ids:
+                    merged["source_patch_ids"] = normalized_source_patch_ids
+
+            if not merged.get("id"):
+                scope = "root" if layer < 0 else f"layer_{layer}"
+                merged["id"] = f"{scope}_merged_{idx}"
+
+            if not merged.get("source_sample_ids"):
+                repaired_sample_ids = sorted({
+                    sample_id
+                    for patch_id in normalized_source_patch_ids
+                    for sample_id in patch_to_samples.get(patch_id, [])
+                })
+                if not repaired_sample_ids and normalized_source_patch_ids:
+                    repaired_sample_ids = list(input_sample_ids)
+                if repaired_sample_ids:
+                    merged["source_sample_ids"] = repaired_sample_ids
+
+        return merged_patches
 
     # ------------------------------------------------------------------
     # LLM 调用与 JSON 解析

@@ -250,6 +250,89 @@ def test_analysis_executor_prefers_evaluation_status_when_checking_actual_correc
     ) is False
 
 
+def test_patch_generation_assigns_unique_ids_for_multiple_suggestions_from_same_sample():
+    executor = PatchGenerationExecutor(model_client=None)
+
+    patch1 = executor._build_patch_from_suggestion(
+        sample_id="s1",
+        suggestion={
+            "target_section": "section_1",
+            "op": "append_to_section",
+            "content": "first patch",
+            "reasoning": "first rationale",
+        },
+        patch_class=ExtractionPatch,
+        patch_id_prefix="patch_extraction",
+    )
+    patch2 = executor._build_patch_from_suggestion(
+        sample_id="s1",
+        suggestion={
+            "target_section": "section_1",
+            "op": "append_to_section",
+            "content": "second patch",
+            "reasoning": "second rationale",
+        },
+        patch_class=ExtractionPatch,
+        patch_id_prefix="patch_extraction",
+    )
+
+    assert patch1.id == "patch_extraction_s1_1"
+    assert patch2.id == "patch_extraction_s1_2"
+    assert patch1.id != patch2.id
+
+
+def test_patch_generation_uses_semantic_draft_id_in_patch_id_when_available():
+    executor = PatchGenerationExecutor(model_client=None)
+
+    patch = executor._build_patch_from_suggestion(
+        sample_id="s1",
+        suggestion={
+            "target_section": "section_1",
+            "op": "append_to_section",
+            "content": "translated patch",
+            "reasoning": "translated rationale",
+            "semantic_draft_id": "semantic_7",
+        },
+        patch_class=ExtractionPatch,
+        patch_id_prefix="patch_extraction",
+    )
+
+    assert patch.id == "patch_extraction_s1_semantic_7"
+
+
+def test_patch_generation_resets_per_run_counters():
+    executor = PatchGenerationExecutor(model_client=None)
+
+    first = executor._build_patch_from_suggestion(
+        sample_id="s1",
+        suggestion={
+            "target_section": "section_1",
+            "op": "append_to_section",
+            "content": "first patch",
+            "reasoning": "first rationale",
+        },
+        patch_class=ExtractionPatch,
+        patch_id_prefix="patch_extraction",
+    )
+
+    executor._reset_run_artifacts()
+
+    second = executor._build_patch_from_suggestion(
+        sample_id="s1",
+        suggestion={
+            "target_section": "section_1",
+            "op": "append_to_section",
+            "content": "second patch",
+            "reasoning": "second rationale",
+        },
+        patch_class=ExtractionPatch,
+        patch_id_prefix="patch_extraction",
+    )
+
+    assert first.id == "patch_extraction_s1_1"
+    assert second.id == "patch_extraction_s1_1"
+
+
 class RecordingCalibrationClient:
     """记录校准调用次数的模型替身。"""
 

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -17,7 +18,7 @@ from typing import Any, Callable
 from ..core.artifacts import to_artifact_data, write_json_artifact, write_jsonl_artifact
 from ..core.logging import get_logger, log_stage
 from ..core.progress import NullProgressReporter, ProgressReporter
-from ..stages.extraction_prompt_optimization import ExtractionResult
+from ..stages.extraction_prompt_optimization import EvalRecord, ExtractionResult
 from ..data.sampler import SamplerConfig, create_sampler
 from ..data.sample import SampleBatch, SampleSet, SampleTrace, SampleSpec, SampleState
 from ..prompt.structured_prompt import StructuredPrompt
@@ -300,7 +301,6 @@ class FewshotOptimizationPhase:
                 for trace in traces:
                     if trace.sample_id == result.sample_id:
                         trace.base_extraction_result_id = result.sample_id
-                        trace.base_extraction_status = result.status
             return results
 
         results: list[ExtractionResult] = []
@@ -324,7 +324,6 @@ class FewshotOptimizationPhase:
             for trace in traces:
                 if trace.sample_id == sample_id:
                     trace.base_extraction_result_id = result.sample_id
-                    trace.base_extraction_status = result.status
 
         return results
 
@@ -347,7 +346,6 @@ class FewshotOptimizationPhase:
                 for trace in traces:
                     if trace.sample_id == result.sample_id:
                         trace.final_extraction_result_id = result.sample_id
-                        trace.final_extraction_status = result.status
             return results
 
         results: list[ExtractionResult] = []
@@ -371,7 +369,6 @@ class FewshotOptimizationPhase:
             for trace in traces:
                 if trace.sample_id == sample_id:
                     trace.final_extraction_result_id = result.sample_id
-                    trace.final_extraction_status = result.status
 
         return results
 
@@ -383,7 +380,8 @@ class FewshotOptimizationPhase:
     ) -> None:
         """统计原始 few-shot 指标。"""
         if self.fewshot_executor is not None:
-            eval_records = self.fewshot_executor.evaluate_results(results, self.sample_set)
+            eval_sample_set = copy.deepcopy(self.sample_set)
+            eval_records = self.fewshot_executor.evaluate_results(results, eval_sample_set)
             accuracy = self.fewshot_executor.compute_accuracy(eval_records)
             correct_count = sum(1 for r in eval_records if r.correct)
             wrong_count = sum(1 for r in eval_records if r.status == "wrong")
@@ -395,13 +393,7 @@ class FewshotOptimizationPhase:
             metrics.base_invalid_count = invalid_count
             metrics.base_accuracy = accuracy if total > 0 else 0.0
 
-            # 更新样本状态
-            for result in results:
-                state = self.sample_set.states.get(result.sample_id)
-                if state:
-                    has_error = result.status in ["wrong", "invalid"]
-                    state.update_error(has_error)
-                    state.last_extraction_status = result.status
+            self._apply_eval_records_to_base_traces(batch, eval_records)
             return
 
         correct_count = sum(1 for r in results if r.status == "correct")
@@ -441,6 +433,7 @@ class FewshotOptimizationPhase:
             metrics.final_wrong_count = wrong_count
             metrics.final_invalid_count = invalid_count
             metrics.final_accuracy = accuracy if total > 0 else 0.0
+            self._apply_eval_records_to_final_traces(batch, eval_records)
             return
 
         correct_count = sum(1 for r in results if r.status == "correct")
@@ -452,6 +445,45 @@ class FewshotOptimizationPhase:
         metrics.final_wrong_count = wrong_count
         metrics.final_invalid_count = invalid_count
         metrics.final_accuracy = correct_count / total if total > 0 else 0.0
+
+    def _apply_eval_records_to_base_traces(
+        self,
+        batch: SampleBatch,
+        eval_records: list[EvalRecord],
+    ) -> None:
+        """把 base 评测结果回填到样本状态与 trace。"""
+        self._apply_eval_records_to_traces(batch, eval_records, "base_extraction_status")
+
+    def _apply_eval_records_to_final_traces(
+        self,
+        batch: SampleBatch,
+        eval_records: list[EvalRecord],
+    ) -> None:
+        """把 final 评测结果回填到样本状态与 trace。"""
+        self._apply_eval_records_to_traces(batch, eval_records, "final_extraction_status")
+
+    def _apply_eval_records_to_traces(
+        self,
+        batch: SampleBatch,
+        eval_records: list[EvalRecord],
+        trace_status_attr: str,
+    ) -> None:
+        """按 sample_id 用 EvalRecord.status 回填 trace 状态。"""
+        if not eval_records:
+            return
+
+        status_by_sample_id = {record.sample_id: record.status for record in eval_records}
+        traces = self.sample_set.get_traces_for_iteration("fewshot_optimization", batch.iteration)
+        trace_by_sample_id = {trace.sample_id: trace for trace in traces}
+
+        for sample_id, status in status_by_sample_id.items():
+            state = self.sample_set.states.get(sample_id)
+            if state is not None:
+                state.last_extraction_status = status
+
+            trace = trace_by_sample_id.get(sample_id)
+            if trace is not None:
+                setattr(trace, trace_status_attr, status)
 
     def _select_difficult_samples(
         self,

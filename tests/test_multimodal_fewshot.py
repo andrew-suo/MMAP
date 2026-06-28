@@ -22,9 +22,12 @@ from mmap_optimizer.data.sample import (
     SampleSet,
     SampleSpec,
     SampleState,
+    SampleTrace,
 )
+from mmap_optimizer.executors.fewshot_executor import FewshotExecutor
 from mmap_optimizer.executors.extraction_executor import ExtractionExecutor
 from mmap_optimizer.model.client import ModelResponse
+from mmap_optimizer.model.client import MockModelClient
 from mmap_optimizer.model.openai_compatible import OpenAICompatibleClient
 from mmap_optimizer.phases.fewshot_optimization import (
     FewshotConfig,
@@ -370,3 +373,79 @@ def test_select_difficult_samples_no_image_assets_returns_empty_images(tmp_path:
 
     assert len(examples) == 1
     assert examples[0].input_images == []
+
+
+def test_fewshot_base_and_final_metrics_use_eval_status_for_state_and_trace(tmp_path: Path):
+    """few-shot 结果的状态回填必须以评测结果为准，而不是解析结果。"""
+    sample_set = SampleSet()
+    sample_set.add_spec(
+        SampleSpec(
+            id="s1",
+            input={"question": "what is shown?"},
+            ground_truth={"result": "EXPECTED"},
+            assets=[
+                SampleAsset(id="img1", sample_id="s1", type="image", uri="https://example.test/s1-1.png"),
+                SampleAsset(id="img2", sample_id="s1", type="image", uri="https://example.test/s1-2.png"),
+            ],
+        )
+    )
+    sample_set.states["s1"] = SampleState(sample_id="s1")
+    sample_set.traces.append(
+        SampleTrace(
+            sample_id="s1",
+            phase="fewshot_optimization",
+            iteration=1,
+            selected=True,
+        )
+    )
+
+    phase = FewshotOptimizationPhase(
+        config=FewshotConfig(slot_count=1, batch_size=1),
+        extraction_prompt=make_extraction_prompt(),
+        sample_set=sample_set,
+        output_dir=tmp_path,
+        fewshot_executor=FewshotExecutor(model_client=MockModelClient(default_output='{"result":"OK"}')),
+    )
+    phase.fewshot_examples = [
+        FewshotExample(
+            id="fewshot_ex1",
+            sample_id="ex1",
+            input_text="what is in the sample?",
+            output_text='{"result":"cat"}',
+            input_images=[
+                "https://example.test/ex1-a.png",
+                "https://example.test/ex1-b.png",
+            ],
+        )
+    ]
+
+    batch = SampleBatch(
+        id="b1",
+        phase="fewshot_optimization",
+        iteration=1,
+        sample_ids=["s1"],
+        sampler_name="test",
+    )
+
+    base_results = phase._execute_extraction(batch)
+    final_results = phase._execute_extraction_with_fewshot(batch, phase.fewshot_examples)
+    assert base_results[0].status == "correct"
+    assert final_results[0].status == "correct"
+
+    metrics = FewshotMetrics()
+    phase._compute_base_metrics(batch, base_results, metrics)
+    phase._compute_final_metrics(batch, final_results, metrics)
+
+    state = sample_set.states["s1"]
+    trace = sample_set.get_traces_for_iteration("fewshot_optimization", 1)[0]
+
+    assert metrics.base_correct_count == 0
+    assert metrics.base_wrong_count == 1
+    assert metrics.final_correct_count == 0
+    assert metrics.final_wrong_count == 1
+    assert state.error_count == 1
+    assert state.last_extraction_status == "wrong"
+    assert trace.base_extraction_result_id == "s1"
+    assert trace.base_extraction_status == "wrong"
+    assert trace.final_extraction_result_id == "s1"
+    assert trace.final_extraction_status == "wrong"

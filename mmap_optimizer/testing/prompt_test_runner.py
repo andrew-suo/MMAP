@@ -319,7 +319,7 @@ class PromptTestRunner:
                 if eval_extra.get("no_ground_truth"):
                     eval_kwargs["vote_majority"] = eval_extra.get("vote_majority")
                     eval_kwargs["vote_confidence"] = eval_extra.get("vote_confidence")
-                    eval_kwargs["parse_error_count"] = len(eval_extra.get("parse_errors", []))
+                    eval_kwargs["parse_error_count"] = eval_extra.get("parse_errors", 0)
                 log_stage(logger, "evaluate_done", "评估完成", **eval_kwargs)
                 sample_duration_ms = int((time.perf_counter() - sample_start_time) * 1000)
                 log_stage(logger, "sample_done", "样本处理完成",

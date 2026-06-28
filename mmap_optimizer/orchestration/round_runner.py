@@ -164,6 +164,13 @@ class RoundRunner:
         # Save initial prompts snapshots (for rollback in Step 8)
         initial_extraction_prompt = deepcopy(state.active_extraction_prompt)
         initial_analysis_prompt = deepcopy(state.active_analysis_prompt)
+        if self.config.prompt_snapshot_enabled:
+            save_prompt_snapshot(
+                self.store, state.active_extraction_prompt, f"{round_id}_extraction_pre"
+            )
+            save_prompt_snapshot(
+                self.store, state.active_analysis_prompt, f"{round_id}_analysis_pre"
+            )
 
         # Metrics tracking
         metrics_tracker = RoundMetricsTracker(round_index=round_index)

@@ -1,12 +1,16 @@
 # MMAP 重构版配置示例 v1.0
 # 根据设计文档创建的配置结构
+#
+# 多图样例：data/samples_multi_image.jsonl 演示了单图/多图/本地路径/无图
+# 四种样本形态，每个样本的 assets 数组内联图片资产，多张图共享一个 label。
+# image_root 用于将 uri 自动推断为本地路径（local_path 优先级更高）。
 
 run:
   seed: 42
   output_dir: runs/exp_001
 
 dataset:
-  path: data/samples.jsonl
+  path: data/samples_multi_image.jsonl
   format: jsonl
   image_root: data/images
   ground_truth_path: data/ground_truth.jsonl

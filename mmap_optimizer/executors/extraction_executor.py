@@ -23,7 +23,11 @@ from ..prompt.output_repair import parse_model_json_output
 
 
 class ExtractionExecutor:
-    """真实抽取执行器，接入 ModelClient。"""
+    """真实抽取执行器，接入 ModelClient。
+
+    样本可以携带 0/1/N 张图片资产。多图时执行器会按 ``spec.assets`` 的顺序
+    将整组图片作为同一个 sample 的证据输入模型，由模型输出一个样本级结果。
+    """
 
     def __init__(
         self,
@@ -108,7 +112,7 @@ class ExtractionExecutor:
                 {"role": "system", "content": system_text},
                 user_message,
             ]
-        # 2. build assets list（始终只含当前样本图片）
+        # 2. build assets list（始终只含当前样本图片；多图按 assets 顺序保留）
         assets = self._build_assets(spec)
         # 3. call model_client.complete_multimodal
         response = self.model_client.complete_multimodal(
@@ -232,7 +236,7 @@ class ExtractionExecutor:
         """组装 user message（仅文本部分）。
 
         图片资产由 complete_multimodal 通过 assets 参数统一注入，
-        避免重复发送。
+        避免重复发送。若样本包含多张图，模型会收到同一 sample 的整组图片。
         """
         text_parts: list[str] = []
         if spec.input:
@@ -245,7 +249,7 @@ class ExtractionExecutor:
         return {"role": "user", "content": text}
 
     def _build_assets(self, spec: SampleSpec) -> list[Any]:
-        """构建资产列表，从 spec.assets 中提取图片资产。"""
+        """构建资产列表，从 ``spec.assets`` 中按顺序提取全部图片资产。"""
         return [a for a in spec.assets if a.type == "image"]
 
     def _asset_to_url(self, asset: Any) -> str | None:

@@ -25,7 +25,11 @@ from ..prompt.structured_prompt import StructuredPrompt
 
 @dataclass
 class FewshotExample:
-    """Few-shot 示例。"""
+    """Few-shot 示例。
+
+    ``input_images`` 表示同一个 sample 的图片集合。单图样本长度通常为 1，
+    多图样本则按原始顺序记录全部图片。
+    """
     id: str
     sample_id: str
     input_text: str

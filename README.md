@@ -152,14 +152,26 @@ python -m mmap_optimizer.core.cli run \
 
 ```json
 {
-  "id": "sample_001",
-  "input": {"text": "需要处理的输入"},
-  "ground_truth": {"result": "期望答案"},
+  "id": "sample_multi_001",
+  "input": {"text": "同一产品的正反面与局部细节"},
+  "ground_truth": {"result": "NG", "defect": "scratch"},
   "assets": [
     {
       "id": "asset_001",
       "type": "image",
-      "local_path": "images/sample_001.png",
+      "local_path": "images/sample_multi_001_front.png",
+      "mime_type": "image/png"
+    },
+    {
+      "id": "asset_002",
+      "type": "image",
+      "local_path": "images/sample_multi_001_back.png",
+      "mime_type": "image/png"
+    },
+    {
+      "id": "asset_003",
+      "type": "image",
+      "local_path": "images/sample_multi_001_detail.png",
       "mime_type": "image/png"
     }
   ],
@@ -168,6 +180,8 @@ python -m mmap_optimizer.core.cli run \
 }
 ```
 
+`assets` 是样本级图片集合：单图样本可直接放 1 张图，多图样本则按数组顺序提供同一样本的多张图片，模型需要综合全部图片后输出一个最终标签。
+
 字段说明：
 
 | 字段 | 必填 | 说明 |
@@ -175,7 +189,7 @@ python -m mmap_optimizer.core.cli run \
 | `id` | 是 | 样本唯一 ID |
 | `input` | 是 | 文本或结构化输入 |
 | `ground_truth` | 是 | 评估用标准答案 |
-| `assets` | 否 | 图片等多模态资产 |
+| `assets` | 否 | 样本级图片等多模态资产，支持 0/1/N 张图 |
 | `tags` | 否 | 样本标签，可用于分析或扩展采样 |
 | `metadata` | 否 | 额外元数据 |
 

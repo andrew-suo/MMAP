@@ -234,6 +234,7 @@ class StructuredPrompt:
 
             if input_images:
                 lines.append("Input Images:")
+                lines.append("(All images belong to the same sample and should be considered together.)")
                 for img in input_images:
                     lines.append(f"- {img}")
                 lines.append("")

@@ -380,8 +380,7 @@ class FewshotOptimizationPhase:
     ) -> None:
         """统计原始 few-shot 指标。"""
         if self.fewshot_executor is not None:
-            eval_sample_set = copy.deepcopy(self.sample_set)
-            eval_records = self.fewshot_executor.evaluate_results(results, eval_sample_set)
+            eval_records = self.fewshot_executor.evaluate_results(results, self.sample_set)
             accuracy = self.fewshot_executor.compute_accuracy(eval_records)
             correct_count = sum(1 for r in eval_records if r.correct)
             wrong_count = sum(1 for r in eval_records if r.status == "wrong")
@@ -422,7 +421,8 @@ class FewshotOptimizationPhase:
     ) -> None:
         """统计最终 few-shot 指标。"""
         if self.fewshot_executor is not None:
-            eval_records = self.fewshot_executor.evaluate_results(results, self.sample_set)
+            eval_sample_set = copy.deepcopy(self.sample_set)
+            eval_records = self.fewshot_executor.evaluate_results(results, eval_sample_set)
             accuracy = self.fewshot_executor.compute_accuracy(eval_records)
             correct_count = sum(1 for r in eval_records if r.correct)
             wrong_count = sum(1 for r in eval_records if r.status == "wrong")
@@ -477,10 +477,6 @@ class FewshotOptimizationPhase:
         trace_by_sample_id = {trace.sample_id: trace for trace in traces}
 
         for sample_id, status in status_by_sample_id.items():
-            state = self.sample_set.states.get(sample_id)
-            if state is not None:
-                state.last_extraction_status = status
-
             trace = trace_by_sample_id.get(sample_id)
             if trace is not None:
                 setattr(trace, trace_status_attr, status)

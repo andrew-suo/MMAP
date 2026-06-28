@@ -207,6 +207,18 @@ class RecordingCalibrationClient:
         return ModelResponse(raw_output=self.output)
 
 
+class FailingPatchGenerationClient(MockModelClient):
+    """如果 patch 生成被错误触发，就直接失败的模型替身。"""
+
+    def __init__(self) -> None:
+        super().__init__(default_output='{"patches":[],"cited_sections":[]}')
+        self.calls = 0
+
+    def complete(self, messages, model_config=None, response_format=None):
+        self.calls += 1
+        raise AssertionError("patch generation should not be called for correct extraction results")
+
+
 def test_patch_validator_calibrates_unknown_section_once_successfully(tmp_path):
     """UNKNOWN_SECTION 可通过一次校准修复，并记录 repair 元数据。"""
     calibration_prompt = tmp_path / "patch_calibration.txt"
@@ -421,6 +433,70 @@ def test_analysis_patch_generate_validate_apply_render():
     # 验证 render
     rendered = new_prompt.to_markdown()
     assert "Improve analysis instructions" in rendered
+
+
+def test_patch_generation_skips_correct_extraction_results_in_code_path():
+    """抽取结果本身正确时，不应生成 extraction patch。"""
+    prompt = make_extraction_prompt()
+    sample_set = make_sample_set()
+    extraction_result = ExtractionResult(
+        sample_id="s1",
+        raw_output='{"result":"OK"}',
+        parsed_output={"result": "OK"},
+        status="correct",
+    )
+    analysis_result = AnalysisResult(
+        sample_id="s1",
+        judgement={"is_correct": True},
+        analysis_correct=True,
+        error_reason="",
+        patch_suggestion={"target_section": "section_1", "operation": "replace", "content": "unused"},
+    )
+
+    executor = PatchGenerationExecutor()
+    draft_patches, validated_patches, rejected_patches = executor.generate_extraction_patches(
+        analysis_results=[analysis_result],
+        extraction_results=[extraction_result],
+        extraction_prompt=prompt,
+        sample_set=sample_set,
+    )
+
+    assert draft_patches == []
+    assert validated_patches == []
+    assert rejected_patches == []
+
+
+def test_patch_generation_skips_correct_extraction_results_in_model_path():
+    """模型路径下，抽取结果本身正确时也不应触发 patch 生成。"""
+    prompt = make_extraction_prompt()
+    sample_set = make_sample_set()
+    extraction_result = ExtractionResult(
+        sample_id="s1",
+        raw_output='{"result":"OK"}',
+        parsed_output={"result": "OK"},
+        status="correct",
+    )
+    analysis_result = AnalysisResult(
+        sample_id="s1",
+        judgement={"is_correct": True},
+        analysis_correct=True,
+        error_reason="",
+        patch_suggestion={"target_section": "section_1", "operation": "replace", "content": "unused"},
+    )
+
+    client = FailingPatchGenerationClient()
+    executor = PatchGenerationExecutor(model_client=client)
+    draft_patches, validated_patches, rejected_patches = executor.generate_extraction_patches(
+        analysis_results=[analysis_result],
+        extraction_results=[extraction_result],
+        extraction_prompt=prompt,
+        sample_set=sample_set,
+    )
+
+    assert client.calls == 0
+    assert draft_patches == []
+    assert validated_patches == []
+    assert rejected_patches == []
 
 
 # ---------------------------------------------------------------------------

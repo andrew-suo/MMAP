@@ -22,13 +22,13 @@ def main() -> None:
         epilog="""
 示例用法:
   # 使用默认配置运行
-  python -m mmap_optimizer.cli run
+  python -m mmap_optimizer.core.cli run
 
   # 使用自定义配置运行
-  python -m mmap_optimizer.cli run --config configs/default_config.yaml
+  python -m mmap_optimizer.core.cli run --config configs/default_config.yaml
 
   # 指定 prompt 文件路径
-  python -m mmap_optimizer.cli run \
+  python -m mmap_optimizer.core.cli run \
     --extraction-prompt prompts/extraction.txt \
     --analysis-prompt prompts/analysis.txt
         """,

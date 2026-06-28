@@ -24,7 +24,7 @@ from mmap_optimizer.stages.extraction_prompt_optimization import (
 from mmap_optimizer.executors.factory import create_executors
 from mmap_optimizer.executors.merge_executor import MergeExecutor
 from mmap_optimizer.executors.toxicity_executor import ToxicityTestExecutor
-from mmap_optimizer.prompt_optimization_phase import (
+from mmap_optimizer.phases.prompt_optimization import (
     PromptOptimizationConfig,
     PromptOptimizationPhase,
 )

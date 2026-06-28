@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from mmap_optimizer.logging import _safe_log_dict, configure_run_logging, get_logger, log_stage
+from mmap_optimizer.core.logging import _safe_log_dict, configure_run_logging, get_logger, log_stage
 
 
 class TestSafeLogDict:

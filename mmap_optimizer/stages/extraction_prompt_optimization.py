@@ -408,7 +408,9 @@ class ExtractionPromptOptimizationStage:
                 state = self.sample_set.states.get(analysis_result.sample_id)
                 if state:
                     state.last_analysis_status = "correct" if analysis_result.analysis_correct else "wrong"
-                    trajectory = state.get_or_create_trajectory("extraction", self.iteration)
+                    trajectory = state.get_or_create_trajectory("analysis", self.iteration)
+                    trajectory.base_status = "pass" if analysis_result.analysis_correct else "fail"
+                    trajectory.base_raw_status = "correct" if analysis_result.analysis_correct else "wrong"
                     trajectory.analysis_summary = {
                         "analysis_correct": analysis_result.analysis_correct,
                         "error_reason": analysis_result.error_reason,
@@ -438,7 +440,9 @@ class ExtractionPromptOptimizationStage:
             state = self.sample_set.states.get(result.sample_id)
             if state:
                 state.last_analysis_status = "correct" if analysis_result.analysis_correct else "wrong"
-                trajectory = state.get_or_create_trajectory("extraction", self.iteration)
+                trajectory = state.get_or_create_trajectory("analysis", self.iteration)
+                trajectory.base_status = "pass" if analysis_result.analysis_correct else "fail"
+                trajectory.base_raw_status = "correct" if analysis_result.analysis_correct else "wrong"
                 trajectory.analysis_summary = {
                     "analysis_correct": analysis_result.analysis_correct,
                     "error_reason": analysis_result.error_reason,
@@ -1173,13 +1177,37 @@ class ExtractionPromptOptimizationStage:
             trace.extraction_transition = "unchanged_wrong"
         else:
             trace.extraction_transition = "unchanged_correct"
-        state = self.sample_set.states.get(trace.sample_id)
-        if state is None:
-            return
-        if trace.extraction_transition == "fixed":
-            state.historical_fixed_count += 1
-        elif trace.extraction_transition == "broken":
-            state.historical_broken_count += 1
+
+    def _update_extraction_historical_counts(
+        self,
+        transition_by_sample: dict[str, str],
+    ) -> None:
+        """Persist only final accepted extraction transitions into historical counters."""
+        for sample_id, transition in transition_by_sample.items():
+            state = self.sample_set.states.get(sample_id)
+            if state is None:
+                continue
+            if transition == "fixed":
+                state.historical_fixed_count += 1
+            elif transition == "broken":
+                state.historical_broken_count += 1
+
+    def _derive_extraction_patch_decision(self) -> str:
+        """Summarize the final extraction patch outcome for outcome history."""
+        if self.accepted_prompt is not None:
+            return "accepted"
+        if self.toxic_patches:
+            return "toxic"
+        if self.ineffective_patches:
+            return "ineffective"
+        if any(
+            getattr(patch, "rejection_reason", None) == "APPLY_NO_CHANGE"
+            for patch in self.initial_merged_patches
+        ):
+            return "no_change"
+        if self.rejected_patches or self.initial_merged_patches:
+            return "rejected"
+        return "no_progress"
 
     def _record_trace_patch_attribution(
         self,
@@ -1462,7 +1490,7 @@ class ExtractionPromptOptimizationStage:
                 "prompt_optimization", self.iteration
             )
         }
-        patch_decision = "accepted" if self.accepted_prompt is not None else "no_progress"
+        patch_decision = self._derive_extraction_patch_decision()
         (
             fixed_sample_ids,
             broken_sample_ids,
@@ -1478,6 +1506,7 @@ class ExtractionPromptOptimizationStage:
             unchanged_wrong_ids=unchanged_wrong_ids,
             unchanged_correct_ids=unchanged_correct_ids,
         )
+        self._update_extraction_historical_counts(final_transition_by_sample)
         for trace in trace_by_sample.values():
             self._set_extraction_trace_transition(
                 trace=trace,

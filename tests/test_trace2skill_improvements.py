@@ -316,6 +316,40 @@ def test_patch_generation_uses_sample_trajectory():
     assert "trajectory direction" in message
 
 
+def test_patch_generation_extraction_message_includes_related_analysis_context():
+    from mmap_optimizer.data.sample import (
+        SampleOptimizationTrajectory,
+        SampleSet,
+        SampleSpec,
+    )
+    from mmap_optimizer.stages.extraction_prompt_optimization import ExtractionResult
+
+    sample_set = SampleSet()
+    sample_set.add_spec(SampleSpec(id="s1", input={}, ground_truth={}))
+    analysis_trajectory = SampleOptimizationTrajectory(
+        sample_id="s1",
+        prompt_type="analysis",
+        iteration=3,
+        base_status="fail",
+        final_status="fail",
+        sample_transition="unchanged_wrong",
+        analysis_summary={"error_reason": "missing visible value"},
+    )
+    sample_set.states["s1"].add_optimization_trajectory(analysis_trajectory)
+    executor = PatchGenerationExecutor()
+
+    message = executor._build_patch_generation_user_message(
+        prompt_type="extraction",
+        extraction_result=ExtractionResult("s1", "{}", {}, "wrong"),
+        current_prompt=_prompt(),
+        sample_set=sample_set,
+    )
+
+    assert "# Sample Optimization Trajectory" in message
+    assert "related_analysis=" in message
+    assert "missing visible value" in message
+
+
 def test_analysis_and_reflection_messages_include_sample_trajectory():
     from mmap_optimizer.data.sample import (
         SampleOptimizationTrajectory,
@@ -634,6 +668,41 @@ def test_extraction_final_transition_ignores_rejected_toxic_trial_patch():
     assert attempt.final_decision == "toxic"
 
 
+def test_extraction_historical_fixed_count_uses_final_accepted_result_only():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
+
+    sample_set = SampleSet(
+        specs={"s1": SampleSpec(id="s1", input={}, ground_truth={})},
+        states={"s1": SampleState(sample_id="s1")},
+    )
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 1, ["s1"], "test"),
+        iteration=1,
+    )
+    stage.base_eval_records = [EvalRecord("s1", "s1", "wrong", False)]
+    stage.base_extraction_results = [ExtractionResult("s1", "{}", {}, "wrong")]
+    stage.patched_eval_records = [EvalRecord("s1", "s1", "correct", True)]
+    stage.initial_merged_patches = [
+        ExtractionPatch("p1", "task", "append_to_section", "A", "r", ["s1"])
+    ]
+    stage.toxic_patches = stage.initial_merged_patches.copy()
+
+    stage._set_extraction_trace_transition(
+        trace=stage._get_or_create_iteration_trace("s1"),
+        fixed_sample_ids=["s1"],
+        broken_sample_ids=[],
+        unchanged_wrong_ids=[],
+    )
+    assert sample_set.states["s1"].historical_fixed_count == 0
+
+    stage._record_extraction_outcome_history()
+
+    assert sample_set.states["s1"].historical_fixed_count == 0
+
+
 def test_sample_trace_keeps_extraction_and_analysis_transitions_separate():
     from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState, SampleTrace
 
@@ -678,6 +747,58 @@ def test_sample_trace_keeps_extraction_and_analysis_transitions_separate():
     assert sample_set.traces[0].analysis_transition == "broken"
 
 
+def test_extraction_analysis_results_are_recorded_on_analysis_trajectory_only():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec
+
+    sample_set = SampleSet()
+    sample_set.add_spec(SampleSpec(id="s1", input={}, ground_truth={}))
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 1, ["s1"], "test"),
+        iteration=1,
+    )
+    stage.base_extraction_results = [ExtractionResult("s1", "{}", {}, "wrong")]
+
+    stage._step3_analyze_results()
+
+    extraction_trajectories = sample_set.states["s1"].get_optimization_trajectory("extraction")
+    analysis_trajectory = sample_set.states["s1"].get_optimization_trajectory("analysis")[0]
+    assert extraction_trajectories == []
+    assert analysis_trajectory.analysis_summary["analysis_correct"] is True
+
+
+def test_analysis_base_metrics_populate_analysis_trajectory_for_all_samples():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec
+
+    sample_set = SampleSet()
+    sample_set.add_spec(SampleSpec(id="s1", input={}, ground_truth={}))
+    stage = AnalysisPromptOptimizationStage(
+        analysis_prompt=_prompt(),
+        extraction_results=[ExtractionResult("s1", "{}", {}, "wrong")],
+        base_analysis_results=[
+            AnalysisResult(
+                sample_id="s1",
+                judgement={},
+                analysis_correct=False,
+                error_reason="missing value",
+            )
+        ],
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 1, ["s1"], "test"),
+        iteration=1,
+        extraction_prompt=_prompt(),
+    )
+
+    stage._step1_compute_base_metrics()
+
+    trajectory = sample_set.states["s1"].get_optimization_trajectory("analysis")[0]
+    assert trajectory.base_status == "fail"
+    assert trajectory.base_raw_status == "wrong"
+    assert trajectory.analysis_summary["error_reason"] == "missing value"
+
+
 def test_extraction_outcome_history_normalizes_status_and_preserves_raw_status():
     from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState, SampleTrace
 
@@ -713,6 +834,31 @@ def test_extraction_outcome_history_normalizes_status_and_preserves_raw_status()
     assert trajectory.final_raw_status == "invalid"
     assert outcome.status == "fail"
     assert outcome.metadata["raw_status"] == "invalid"
+
+
+def test_extraction_outcome_history_uses_specific_rejected_patch_decision():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
+
+    sample_set = SampleSet(
+        specs={"s1": SampleSpec(id="s1", input={}, ground_truth={})},
+        states={"s1": SampleState(sample_id="s1")},
+    )
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 1, ["s1"], "test"),
+        iteration=1,
+    )
+    stage.base_extraction_results = [ExtractionResult("s1", "{}", {}, "wrong")]
+    stage.ineffective_patches = [
+        ExtractionPatch("p1", "task", "append_to_section", "A", "r", ["s1"])
+    ]
+
+    stage._record_extraction_outcome_history()
+
+    outcome = sample_set.states["s1"].get_outcome_history("extraction")[0]
+    assert outcome.patch_decision == "ineffective"
 
 
 def test_extraction_stage_updates_existing_trace_instead_of_duplicating():

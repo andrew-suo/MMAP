@@ -23,7 +23,12 @@ def normalize_label(value: Any, mapping: dict[str, Any] | None = None) -> Any:
 
 
 class EvaluationExecutor:
-    """真实评估执行器，实现字段级 exact match。"""
+    """真实评估执行器，实现字段级 exact match。
+
+    在 extraction 评估路径中，它是 ``error_count`` / ``error_ema`` /
+    ``difficulty_score`` / ``last_extraction_status`` 的首选 writer。
+    Stage 只应在 evaluator 没有更新状态时兜底，避免双写。
+    """
 
     def __init__(
         self,

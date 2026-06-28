@@ -14,7 +14,11 @@ from typing import Any, Literal, cast
 
 @dataclass
 class SampleOutcomeHistoryItem:
-    """单个样本的跨轮评估结果历史，用于动态采样。"""
+    """单个样本的跨轮评估结果历史，用于动态采样。
+
+    ``status`` / ``transition`` 是面向采样消费的最终轮次事实。
+    ``patch_decision`` 是本轮 patch 处理结果的摘要标签，不保证是唯一失败原因。
+    """
     sample_id: str
     prompt_type: Literal["extraction", "analysis"]
     iteration: int
@@ -331,7 +335,16 @@ class SampleSpec:
 
 @dataclass
 class SampleState:
-    """跨轮动态状态，记录样本在整个优化过程中的状态变化。"""
+    """跨轮动态状态，记录样本在整个优化过程中的状态变化。
+
+    字段语义按三类区分：
+    - source of truth：由明确 writer 更新的长期状态，例如 ``error_ema``、
+      ``difficulty_score``、``last_extraction_status``、``last_analysis_status``。
+    - derived summary：由最终 accepted 结果派生的统计摘要，例如
+      ``historical_fixed_count`` / ``historical_broken_count``。
+    - display / memory：用于轨迹渲染和 patch 经验记忆，例如
+      ``outcome_history`` / ``optimization_trajectory``。
+    """
     sample_id: str
 
     # 抽样频率相关
@@ -341,15 +354,22 @@ class SampleState:
     frequency_score: float = 1.0
 
     # 困难度相关
+    # authoritative writer:
+    # - extraction: EvaluationExecutor 或 stage fallback（仅当 evaluator 不写状态）
+    # - few-shot: FewshotOptimizationPhase base metrics
     error_count: int = 0
     error_ema: float = 0.0
     difficulty_score: float = 0.0
 
     # 最近状态
+    # authoritative writer:
+    # - last_extraction_status: extraction evaluation / few-shot base metrics / final accepted outcome
+    # - last_analysis_status: analysis execution / final accepted analysis outcome
     last_extraction_status: str = "unknown"
     last_analysis_status: str = "unknown"
 
     # 历史统计
+    # derived summary: 只应基于最终 accepted 结果更新，不应被中间 trial 污染
     historical_fixed_count: int = 0
     historical_broken_count: int = 0
     generated_extraction_patch_count: int = 0

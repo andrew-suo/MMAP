@@ -34,6 +34,14 @@ class AnalysisExecutor:
         self.label_mapping = label_mapping
         self.renderer = StructuredPromptRenderer()
 
+    def _build_assets(self, sample_spec: SampleSpec) -> list[Any]:
+        """构建资产列表，从 sample_spec.assets 中提取图片资产。
+
+        分析阶段带图：单图/多图样本的图片资产统一通过 complete_multimodal
+        的 assets 参数注入，与抽取阶段保持一致。
+        """
+        return [a for a in sample_spec.assets if a.type == "image"]
+
     def execute(
         self,
         analysis_prompt: StructuredPrompt,
@@ -45,7 +53,9 @@ class AnalysisExecutor:
         messages = self._build_analysis_messages(
             analysis_prompt, extraction_prompt, extraction_result, sample_spec
         )
-        response = self.model_client.complete(messages, model_config=self.model_config)
+        response = self.model_client.complete_multimodal(
+            messages, assets=self._build_assets(sample_spec), model_config=self.model_config
+        )
         judgement = self._parse_judgement(response.raw_output)
 
         actual_correct = self._compute_actual_correct(
@@ -102,7 +112,9 @@ class AnalysisExecutor:
         messages = self._build_reflection_messages(
             analysis_prompt, extraction_result, analysis_result, sample_spec
         )
-        response = self.model_client.complete(messages, model_config=self.model_config)
+        response = self.model_client.complete_multimodal(
+            messages, assets=self._build_assets(sample_spec), model_config=self.model_config
+        )
         parsed = self._parse_judgement(response.raw_output)
 
         error_reason = (

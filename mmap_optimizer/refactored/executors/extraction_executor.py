@@ -92,10 +92,10 @@ class ExtractionExecutor:
         return self.renderer.render_system_message(prompt)
 
     def _build_user_message(self, spec: SampleSpec) -> dict[str, Any]:
-        """组装 user message。
+        """组装 user message（仅文本部分）。
 
-        包含样本文本和 metadata。如果有图片资产，构造多模态 content
-        （text + image_url parts），参考 OpenAI message 格式。
+        图片资产由 complete_multimodal 通过 assets 参数统一注入，
+        避免重复发送。
         """
         text_parts: list[str] = []
         if spec.input:
@@ -105,17 +105,7 @@ class ExtractionExecutor:
             text_parts.append("Metadata:")
             text_parts.append(json.dumps(spec.metadata, ensure_ascii=False, indent=2))
         text = "\n".join(text_parts).strip() or spec.id
-
-        image_assets = [a for a in spec.assets if a.type == "image"]
-        if not image_assets:
-            return {"role": "user", "content": text}
-
-        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-        for asset in image_assets:
-            url = self._asset_to_url(asset)
-            if url:
-                content.append({"type": "image_url", "image_url": {"url": url}})
-        return {"role": "user", "content": content}
+        return {"role": "user", "content": text}
 
     def _build_assets(self, spec: SampleSpec) -> list[Any]:
         """构建资产列表，从 spec.assets 中提取图片资产。"""
@@ -198,7 +188,7 @@ def _run_self_tests() -> None:
     assert results[0].parsed_output is None
     print("✓ Test 2 passed: 非 JSON 输出 status 为 invalid")
 
-    # Test 3: 多模态消息正确构造（uri 形式）
+    # Test 3: 多模态资产正确提取（uri 形式），user 消息为纯文本
     asset = SampleAsset(
         id="a1", sample_id="s2", type="image", uri="https://example.com/img.png"
     )
@@ -209,20 +199,16 @@ def _run_self_tests() -> None:
         assets=[asset],
     )
     executor_multi = ExtractionExecutor(MockModelClient())
+    # user 消息为纯文本（图片由 complete_multimodal 通过 assets 注入，避免重复发送）
     user_msg = executor_multi._build_user_message(spec_multi)
     assert user_msg["role"] == "user"
-    content = user_msg["content"]
-    assert isinstance(content, list), f"expected list content, got {type(content)}"
-    assert content[0]["type"] == "text"
-    image_parts = [p for p in content if p["type"] == "image_url"]
-    assert len(image_parts) == 1, f"expected 1 image_url part, got {len(image_parts)}"
-    assert image_parts[0]["image_url"]["url"] == "https://example.com/img.png"
-    # assets list
+    assert isinstance(user_msg["content"], str), f"expected str content, got {type(user_msg['content'])}"
+    # assets list 含 1 个图片资产
     assets = executor_multi._build_assets(spec_multi)
-    assert len(assets) == 1
-    print("✓ Test 3 passed: 多模态消息正确构造")
+    assert len(assets) == 1, f"expected 1 image asset, got {len(assets)}"
+    print("✓ Test 3 passed: 多模态资产正确提取（uri 形式）")
 
-    # Test 4: 本地图片转 base64 data URL
+    # Test 4: 本地图片资产提取 + base64 data URL 转换
     import os
     import tempfile
 
@@ -237,16 +223,31 @@ def _run_self_tests() -> None:
             id="s3", input={"text": "local img"}, ground_truth={}, assets=[asset_local]
         )
         executor_local = ExtractionExecutor(MockModelClient())
-        user_msg = executor_local._build_user_message(spec_local)
-        content = user_msg["content"]
-        assert isinstance(content, list)
-        image_parts = [p for p in content if p["type"] == "image_url"]
-        assert len(image_parts) == 1
-        url = image_parts[0]["image_url"]["url"]
-        assert url.startswith("data:image/png;base64,"), f"expected data url, got {url[:30]}"
-        print("✓ Test 4 passed: 本地图片转 base64 data URL")
+        # assets list 含 1 个本地图片资产
+        assets = executor_local._build_assets(spec_local)
+        assert len(assets) == 1, f"expected 1 image asset, got {len(assets)}"
+        # base64 data URL 转换
+        url = executor_local._asset_to_url(assets[0])
+        assert url is not None and url.startswith("data:image/png;base64,"), (
+            f"expected data url, got {url[:30] if url else None}"
+        )
+        print("✓ Test 4 passed: 本地图片资产提取 + base64 data URL 转换")
     finally:
         os.unlink(tmp_path)
+
+    # Test 6: 多图样本资产正确提取（非图片资产被过滤）
+    asset1 = SampleAsset(id="m1", sample_id="s4", type="image", uri="https://example.com/1.png")
+    asset2 = SampleAsset(id="m2", sample_id="s4", type="image", uri="https://example.com/2.png")
+    asset_audio = SampleAsset(id="m3", sample_id="s4", type="audio", uri="https://example.com/a.mp3")
+    spec_multi_img = SampleSpec(
+        id="s4",
+        input={"text": "multi image"},
+        ground_truth={"result": "OK"},
+        assets=[asset1, asset2, asset_audio],
+    )
+    assets = executor_multi._build_assets(spec_multi_img)
+    assert len(assets) == 2, f"expected 2 image assets (audio filtered), got {len(assets)}"
+    print("✓ Test 6 passed: 多图样本资产正确提取（非图片资产被过滤）")
 
     # Test 5: fewshot 渲染路径不报错
     from mmap_optimizer.refactored.fewshot_optimization_phase import FewshotExample

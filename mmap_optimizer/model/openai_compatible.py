@@ -195,4 +195,15 @@ class OpenAICompatibleClient:
             return asset
         if isinstance(asset, dict):
             return SampleAsset(**asset)
+        # duck typing：兼容 refactored.sample.SampleAsset 等同结构对象
+        if hasattr(asset, "type") and (hasattr(asset, "uri") or hasattr(asset, "local_path")):
+            return SampleAsset(
+                id=getattr(asset, "id", "") or "",
+                sample_id=getattr(asset, "sample_id", "") or "",
+                type=getattr(asset, "type", "image") or "image",
+                uri=getattr(asset, "uri", None),
+                local_path=getattr(asset, "local_path", None),
+                mime_type=getattr(asset, "mime_type", None),
+                metadata=getattr(asset, "metadata", None) or {},
+            )
         raise TypeError(f"Unsupported asset type: {type(asset)!r}")

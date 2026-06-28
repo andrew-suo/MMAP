@@ -340,16 +340,11 @@ class ParallelPatchMerger:
         input_group: list[dict],
         layer: int,
     ) -> list[dict]:
-        """Best-effort provenance repair for LLM merge outputs.
+        """Bind authoritative provenance for a merged group.
 
-        The merge pipeline requires every output patch to carry valid
-        ``source_patch_ids``. Real model outputs sometimes omit that field
-        entirely, which would otherwise make the whole merged patch invalid.
-        This helper repairs only the low-risk cases:
-        - single-output merge: missing provenance inherits the whole input group
-        - single-input group: missing provenance inherits that sole input patch
-
-        It also fills a stable synthetic ``id`` when the model omits it.
+        LLM outputs are trusted for merged content, but provenance is always
+        derived from the current input group by code. This prevents lineage
+        drift across layers and keeps final merge validation deterministic.
         """
         if not merged_patches:
             return merged_patches
@@ -365,46 +360,26 @@ class ParallelPatchMerger:
             for sample_id in patch.get("source_sample_ids", [])
             if str(sample_id)
         })
-        patch_to_samples = {
-            str(patch.get("id", "")): [
-                str(sample_id)
-                for sample_id in patch.get("source_sample_ids", [])
-                if str(sample_id)
-            ]
+        upstream_source_patch_ids = sorted({
+            str(source_patch_id)
             for patch in input_group
-            if str(patch.get("id", ""))
-        }
+            for source_patch_id in patch.get("source_patch_ids", [])
+            if str(source_patch_id)
+        })
+        if not upstream_source_patch_ids:
+            upstream_source_patch_ids = list(input_patch_ids)
 
         for idx, merged in enumerate(merged_patches, start=1):
-            raw_source_patch_ids = merged.get("source_patch_ids")
-            normalized_source_patch_ids = []
-            if isinstance(raw_source_patch_ids, list):
-                normalized_source_patch_ids = [
-                    str(item) for item in raw_source_patch_ids if str(item)
-                ]
-
-            if not normalized_source_patch_ids:
-                if len(merged_patches) == 1 and input_patch_ids:
-                    normalized_source_patch_ids = list(input_patch_ids)
-                elif len(input_patch_ids) == 1:
-                    normalized_source_patch_ids = [input_patch_ids[0]]
-                if normalized_source_patch_ids:
-                    merged["source_patch_ids"] = normalized_source_patch_ids
-
             if not merged.get("id"):
                 scope = "root" if layer < 0 else f"layer_{layer}"
                 merged["id"] = f"{scope}_merged_{idx}"
 
-            if not merged.get("source_sample_ids"):
-                repaired_sample_ids = sorted({
-                    sample_id
-                    for patch_id in normalized_source_patch_ids
-                    for sample_id in patch_to_samples.get(patch_id, [])
-                })
-                if not repaired_sample_ids and normalized_source_patch_ids:
-                    repaired_sample_ids = list(input_sample_ids)
-                if repaired_sample_ids:
-                    merged["source_sample_ids"] = repaired_sample_ids
+            if input_patch_ids:
+                merged["source_patch_ids"] = list(input_patch_ids)
+            if input_sample_ids:
+                merged["source_sample_ids"] = list(input_sample_ids)
+            if upstream_source_patch_ids:
+                merged["upstream_source_patch_ids"] = list(upstream_source_patch_ids)
 
         return merged_patches
 

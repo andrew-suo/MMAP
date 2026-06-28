@@ -5,6 +5,7 @@ from __future__ import annotations
 from mmap_optimizer.executors.patch_generation_executor import PatchGenerationExecutor
 from mmap_optimizer.executors.merge_executor import MergeExecutor
 from mmap_optimizer.model.client import MockModelClient
+from mmap_optimizer.patch.tree_reduce import ParallelPatchMerger
 from mmap_optimizer.patch.types import AnalysisPatch, ExtractionPatch, PatchMergeReport
 from mmap_optimizer.prompt.output_repair import parse_model_json_output
 from mmap_optimizer.prompt.structured_prompt import PromptSection, StructuredPrompt
@@ -1019,6 +1020,29 @@ def test_merge_executor_repairs_missing_provenance_for_single_group_output(monke
     assert report.merged_patch_count == 1
 
 
+def test_merge_executor_overwrites_wrong_model_provenance_with_current_group_ids():
+    from mmap_optimizer.model.client import ModelResponse
+
+    class _WrongProvenanceClient:
+        def complete(self, messages, model_config=None, response_format=None):
+            return ModelResponse(
+                raw_output='[{"source_patch_ids":["draft_patch_1"],"source_sample_ids":["ghost"],"target_section":"task","op":"append_to_section","content":"merged content","rationale":"merged rationale"}]'
+            )
+
+    patch = ExtractionPatch("p1", "task", "append_to_section", "A", "r", ["s1"])
+    merged, report = MergeExecutor(model_client=_WrongProvenanceClient()).merge(
+        patches=[patch],
+        prompt=_prompt(),
+        sample_set=None,
+    )
+
+    assert len(merged) == 1
+    assert merged[0].metadata["source_patch_ids"] == ["p1"]
+    assert merged[0].metadata["upstream_source_patch_ids"] == ["p1"]
+    assert merged[0].source_sample_ids == ["s1"]
+    assert report.invalid_provenance_patch_ids == []
+
+
 def test_merge_executor_uses_current_patch_ids_for_final_merge_provenance():
     patch = ExtractionPatch(
         "safe_patch_1",
@@ -1035,6 +1059,36 @@ def test_merge_executor_uses_current_patch_ids_for_final_merge_provenance():
     assert merge_dict["id"] == "safe_patch_1"
     assert merge_dict["source_patch_ids"] == ["safe_patch_1"]
     assert merge_dict["upstream_source_patch_ids"] == ["draft_patch_1", "draft_patch_2"]
+
+
+def test_parallel_patch_merger_binds_group_provenance_for_all_outputs():
+    merger = object.__new__(ParallelPatchMerger)
+    merged = merger._backfill_group_provenance(
+        merged_patches=[
+            {"content": "a", "target_section": "task", "op": "append_to_section"},
+            {"content": "b", "target_section": "task", "op": "append_to_section"},
+        ],
+        input_group=[
+            {
+                "id": "p1",
+                "source_sample_ids": ["s1"],
+                "source_patch_ids": ["draft_1"],
+            },
+            {
+                "id": "p2",
+                "source_sample_ids": ["s2"],
+                "source_patch_ids": ["draft_2"],
+            },
+        ],
+        layer=0,
+    )
+
+    assert [item["source_patch_ids"] for item in merged] == [["p1", "p2"], ["p1", "p2"]]
+    assert [item["source_sample_ids"] for item in merged] == [["s1", "s2"], ["s1", "s2"]]
+    assert [item["upstream_source_patch_ids"] for item in merged] == [
+        ["draft_1", "draft_2"],
+        ["draft_1", "draft_2"],
+    ]
 
 
 def test_merge_report_excludes_ids_that_survive_from_dropped_list(monkeypatch):

@@ -1115,6 +1115,7 @@ class ExtractionPromptOptimizationStage:
         self,
         base_status_by_sample: dict[str, str],
         final_status_by_sample: dict[str, str],
+        has_final_results: bool = True,
     ) -> tuple[list[str], list[str], list[str], list[str]]:
         fixed_sample_ids: list[str] = []
         broken_sample_ids: list[str] = []
@@ -1123,7 +1124,10 @@ class ExtractionPromptOptimizationStage:
 
         for sample_id in self.batch.sample_ids:
             base_status = base_status_by_sample.get(sample_id)
-            final_status = final_status_by_sample.get(sample_id, base_status)
+            final_status = final_status_by_sample.get(sample_id)
+            # 如果没有 final status，只有在完全没有 final results 时才 fallback
+            if final_status is None and not has_final_results:
+                final_status = base_status
             if base_status is None or final_status is None:
                 continue
 
@@ -1440,10 +1444,10 @@ class ExtractionPromptOptimizationStage:
                 }
                 for trace in traces:
                     trace.participated_in_extraction = True
-                    trace.final_extraction_status = final_status_map.get(
-                        trace.sample_id, "correct"
+                    trace.final_extraction_status = final_status_map.get(trace.sample_id)
+                    trace.final_extraction_result_id = (
+                        trace.sample_id if trace.sample_id in final_status_map else None
                     )
-                    trace.final_extraction_result_id = trace.sample_id
                 self._record_extraction_outcome_history()
             else:
                 self.metrics.final_accuracy = self.metrics.base_accuracy
@@ -1474,6 +1478,7 @@ class ExtractionPromptOptimizationStage:
 
     def _record_extraction_outcome_history(self) -> None:
         """记录本轮 extraction prompt 最终效果，供 APEX 风格采样使用。"""
+        has_final_results = bool(self.final_eval_records or self.final_extraction_results)
         final_status_by_sample = (
             {record.sample_id: record.status for record in self.final_eval_records}
             if self.final_eval_records
@@ -1499,6 +1504,7 @@ class ExtractionPromptOptimizationStage:
         ) = self._compute_extraction_transitions(
             base_status_by_sample=base_status_by_sample,
             final_status_by_sample=final_status_by_sample,
+            has_final_results=has_final_results,
         )
         final_transition_by_sample = self._transition_map(
             fixed_sample_ids=fixed_sample_ids,
@@ -1516,7 +1522,9 @@ class ExtractionPromptOptimizationStage:
             )
 
         for sample_id in self.batch.sample_ids:
-            raw_status = final_status_by_sample.get(sample_id) or base_status_by_sample.get(sample_id)
+            raw_status = final_status_by_sample.get(sample_id)
+            if raw_status is None and not has_final_results:
+                raw_status = base_status_by_sample.get(sample_id)
             if raw_status is None:
                 outcome_status = "unknown"
             else:
@@ -1524,12 +1532,13 @@ class ExtractionPromptOptimizationStage:
             state = self.sample_set.states.get(sample_id)
             if state is None:
                 continue
-            state.last_extraction_status = raw_status or state.last_extraction_status
+            if raw_status is not None:
+                state.last_extraction_status = raw_status
             trace = trace_by_sample.get(sample_id)
             if trace is not None:
                 trace.participated_in_extraction = True
                 trace.final_extraction_status = raw_status
-                trace.final_extraction_result_id = sample_id
+                trace.final_extraction_result_id = sample_id if raw_status is not None else None
             trajectory = state.get_or_create_trajectory("extraction", self.iteration)
             if base_status_by_sample.get(sample_id):
                 trajectory.base_status = self._normalize_extraction_status(base_status_by_sample[sample_id])

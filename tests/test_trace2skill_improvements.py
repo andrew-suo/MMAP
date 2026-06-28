@@ -836,6 +836,59 @@ def test_extraction_outcome_history_normalizes_status_and_preserves_raw_status()
     assert outcome.metadata["raw_status"] == "invalid"
 
 
+def test_extraction_outcome_history_leaves_missing_final_samples_unknown():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState, SampleTrace
+
+    sample_set = SampleSet(
+        specs={
+            "s1": SampleSpec(id="s1", input={}, ground_truth={}),
+            "s2": SampleSpec(id="s2", input={}, ground_truth={}),
+        },
+        states={
+            "s1": SampleState(sample_id="s1"),
+            "s2": SampleState(sample_id="s2"),
+        },
+        traces=[
+            SampleTrace(sample_id="s1", phase="prompt_optimization", iteration=1, selected=True),
+            SampleTrace(sample_id="s2", phase="prompt_optimization", iteration=1, selected=True),
+        ],
+    )
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 1, ["s1", "s2"], "test"),
+        iteration=1,
+    )
+    stage.base_eval_records = [
+        EvalRecord("s1", "s1", "wrong", False),
+        EvalRecord("s2", "s2", "correct", True),
+    ]
+    stage.final_eval_records = [
+        EvalRecord("s1", "s1", "correct", True),
+    ]
+    stage.base_extraction_results = [
+        ExtractionResult("s1", "{}", {}, "wrong"),
+        ExtractionResult("s2", "{}", {}, "correct"),
+    ]
+    stage.final_extraction_results = [
+        ExtractionResult("s1", "{}", {}, "correct"),
+    ]
+
+    stage._record_extraction_outcome_history()
+
+    s1_trace = sample_set.get_traces_for_iteration("prompt_optimization", 1)[0]
+    s2_trace = sample_set.get_traces_for_iteration("prompt_optimization", 1)[1]
+    s2_outcome = sample_set.states["s2"].get_outcome_history("extraction")[0]
+
+    assert s1_trace.final_extraction_status == "correct"
+    assert s1_trace.final_extraction_result_id == "s1"
+    assert s2_trace.final_extraction_status is None
+    assert s2_trace.final_extraction_result_id is None
+    assert s2_outcome.status == "unknown"
+    assert s2_outcome.transition == "unknown"
+
+
 def test_extraction_outcome_history_uses_specific_rejected_patch_decision():
     from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
 

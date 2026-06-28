@@ -217,6 +217,17 @@ class AnalysisPromptOptimizationStage:
             trace = trace_by_sample.get(result.sample_id)
             if trace is not None:
                 trace.participated_in_analysis = True
+            state = self.sample_set.states.get(result.sample_id)
+            if state is not None:
+                trajectory = state.get_or_create_trajectory("analysis", self.iteration)
+                trajectory.base_status = "pass" if result.analysis_correct else "fail"
+                trajectory.base_raw_status = "correct" if result.analysis_correct else "wrong"
+                trajectory.analysis_summary = {
+                    "analysis_correct": result.analysis_correct,
+                    "error_reason": result.error_reason,
+                    "confirmed_facts": list(result.confirmed_facts),
+                    "hypothesized_error_causes": list(result.hypothesized_error_causes),
+                }
 
     def _update_contribution_tracker(self) -> None:
         """从分析结果更新 section 贡献度追踪器。"""
@@ -1025,6 +1036,23 @@ class AnalysisPromptOptimizationStage:
         else:
             trace.analysis_transition = "unchanged_correct"
 
+    def _derive_analysis_patch_decision(self) -> str:
+        """Summarize the final analysis patch outcome for outcome history."""
+        if self.accepted_prompt is not None:
+            return "accepted"
+        if self.toxic_patches:
+            return "toxic"
+        if self.ineffective_patches:
+            return "ineffective"
+        if any(
+            getattr(patch, "rejection_reason", None) == "APPLY_NO_CHANGE"
+            for patch in self.initial_merged_patches
+        ):
+            return "no_change"
+        if self.rejected_patches or self.initial_merged_patches:
+            return "rejected"
+        return "no_progress"
+
     def _record_trace_patch_attribution(
         self,
         sample_id: str,
@@ -1287,7 +1315,7 @@ class AnalysisPromptOptimizationStage:
                 "prompt_optimization", self.iteration
             )
         }
-        patch_decision = "accepted" if self.accepted_prompt is not None else "no_progress"
+        patch_decision = self._derive_analysis_patch_decision()
         (
             fixed_sample_ids,
             broken_sample_ids,

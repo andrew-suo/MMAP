@@ -28,7 +28,12 @@ class SampleTrajectoryRenderer:
             prompt_type=prompt_type,
             limit=self.trajectory_limit,
         )
-        if not trajectories:
+        related_analysis = self._related_analysis_trajectories(
+            sample_set=sample_set,
+            sample_id=sample_id,
+            prompt_type=prompt_type,
+        )
+        if not trajectories and not related_analysis:
             return ""
 
         lines = [
@@ -38,6 +43,8 @@ class SampleTrajectoryRenderer:
         ]
         for trajectory in trajectories:
             lines.extend(self._render_trajectory(trajectory))
+        for trajectory in related_analysis:
+            lines.extend(self._render_related_analysis_context(trajectory))
         return "\n".join(lines)
 
     def _render_trajectory(self, trajectory: SampleOptimizationTrajectory) -> list[str]:
@@ -67,6 +74,45 @@ class SampleTrajectoryRenderer:
             reason = trajectory.metadata.get("no_patch_reason")
             if reason:
                 lines.append(f"  no_patch_reason={self._compact(reason, 180)}")
+        return lines
+
+    def _related_analysis_trajectories(
+        self,
+        sample_set: SampleSet,
+        sample_id: str,
+        prompt_type: str | None,
+    ) -> list[SampleOptimizationTrajectory]:
+        """Provide lightweight analysis references for extraction-facing history."""
+        if prompt_type != "extraction":
+            return []
+        state = sample_set.states.get(sample_id)
+        if state is None:
+            return []
+        return state.get_optimization_trajectory(
+            prompt_type="analysis",
+            limit=self.trajectory_limit,
+        )
+
+    def _render_related_analysis_context(
+        self,
+        trajectory: SampleOptimizationTrajectory,
+    ) -> list[str]:
+        lines = [
+            "  related_analysis="
+            f"iteration={trajectory.iteration}; "
+            f"base={trajectory.base_status}; final={trajectory.final_status}; "
+            f"transition={trajectory.sample_transition}"
+        ]
+        analysis_reason = trajectory.analysis_summary.get("error_reason")
+        if analysis_reason:
+            lines.append(
+                f"  related_analysis_error_reason={self._compact(analysis_reason, 180)}"
+            )
+        reflection_reason = trajectory.reflection_summary.get("error_reason")
+        if reflection_reason:
+            lines.append(
+                f"  related_reflection_reason={self._compact(reflection_reason, 180)}"
+            )
         return lines
 
     def _render_attempt(self, attempt: SamplePatchAttempt) -> str:

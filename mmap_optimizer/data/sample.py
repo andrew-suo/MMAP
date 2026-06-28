@@ -151,7 +151,15 @@ class SamplePatchAttempt:
 
 @dataclass
 class SampleOptimizationTrajectory:
-    """一个 sample 在某一轮某个 prompt 类型下的优化轨迹。"""
+    """一个 sample 在某一轮某个 prompt 类型下的优化轨迹。
+
+    轨迹按 ``prompt_type`` 严格分层：
+    - extraction 轨迹只记录 extraction prompt 的状态与 patch 生命周期
+    - analysis 轨迹只记录 analysis prompt 的状态、reflection 与 patch 生命周期
+
+    注意：``patch_attempts`` 是 source-centric 记录，只描述该 sample 作为
+    patch 来源样本时的生命周期，不保证能够完整回放所有受影响样本的因果链。
+    """
     sample_id: str
     prompt_type: Literal["extraction", "analysis"]
     iteration: int
@@ -523,7 +531,11 @@ class SampleState:
 
 @dataclass
 class SampleTrace:
-    """单轮过程记录，记录样本在某一轮优化中的详细过程。"""
+    """单轮过程记录，记录样本在某一轮优化中的详细过程。
+
+    ``*_transition`` 表示该 sample 在本轮最终 accepted 结果上的真实转换，
+    不保证反映中间 trial prompt 的临时转换。
+    """
     sample_id: str
     phase: str  # "prompt_optimization" 或 "fewshot_optimization"
     iteration: int

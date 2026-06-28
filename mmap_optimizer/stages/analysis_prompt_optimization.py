@@ -655,15 +655,6 @@ class AnalysisPromptOptimizationStage:
                 len(self.rejected_patches) + len(toxic_patches)
             )
 
-            for trace in self.sample_set.get_traces_for_iteration(
-                "prompt_optimization", self.iteration
-            ):
-                self._set_analysis_trace_transition(
-                    trace=trace,
-                    fixed_sample_ids=fixed_ids,
-                    broken_sample_ids=broken_ids,
-                    unchanged_wrong_ids=unchanged_wrong_ids,
-                )
             self._record_sample_patch_attempts(
                 patches=self.initial_merged_patches,
                 fixed_sample_ids=fixed_ids,
@@ -755,15 +746,6 @@ class AnalysisPromptOptimizationStage:
                 toxic_sample_ids=broken_ids,
             )
 
-            for trace in self.sample_set.get_traces_for_iteration(
-                "prompt_optimization", self.iteration
-            ):
-                self._set_analysis_trace_transition(
-                    trace=trace,
-                    fixed_sample_ids=fixed_ids,
-                    broken_sample_ids=broken_ids,
-                    unchanged_wrong_ids=unchanged_wrong_ids,
-                )
             self._record_sample_patch_attempts(
                 patches=self.initial_merged_patches,
                 fixed_sample_ids=fixed_ids,
@@ -999,6 +981,33 @@ class AnalysisPromptOptimizationStage:
         transition_by_sample.update({sid: "unchanged_wrong" for sid in unchanged_wrong_ids})
         transition_by_sample.update({sid: "unchanged_correct" for sid in unchanged_correct_ids})
         return transition_by_sample
+
+    def _compute_analysis_transitions(
+        self,
+        base_status_by_sample: dict[str, bool],
+        final_status_by_sample: dict[str, bool],
+    ) -> tuple[list[str], list[str], list[str], list[str]]:
+        fixed_sample_ids: list[str] = []
+        broken_sample_ids: list[str] = []
+        unchanged_wrong_ids: list[str] = []
+        unchanged_correct_ids: list[str] = []
+
+        for sample_id in self.batch.sample_ids:
+            base_correct = base_status_by_sample.get(sample_id)
+            final_correct = final_status_by_sample.get(sample_id, base_correct)
+            if base_correct is None or final_correct is None:
+                continue
+
+            if not base_correct and final_correct:
+                fixed_sample_ids.append(sample_id)
+            elif base_correct and not final_correct:
+                broken_sample_ids.append(sample_id)
+            elif not base_correct and not final_correct:
+                unchanged_wrong_ids.append(sample_id)
+            else:
+                unchanged_correct_ids.append(sample_id)
+
+        return fixed_sample_ids, broken_sample_ids, unchanged_wrong_ids, unchanged_correct_ids
 
     def _set_analysis_trace_transition(
         self,
@@ -1279,6 +1288,28 @@ class AnalysisPromptOptimizationStage:
             )
         }
         patch_decision = "accepted" if self.accepted_prompt is not None else "no_progress"
+        (
+            fixed_sample_ids,
+            broken_sample_ids,
+            unchanged_wrong_ids,
+            unchanged_correct_ids,
+        ) = self._compute_analysis_transitions(
+            base_status_by_sample=base_status_by_sample,
+            final_status_by_sample=final_status_by_sample,
+        )
+        final_transition_by_sample = self._transition_map(
+            fixed_sample_ids=fixed_sample_ids,
+            broken_sample_ids=broken_sample_ids,
+            unchanged_wrong_ids=unchanged_wrong_ids,
+            unchanged_correct_ids=unchanged_correct_ids,
+        )
+        for trace in trace_by_sample.values():
+            self._set_analysis_trace_transition(
+                trace=trace,
+                fixed_sample_ids=fixed_sample_ids,
+                broken_sample_ids=broken_sample_ids,
+                unchanged_wrong_ids=unchanged_wrong_ids,
+            )
 
         for sample_id in self.batch.sample_ids:
             raw_status = final_status_by_sample.get(sample_id)
@@ -1299,16 +1330,14 @@ class AnalysisPromptOptimizationStage:
                 trajectory.base_raw_status = "correct" if base_status_by_sample[sample_id] else "wrong"
             trajectory.final_status = outcome_status
             trajectory.final_raw_status = "correct" if raw_status else "wrong" if raw_status is not None else trajectory.final_raw_status
-            trajectory.sample_transition = (
-                getattr(trace_by_sample.get(sample_id), "analysis_transition", None) or "unknown"
-            )
+            trajectory.sample_transition = final_transition_by_sample.get(sample_id, "unknown")
             state.add_outcome_history(
                 SampleOutcomeHistoryItem(
                     sample_id=sample_id,
                     prompt_type="analysis",
                     iteration=self.iteration,
                     status=outcome_status,
-                    transition=getattr(trace_by_sample.get(sample_id), "analysis_transition", None) or "unknown",
+                    transition=final_transition_by_sample.get(sample_id, "unknown"),
                     selected=True,
                     patch_decision=patch_decision,
                     metadata={"analysis_correct": raw_status},

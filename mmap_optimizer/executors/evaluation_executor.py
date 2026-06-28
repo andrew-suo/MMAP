@@ -51,6 +51,7 @@ class EvaluationExecutor:
         if extraction_result.parsed_output is None:
             status = "invalid"
             details: dict[str, Any] = {"reason": "parsed_output is None"}
+            extraction_result.evaluation_status = status
             self._update_sample_state(sample_state, status)
             return EvalRecord(
                 sample_id=extraction_result.sample_id,
@@ -92,6 +93,7 @@ class EvaluationExecutor:
             "field_results": field_results,
             "mismatched_fields": mismatched_fields,
         }
+        extraction_result.evaluation_status = status
 
         # 4. 更新 SampleState
         self._update_sample_state(sample_state, status)

@@ -21,6 +21,7 @@ from mmap_optimizer.stages.extraction_prompt_optimization import (
     ExtractionResult,
 )
 from mmap_optimizer.executors.patch_apply_executor import PatchApplyExecutor
+from mmap_optimizer.executors.analysis_executor import AnalysisExecutor
 from mmap_optimizer.executors.patch_generation_executor import (
     PatchGenerationExecutor,
 )
@@ -193,6 +194,60 @@ def make_batch() -> SampleBatch:
         sampler_name="test",
         sample_ids=["s1"],
     )
+
+
+def test_patch_generation_uses_evaluation_status_for_wrong_but_parseable_outputs():
+    prompt = make_extraction_prompt()
+    sample_set = make_sample_set()
+    executor = PatchGenerationExecutor(model_client=None)
+
+    extraction_results = [
+        ExtractionResult(
+            sample_id="s1",
+            raw_output='{"result":"wrong"}',
+            parsed_output={"result": "wrong"},
+            status="correct",
+            evaluation_status="wrong",
+        )
+    ]
+    analysis_results = [
+        AnalysisResult(
+            sample_id="s1",
+            judgement={"judgement": {"is_correct": False}},
+            analysis_correct=True,
+            error_reason="result field mismatched",
+            confirmed_facts=["ground truth expects A"],
+            hypothesized_error_causes=["prompt lacks label distinction"],
+        )
+    ]
+
+    draft_patches, validated_patches, rejected_patches = executor.generate_extraction_patches(
+        analysis_results=analysis_results,
+        extraction_results=extraction_results,
+        extraction_prompt=prompt,
+        sample_set=sample_set,
+    )
+
+    assert len(draft_patches) == 1
+    assert len(validated_patches) == 1
+    assert len(rejected_patches) == 0
+
+
+def test_analysis_executor_prefers_evaluation_status_when_checking_actual_correctness():
+    executor = AnalysisExecutor(model_client=MockModelClient())
+
+    extraction_result = ExtractionResult(
+        sample_id="s1",
+        raw_output='{"result":"OK"}',
+        parsed_output={"result": "OK"},
+        status="correct",
+        evaluation_status="wrong",
+    )
+
+    assert executor._compute_actual_correct(
+        extraction_result,
+        ground_truth={"result": "OK"},
+    ) is False
 
 
 class RecordingCalibrationClient:

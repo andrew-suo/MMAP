@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from ..core.logging import get_logger, log_stage
 from ..core.progress import NullProgressReporter, ProgressReporter
@@ -33,6 +33,7 @@ class ExtractionResult:
     raw_output: str
     parsed_output: dict | None
     status: Literal["correct", "wrong", "invalid"]
+    evaluation_status: Literal["correct", "wrong", "invalid"] | None = None
     error_details: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -42,6 +43,7 @@ class ExtractionResult:
             "raw_output": self.raw_output,
             "parsed_output": self.parsed_output,
             "status": self.status,
+            "evaluation_status": self.evaluation_status,
             "error_details": list(self.error_details),
         }
 
@@ -325,6 +327,15 @@ class ExtractionPromptOptimizationStage:
             self.metrics.base_accuracy = correct_count / total if total > 0 else 0.0
 
             for eval_record in self.base_eval_records:
+                result = next(
+                    (
+                        item for item in self.base_extraction_results
+                        if item.sample_id == eval_record.sample_id
+                    ),
+                    None,
+                )
+                if result is not None:
+                    result.evaluation_status = cast(Literal["correct", "wrong", "invalid"] | None, eval_record.status)
                 state = self.sample_set.states.get(eval_record.sample_id)
                 if state:
                     if state_snapshots.get(eval_record.sample_id) == (
@@ -339,6 +350,8 @@ class ExtractionPromptOptimizationStage:
                     trajectory.base_status = self._normalize_extraction_status(eval_record.status)
                     trajectory.base_raw_status = eval_record.status
                     trajectory.selected = True
+                trace = self._get_or_create_iteration_trace(eval_record.sample_id)
+                trace.base_extraction_status = eval_record.status
             return
 
         correct_count = sum(1 for r in self.base_extraction_results if r.status == "correct")
@@ -361,6 +374,7 @@ class ExtractionPromptOptimizationStage:
                 trajectory.base_status = self._normalize_extraction_status(result.status)
                 trajectory.base_raw_status = result.status
                 trajectory.selected = True
+            result.evaluation_status = result.status
 
     def _update_contribution_tracker(self) -> None:
         """从抽取结果和评估记录更新 section 贡献度追踪器。"""

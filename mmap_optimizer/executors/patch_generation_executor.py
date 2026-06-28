@@ -148,10 +148,7 @@ class PatchGenerationExecutor:
             if extraction_result is None:
                 continue
 
-            extraction_correct = analysis_result.judgement.get("judgement", {}).get(
-                "is_correct", False
-            )
-            if extraction_correct:
+            if not self._should_generate_extraction_patch(extraction_result):
                 continue
 
             sample_spec = sample_set.specs.get(sample_id)
@@ -609,10 +606,7 @@ class PatchGenerationExecutor:
             if extraction_result is None:
                 continue
 
-            extraction_correct = analysis_result.judgement.get("judgement", {}).get(
-                "is_correct", False
-            )
-            if extraction_correct:
+            if not self._should_generate_extraction_patch(extraction_result):
                 continue
 
             if analysis_result.patch_suggestion is not None:
@@ -656,6 +650,15 @@ class PatchGenerationExecutor:
             draft_patches, extraction_prompt, sample_set
         )
         return draft_patches, cast(list[ExtractionPatch], validated), cast(list[ExtractionPatch], rejected)
+
+    @staticmethod
+    def _should_generate_extraction_patch(extraction_result: ExtractionResult) -> bool:
+        """判断抽取结果是否需要生成 patch。
+
+        只有抽取结果真实错误或不可解析时才生成 patch；
+        解析正确且与 GT 一致的样本不应进入 patch 候选集。
+        """
+        return extraction_result.status in {"wrong", "invalid"}
 
     def _generate_analysis_patches_by_code(
         self,

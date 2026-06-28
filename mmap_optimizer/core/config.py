@@ -100,7 +100,7 @@ class RunConfig:
 @dataclass
 class DatasetConfig:
     """数据集配置。"""
-    path: str = "data/samples.jsonl"
+    path: str = "data/smoke_samples.jsonl"
     format: str = "jsonl"
     image_root: str | None = None
     ground_truth_path: str | None = None
@@ -283,7 +283,7 @@ class RefactoredConfig:
 
         # 构建 DatasetConfig
         dataset_config = DatasetConfig(
-            path=dataset_data.get("path", "data/samples.jsonl"),
+            path=dataset_data.get("path", "data/smoke_samples.jsonl"),
             format=dataset_data.get("format", "jsonl"),
             image_root=dataset_data.get("image_root"),
             ground_truth_path=dataset_data.get("ground_truth_path"),

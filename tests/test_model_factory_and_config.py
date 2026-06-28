@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from mmap_optimizer.core.config import ModelConfig
+from mmap_optimizer.core.config import ModelConfig, RefactoredConfig
 from mmap_optimizer.executors.factory import create_executors
 from mmap_optimizer.model.factory import build_model_client
 from mmap_optimizer.model.client import MockModelClient
@@ -70,3 +70,9 @@ def test_create_executors_exposes_runtime_model_config():
     assert executors["optimizer_model_config"]["chat_template_kwargs"] == {
         "enable_thinking": False
     }
+
+
+def test_default_dataset_path_points_to_existing_smoke_data():
+    config = RefactoredConfig()
+
+    assert config.dataset.path == "data/smoke_samples.jsonl"

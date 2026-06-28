@@ -96,6 +96,7 @@ class ExtractionExecutor:
     ) -> ExtractionResult:
         """对单个样本执行抽取。"""
         # 1. build messages
+        messages: list[dict[str, Any]]
         if fewshot_examples and any(self._example_has_images(ex) for ex in fewshot_examples):
             # 多模态 few-shot：示例作为 user/assistant 轮次，图片内联
             messages = self._build_multimodal_fewshot_messages(prompt, spec, fewshot_examples)
@@ -103,7 +104,7 @@ class ExtractionExecutor:
             # 文本 few-shot（写进 system prompt）或无 few-shot
             system_text = self._render_system_message(prompt, fewshot_examples)
             user_message = self._build_user_message(spec)
-            messages: list[dict[str, Any]] = [
+            messages = [
                 {"role": "system", "content": system_text},
                 user_message,
             ]
@@ -162,7 +163,7 @@ class ExtractionExecutor:
         content_parts: list[dict[str, Any]] = []
         input_text = getattr(example, "input_text", "") or ""
         if input_text:
-            content_parts.append({"type": "text", "text": f"Example Input:\n{input_text}"})
+            content_parts.append({"type": "text", "text": f"Few-shot Example Input:\n{input_text}"})
         example_id = getattr(example, "id", "") or "fewshot"
         for idx, img_str in enumerate(getattr(example, "input_images", []) or []):
             if not img_str:
@@ -180,7 +181,7 @@ class ExtractionExecutor:
         if not output_text:
             output_data = getattr(example, "output_data", {}) or {}
             output_text = json.dumps(output_data, ensure_ascii=False)
-        return {"role": "assistant", "content": f"Example Output:\n{output_text}"}
+        return {"role": "assistant", "content": f"Few-shot Example Output:\n{output_text}"}
 
     def _image_string_to_url(self, img_str: str, owner_id: str, idx: int) -> str | None:
         """把 few-shot 图片字符串（文件路径或 URI）转成 data URL 或 URI。

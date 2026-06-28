@@ -151,7 +151,7 @@ def test_multimodal_fewshot_uses_conversation_turns_with_inline_images():
     types_1 = [p["type"] for p in ex1_user["content"]]
     assert types_1.count("text") == 1
     assert types_1.count("image_url") == 1
-    assert "Example Input" in ex1_user["content"][0]["text"]
+    assert "Few-shot Example Input" in ex1_user["content"][0]["text"]
     assert ex1_user["content"][1]["image_url"]["url"] == "https://example.test/ex1.png"
     assert msgs[2]["role"] == "assistant"
     assert "dog" in msgs[2]["content"]

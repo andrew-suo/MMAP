@@ -482,7 +482,14 @@ class FewshotOptimizationPhase:
                 id=f"fewshot_{sample_id}",
                 sample_id=sample_id,
                 input_text=str(spec.input),
-                input_images=[asset.uri or asset.local_path or "" for asset in spec.assets],
+                input_images=[
+                    img for img in (
+                        asset.uri or asset.local_path or ""
+                        for asset in spec.assets
+                        if asset.type == "image"
+                    )
+                    if img
+                ],
                 output_text=str(spec.ground_truth),
                 output_data=spec.ground_truth,
             )
@@ -503,7 +510,14 @@ class FewshotOptimizationPhase:
                     id=f"fewshot_{sample_id}",
                     sample_id=sample_id,
                     input_text=str(spec.input),
-                    input_images=[asset.uri or asset.local_path or "" for asset in spec.assets],
+                    input_images=[
+                    img for img in (
+                        asset.uri or asset.local_path or ""
+                        for asset in spec.assets
+                        if asset.type == "image"
+                    )
+                    if img
+                ],
                     output_text=str(spec.ground_truth),
                     output_data=spec.ground_truth,
                 )

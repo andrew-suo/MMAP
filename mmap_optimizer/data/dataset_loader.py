@@ -18,11 +18,15 @@ def _read_jsonl(path: str | Path) -> list[dict[str, Any]]:
 
 
 def load_sample_specs(path: str | Path) -> list[SampleSpec]:
-    """从文件加载样本规格列表。"""
+    """从文件加载样本规格列表。
+
+    数据集图片入口统一为 ``assets``。单图样本通常包含 1 个图片资产，
+    多图样本则在同一个 ``assets`` 数组中按顺序提供多张图片。
+    """
     rows = _read_jsonl(path)
     specs = []
     for row in rows:
-        # 处理 assets
+        # 处理 assets：保留原始顺序，作为多图样本的输入顺序。
         assets = []
         if "assets" in row:
             for asset_data in row["assets"]:
@@ -82,7 +86,7 @@ class DatasetLoader:
         else:
             raise ValueError(f"Unsupported dataset format: {self.format}")
 
-        # 如果有 image_root，补全资产的 local_path
+        # 如果有 image_root，逐个补全资产的 local_path。
         if self.image_root:
             for spec in specs:
                 for asset in spec.assets:

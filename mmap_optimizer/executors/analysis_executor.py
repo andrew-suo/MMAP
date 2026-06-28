@@ -30,7 +30,7 @@ class AnalysisExecutor:
     """真实分析执行器（盲评模式），接入 ModelClient。
 
     盲评模式特点：
-    - 使用多模态调用（complete_multimodal），传入图片
+    - 使用多模态调用（complete_multimodal），传入单图或多图
     - 不传入 ground truth，仅基于图片和抽取结果判断
     - 不生成 patch_suggestion，patch 由 PatchGenerationExecutor 生成
     """
@@ -227,7 +227,10 @@ class AnalysisExecutor:
         sample_spec: SampleSpec,
         sample_set: SampleSet | None = None,
     ) -> tuple[list[dict[str, Any]], list[SampleAsset]]:
-        """构建盲评分析消息（多模态，不带 GT）。"""
+        """构建盲评分析消息（多模态，不带 GT）。
+
+        若样本包含多张图，模型应把它们视为同一个 sample 的联合证据。
+        """
         system_content = self.renderer.render_system_message(analysis_prompt)
         extraction_prompt_text = self.renderer.render(extraction_prompt)
 
@@ -365,7 +368,7 @@ class AnalysisExecutor:
         ], assets
 
     def _build_assets(self, sample_spec: SampleSpec) -> list[SampleAsset]:
-        """构建模型客户端可消费的图片资产列表。"""
+        """构建模型客户端可消费的图片资产列表，保留多图顺序。"""
         return [asset for asset in sample_spec.assets if asset.type == "image"]
 
     def _parse_judgement(self, raw_output: str | None) -> dict[str, Any]:

@@ -265,7 +265,12 @@ class SampleOptimizationTrajectory:
 
 @dataclass
 class SampleAsset:
-    """样本资产（如图片）。"""
+    """样本资产（如图片）。
+
+    同一个 ``SampleSpec`` 可以包含 0/1/N 个资产。对于多图样本，
+    ``assets`` 数组顺序就是模型看到的图片顺序；若未来需要主图/辅图等角色，
+    应通过 ``metadata`` 扩展而不是新增并行字段。
+    """
     id: str
     sample_id: str
     type: str = "image"
@@ -300,7 +305,11 @@ class SampleAsset:
 
 @dataclass
 class SampleSpec:
-    """静态样本事实，不随优化过程变化。"""
+    """静态样本事实，不随优化过程变化。
+
+    ``assets`` 表示该样本的一组多模态输入。单图样本和多图样本都使用同一字段：
+    标签与 ``ground_truth`` 作用于整个 sample，而不是某一张独立图片。
+    """
     id: str
     input: dict[str, Any]
     ground_truth: dict[str, Any]

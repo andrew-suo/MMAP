@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..core.progress import NullProgressReporter, ProgressReporter
 from ..stages.extraction_prompt_optimization import ExtractionResult
 from ..patch.types import PatchTestRecord, ToxicityReport
 from ..data.sample import SampleBatch, SampleSet, SampleState
@@ -38,6 +39,7 @@ class ToxicityTestExecutor:
                 如果未提供，内部创建默认实例。
         """
         self.patch_apply_executor = patch_apply_executor or PatchApplyExecutor()
+        self.progress_reporter: ProgressReporter = NullProgressReporter()
 
     def test(
         self,
@@ -128,7 +130,11 @@ class ToxicityTestExecutor:
         patch_test_records: list[PatchTestRecord] = []
 
         if not toxic_sample_ids:
-            for patch in sorted_patches:
+            for patch in self.progress_reporter.iter(
+                sorted_patches,
+                desc="Toxicity testing patches",
+                total=len(sorted_patches),
+            ):
                 patch.status = "candidate_safe"
                 patch.rejection_reason = None
                 safe_patches.append(patch)
@@ -172,7 +178,11 @@ class ToxicityTestExecutor:
             for result in extraction_results:
                 extraction_result_map[result.sample_id] = result
 
-        for patch in sorted_patches:
+        for patch in self.progress_reporter.iter(
+            sorted_patches,
+            desc="Toxicity testing patches",
+            total=len(sorted_patches),
+        ):
             trial_prompt, _ = self.patch_apply_executor.apply(cumulative_prompt, [patch])
 
             broken_found = False
@@ -181,27 +191,32 @@ class ToxicityTestExecutor:
             fixed_sample_ids: list[str] = []
             stop_reason: str | None = None
 
-            for sample_id in toxic_sample_ids:
-                tested_sample_ids.append(sample_id)
+            with self.progress_reporter.progress(
+                total=len(toxic_sample_ids),
+                desc=f"Patch {patch.id}",
+            ) as bar:
+                for sample_id in toxic_sample_ids:
+                    tested_sample_ids.append(sample_id)
 
-                is_broken = self._test_single_sample(
-                    mode=mode,
-                    trial_prompt=trial_prompt,
-                    sample_id=sample_id,
-                    sample_set=sample_set,
-                    extraction_executor=extraction_executor,
-                    evaluation_executor=evaluation_executor,
-                    analysis_executor=analysis_executor,
-                    extraction_prompt=extraction_prompt,
-                    extraction_result_map=extraction_result_map,
-                )
+                    is_broken = self._test_single_sample(
+                        mode=mode,
+                        trial_prompt=trial_prompt,
+                        sample_id=sample_id,
+                        sample_set=sample_set,
+                        extraction_executor=extraction_executor,
+                        evaluation_executor=evaluation_executor,
+                        analysis_executor=analysis_executor,
+                        extraction_prompt=extraction_prompt,
+                        extraction_result_map=extraction_result_map,
+                    )
+                    bar.update(1)
 
-                if is_broken:
-                    broken_sample_ids.append(sample_id)
-                    broken_found = True
-                    if early_stop:
-                        stop_reason = "EARLY_STOP_BROKEN"
-                        break
+                    if is_broken:
+                        broken_sample_ids.append(sample_id)
+                        broken_found = True
+                        if early_stop:
+                            stop_reason = "EARLY_STOP_BROKEN"
+                            break
 
             if broken_found:
                 patch.status = "rejected"

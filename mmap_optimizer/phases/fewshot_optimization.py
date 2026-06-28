@@ -504,7 +504,11 @@ class FewshotOptimizationPhase:
         # 构造 few-shot examples
         examples: list[FewshotExample] = []
 
-        for sample_id in selected_ids:
+        for sample_id in self.progress.iter(
+            selected_ids,
+            desc="Building few-shot examples",
+            total=len(selected_ids),
+        ):
             spec = self.sample_set.specs.get(sample_id)
             if spec is None:
                 continue

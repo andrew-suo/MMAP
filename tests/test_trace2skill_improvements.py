@@ -996,6 +996,29 @@ def test_merge_executor_rejects_invalid_provenance_output(monkeypatch):
     assert report.invalid_provenance_patch_ids == ["unknown"]
 
 
+def test_merge_executor_repairs_missing_provenance_for_single_group_output(monkeypatch):
+    from mmap_optimizer.model.client import ModelResponse
+
+    class _MissingProvenanceClient:
+        def complete(self, messages, model_config=None, response_format=None):
+            return ModelResponse(
+                raw_output='[{"target_section":"task","op":"append_to_section","content":"merged content","rationale":"merged rationale"}]'
+            )
+
+    patch = ExtractionPatch("p1", "task", "append_to_section", "A", "r", ["s1"])
+    merged, report = MergeExecutor(model_client=_MissingProvenanceClient()).merge(
+        patches=[patch],
+        prompt=_prompt(),
+        sample_set=None,
+    )
+
+    assert len(merged) == 1
+    assert merged[0].metadata["source_patch_ids"] == ["p1"]
+    assert merged[0].source_sample_ids == ["s1"]
+    assert report.invalid_provenance_patch_ids == []
+    assert report.merged_patch_count == 1
+
+
 def test_extraction_stage_records_merge_dropped_patch_attempt():
     from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
 

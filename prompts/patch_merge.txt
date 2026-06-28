@@ -42,6 +42,8 @@
 - 单例 patch 只有在 reasoning 说明清楚且边界风险明确时保留。
 - 合并时可以精炼 `content`，但不得改变原 patch 的修复意图。
 - 不要输出空泛规则，例如“更仔细地检查”“注意准确性”。
+- 每条输出 patch 必须保留 `source_patch_ids`，值为本条合并结果实际覆盖的输入 patch id 列表。
+- 如果多条输入 patch 被合并成一条输出 patch，`source_patch_ids` 必须包含全部被吸收的输入 patch id。
 
 ## 三、技术硬约束
 - 优先输出 `append_to_section`。
@@ -57,12 +59,18 @@
 
 [
   {{
+    "id": "merged_patch_id",
+    "source_patch_ids": ["input_patch_id_1", "input_patch_id_2"],
+    "source_sample_ids": ["sample_1", "sample_2"],
     "op": "append_to_section",
     "target_section": "section_id",
     "content": "合并、去重、泛化后的新增规则或检查步骤",
     "reasoning": "说明该 patch 是保留、去重、泛化、冲突消解中的哪一种，以及覆盖了哪些原始意图"
   }},
   {{
+    "id": "merged_patch_id_2",
+    "source_patch_ids": ["input_patch_id_3"],
+    "source_sample_ids": ["sample_3"],
     "op": "replace_in_section",
     "target_section": "section_id",
     "old_text": "必须逐字复制当前 prompt 中的原文",

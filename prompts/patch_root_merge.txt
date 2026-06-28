@@ -27,6 +27,7 @@
 * **微调优先 (Modify)**：发现跨 Section 冲突时，必须根据 Prompt 全局意图对冲突补丁进行微调（合并/修正），使其逻辑达成完美闭环，**严禁盲目直接删除**。
 * **严禁滥杀**：绝对禁止删除或缩减任何无冲突的、针对特定边界情况的独立补丁（Unique Patches）。
 * **严禁臆造**：绝对禁止新增任何与当前输入补丁无关的全新修改项。
+* **保留 provenance**：每条输出 patch 必须保留 `source_patch_ids`，标明它继承自哪些输入 patch id；如果只是微调文本，也必须保留原 provenance。
 
 ---
 
@@ -36,6 +37,9 @@
 ```json
 [
   {{
+    "id": "root_merged_patch_id",
+    "source_patch_ids": ["merged_patch_id", "merged_patch_id_2"],
+    "source_sample_ids": ["sample_1", "sample_2"],
     "op": "append_to_section",
     "target_section": "## Section Name",
     "content": "清洗或对齐后的内容",

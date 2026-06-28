@@ -17,6 +17,7 @@ MMAP Optimizer 是一个面向多模态信息抽取任务的 Prompt 自动优化
 - [项目结构](#项目结构)
 - [测试](#测试)
 - [开发说明](#开发说明)
+- [Correctness 审计](#correctness-审计)
 
 ## 核心能力
 
@@ -324,6 +325,12 @@ git diff --check
 ```
 
 ## 开发说明
+
+## Correctness 审计
+
+项目把 correctness 检查聚焦到“状态真相如何产生、如何落盘、如何被下一轮消费”这条主链。
+更完整的字段分层、writer ownership 与 mock/real 对齐检查可见
+`docs/correctness_audit.md`。
 
 - 默认配置优先保持 mock 可运行，方便本地验证流程和 artifact。
 - 真实模型调用通过 `models.*` 配置控制，`--no-mock` 会显式禁止 mock fallback。

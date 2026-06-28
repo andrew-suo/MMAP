@@ -63,7 +63,14 @@ class _MockExtractionExecutor:
 
 
 class _MockEvaluationExecutor:
-    """Mock 评估执行器。"""
+    """Mock 评估执行器。
+
+    语义上尽量与真实 EvaluationExecutor 对齐：在提供 ``sample_state`` 时
+    同步更新 extraction 相关的长期状态，避免 mock / real 路径出现状态层分叉。
+    """
+
+    def __init__(self) -> None:
+        self._delegate = EvaluationExecutor()
 
     def evaluate(
         self,
@@ -71,11 +78,17 @@ class _MockEvaluationExecutor:
         ground_truth: dict[str, Any],
         sample_state: SampleState | None = None,
     ) -> EvalRecord:
+        record = self._delegate.evaluate(
+            extraction_result,
+            ground_truth,
+            sample_state=sample_state,
+        )
         return EvalRecord(
-            sample_id=extraction_result.sample_id,
-            extraction_result_id=extraction_result.sample_id,
-            status=extraction_result.status,
-            correct=extraction_result.status == "correct",
+            sample_id=record.sample_id,
+            extraction_result_id=record.extraction_result_id,
+            status=record.status,
+            correct=record.correct,
+            details=record.details,
         )
 
     def evaluate_batch(
@@ -86,8 +99,9 @@ class _MockEvaluationExecutor:
         records: list[EvalRecord] = []
         for result in extraction_results:
             spec = sample_set.specs.get(result.sample_id)
+            sample_state = sample_set.states.get(result.sample_id)
             ground_truth = spec.ground_truth if spec is not None else {}
-            records.append(self.evaluate(result, ground_truth))
+            records.append(self.evaluate(result, ground_truth, sample_state=sample_state))
         return records
 
 

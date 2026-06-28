@@ -6,7 +6,12 @@ from ..data.sample import SampleOptimizationTrajectory, SamplePatchAttempt, Samp
 
 
 class SampleTrajectoryRenderer:
-    """Render compact sample optimization history for model prompts."""
+    """Render compact sample optimization history for model prompts.
+
+    The renderer may attach lightweight cross-prompt context such as
+    ``related_analysis`` for extraction prompts. These lines are display-layer
+    hints for model prompts, not additional source-of-truth state.
+    """
 
     def __init__(self, trajectory_limit: int = 5, patch_limit: int = 8) -> None:
         self.trajectory_limit = trajectory_limit
@@ -82,7 +87,11 @@ class SampleTrajectoryRenderer:
         sample_id: str,
         prompt_type: str | None,
     ) -> list[SampleOptimizationTrajectory]:
-        """Provide lightweight analysis references for extraction-facing history."""
+        """Provide lightweight analysis references for extraction-facing history.
+
+        This is a renderer-only bridge to preserve useful context after
+        trajectory layering. It must not be treated as a primary state model.
+        """
         if prompt_type != "extraction":
             return []
         state = sample_set.states.get(sample_id)

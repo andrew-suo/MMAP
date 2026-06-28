@@ -247,6 +247,57 @@ def test_sample_state_updated_by_real_evaluation():
     assert state_wrong.error_ema > state_ok.error_ema
 
 
+def test_mock_and_real_evaluation_align_on_state_semantics_for_wrong_sample():
+    """测试：mock / real evaluation 对错误样本的状态语义保持一致。"""
+    prompt = make_extraction_prompt()
+
+    sample_set_real, batch_real = make_sample_set(ground_truth={"result": "WRONG_ANSWER"})
+    real_client = MockModelClient()
+    real_extraction = ExtractionExecutor(real_client)
+    real_evaluation = EvaluationExecutor()
+    real_results = real_extraction.execute(prompt, batch_real, sample_set_real)
+    real_evaluation.evaluate_batch(real_results, sample_set_real)
+    real_state = sample_set_real.states["sample_1"]
+
+    sample_set_mock, batch_mock = make_sample_set(ground_truth={"result": "IGNORED"})
+    mock_extraction = _MockExtractionExecutor()
+    mock_evaluation = _MockEvaluationExecutor()
+    mock_results = mock_extraction.execute(prompt, batch_mock, sample_set_mock)
+    mock_results[0].status = "wrong"
+    mock_evaluation.evaluate_batch(mock_results, sample_set_mock)
+    mock_state = sample_set_mock.states["sample_1"]
+
+    assert real_state.last_extraction_status == "wrong"
+    assert mock_state.last_extraction_status == "wrong"
+    assert real_state.error_count == 1
+    assert mock_state.error_count == 1
+    assert real_state.error_ema == mock_state.error_ema == 0.3
+    assert real_state.difficulty_score == mock_state.difficulty_score == 0.3
+
+
+def test_mock_evaluation_derives_wrong_from_content_mismatch():
+    """测试：mock evaluation 也应基于内容比对得出 wrong，而非信任 extraction status。"""
+    sample_set, _ = make_sample_set(ground_truth={"result": "WRONG_ANSWER"})
+    mock_evaluation = _MockEvaluationExecutor()
+    extraction_result = ExtractionResult(
+        sample_id="sample_1",
+        raw_output='{"result":"OK"}',
+        parsed_output={"result": "OK"},
+        status="correct",
+    )
+
+    records = mock_evaluation.evaluate_batch([extraction_result], sample_set)
+    state = sample_set.states["sample_1"]
+
+    assert len(records) == 1
+    assert records[0].status == "wrong"
+    assert records[0].correct is False
+    assert state.last_extraction_status == "wrong"
+    assert state.error_count == 1
+    assert state.error_ema == 0.3
+    assert state.difficulty_score == 0.3
+
+
 # ---------------------------------------------------------------------------
 # SubTask 10.2: AnalysisExecutor 产出真实分析结果
 # ---------------------------------------------------------------------------

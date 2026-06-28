@@ -302,6 +302,15 @@ class ExtractionPromptOptimizationStage:
     def _step2_compute_base_metrics(self) -> None:
         """Step 2: 统计原始 prompt 指标。"""
         if self.evaluation_executor is not None:
+            state_snapshots = {
+                sample_id: (
+                    state.error_count,
+                    state.error_ema,
+                    state.difficulty_score,
+                )
+                for sample_id, state in self.sample_set.states.items()
+                if sample_id in {result.sample_id for result in self.base_extraction_results}
+            }
             self.base_eval_records = self.evaluation_executor.evaluate_batch(
                 self.base_extraction_results, self.sample_set
             )
@@ -318,8 +327,13 @@ class ExtractionPromptOptimizationStage:
             for eval_record in self.base_eval_records:
                 state = self.sample_set.states.get(eval_record.sample_id)
                 if state:
-                    has_error = eval_record.status in ["wrong", "invalid"]
-                    state.update_error(has_error)
+                    if state_snapshots.get(eval_record.sample_id) == (
+                        state.error_count,
+                        state.error_ema,
+                        state.difficulty_score,
+                    ):
+                        has_error = eval_record.status in ["wrong", "invalid"]
+                        state.update_error(has_error)
                     state.last_extraction_status = eval_record.status
                     trajectory = state.get_or_create_trajectory("extraction", self.iteration)
                     trajectory.base_status = self._normalize_extraction_status(eval_record.status)
@@ -780,15 +794,6 @@ class ExtractionPromptOptimizationStage:
             )
             self.metrics.toxic_patch_count = len(toxic_patches)
 
-            for trace in self.sample_set.get_traces_for_iteration(
-                "prompt_optimization", self.iteration
-            ):
-                self._set_extraction_trace_transition(
-                    trace=trace,
-                    fixed_sample_ids=fixed_sample_ids,
-                    broken_sample_ids=broken_sample_ids,
-                    unchanged_wrong_ids=unchanged_wrong_ids,
-                )
             self._record_sample_patch_attempts(
                 patches=self.initial_merged_patches,
                 fixed_sample_ids=fixed_sample_ids,
@@ -855,15 +860,6 @@ class ExtractionPromptOptimizationStage:
                     len(self.rejected_patches) + len(self.initial_merged_patches)
                 )
 
-            for trace in self.sample_set.get_traces_for_iteration(
-                "prompt_optimization", self.iteration
-            ):
-                self._set_extraction_trace_transition(
-                    trace=trace,
-                    fixed_sample_ids=fixed_sample_ids,
-                    broken_sample_ids=broken_sample_ids,
-                    unchanged_wrong_ids=unchanged_wrong_ids,
-                )
             self._record_sample_patch_attempts(
                 patches=self.initial_merged_patches,
                 fixed_sample_ids=fixed_sample_ids,
@@ -949,16 +945,6 @@ class ExtractionPromptOptimizationStage:
             safe_patches=[p.id for p in safe_patches],
             toxic_sample_ids=toxic_sample_ids,
         )
-
-        for trace in self.sample_set.get_traces_for_iteration(
-            "prompt_optimization", self.iteration
-        ):
-            self._set_extraction_trace_transition(
-                trace=trace,
-                fixed_sample_ids=fixed_sample_ids,
-                broken_sample_ids=broken_sample_ids,
-                unchanged_wrong_ids=unchanged_wrong_ids,
-            )
 
         self._record_sample_patch_attempts(
             patches=self.initial_merged_patches,
@@ -1120,6 +1106,35 @@ class ExtractionPromptOptimizationStage:
         transition_by_sample.update({sid: "unchanged_wrong" for sid in unchanged_wrong_ids})
         transition_by_sample.update({sid: "unchanged_correct" for sid in unchanged_correct_ids})
         return transition_by_sample
+
+    def _compute_extraction_transitions(
+        self,
+        base_status_by_sample: dict[str, str],
+        final_status_by_sample: dict[str, str],
+    ) -> tuple[list[str], list[str], list[str], list[str]]:
+        fixed_sample_ids: list[str] = []
+        broken_sample_ids: list[str] = []
+        unchanged_wrong_ids: list[str] = []
+        unchanged_correct_ids: list[str] = []
+
+        for sample_id in self.batch.sample_ids:
+            base_status = base_status_by_sample.get(sample_id)
+            final_status = final_status_by_sample.get(sample_id, base_status)
+            if base_status is None or final_status is None:
+                continue
+
+            base_correct = base_status == "correct"
+            final_correct = final_status == "correct"
+            if not base_correct and final_correct:
+                fixed_sample_ids.append(sample_id)
+            elif base_correct and not final_correct:
+                broken_sample_ids.append(sample_id)
+            elif not base_correct and not final_correct:
+                unchanged_wrong_ids.append(sample_id)
+            else:
+                unchanged_correct_ids.append(sample_id)
+
+        return fixed_sample_ids, broken_sample_ids, unchanged_wrong_ids, unchanged_correct_ids
 
     def _get_or_create_iteration_trace(self, sample_id: str) -> SampleTrace:
         for trace in self.sample_set.get_traces_for_iteration(
@@ -1431,12 +1446,16 @@ class ExtractionPromptOptimizationStage:
 
     def _record_extraction_outcome_history(self) -> None:
         """记录本轮 extraction prompt 最终效果，供 APEX 风格采样使用。"""
-        final_status_by_sample = {
-            result.sample_id: result.status for result in self.final_extraction_results
-        }
-        base_status_by_sample = {
-            result.sample_id: result.status for result in self.base_extraction_results
-        }
+        final_status_by_sample = (
+            {record.sample_id: record.status for record in self.final_eval_records}
+            if self.final_eval_records
+            else {result.sample_id: result.status for result in self.final_extraction_results}
+        )
+        base_status_by_sample = (
+            {record.sample_id: record.status for record in self.base_eval_records}
+            if self.base_eval_records
+            else {result.sample_id: result.status for result in self.base_extraction_results}
+        )
         trace_by_sample = {
             trace.sample_id: trace
             for trace in self.sample_set.get_traces_for_iteration(
@@ -1444,6 +1463,28 @@ class ExtractionPromptOptimizationStage:
             )
         }
         patch_decision = "accepted" if self.accepted_prompt is not None else "no_progress"
+        (
+            fixed_sample_ids,
+            broken_sample_ids,
+            unchanged_wrong_ids,
+            unchanged_correct_ids,
+        ) = self._compute_extraction_transitions(
+            base_status_by_sample=base_status_by_sample,
+            final_status_by_sample=final_status_by_sample,
+        )
+        final_transition_by_sample = self._transition_map(
+            fixed_sample_ids=fixed_sample_ids,
+            broken_sample_ids=broken_sample_ids,
+            unchanged_wrong_ids=unchanged_wrong_ids,
+            unchanged_correct_ids=unchanged_correct_ids,
+        )
+        for trace in trace_by_sample.values():
+            self._set_extraction_trace_transition(
+                trace=trace,
+                fixed_sample_ids=fixed_sample_ids,
+                broken_sample_ids=broken_sample_ids,
+                unchanged_wrong_ids=unchanged_wrong_ids,
+            )
 
         for sample_id in self.batch.sample_ids:
             raw_status = final_status_by_sample.get(sample_id) or base_status_by_sample.get(sample_id)
@@ -1455,22 +1496,25 @@ class ExtractionPromptOptimizationStage:
             if state is None:
                 continue
             state.last_extraction_status = raw_status or state.last_extraction_status
+            trace = trace_by_sample.get(sample_id)
+            if trace is not None:
+                trace.participated_in_extraction = True
+                trace.final_extraction_status = raw_status
+                trace.final_extraction_result_id = sample_id
             trajectory = state.get_or_create_trajectory("extraction", self.iteration)
             if base_status_by_sample.get(sample_id):
                 trajectory.base_status = self._normalize_extraction_status(base_status_by_sample[sample_id])
                 trajectory.base_raw_status = base_status_by_sample[sample_id]
             trajectory.final_status = outcome_status
             trajectory.final_raw_status = raw_status or trajectory.final_raw_status
-            trajectory.sample_transition = (
-                getattr(trace_by_sample.get(sample_id), "extraction_transition", None) or "unknown"
-            )
+            trajectory.sample_transition = final_transition_by_sample.get(sample_id, "unknown")
             state.add_outcome_history(
                 SampleOutcomeHistoryItem(
                     sample_id=sample_id,
                     prompt_type="extraction",
                     iteration=self.iteration,
                     status=outcome_status,
-                    transition=getattr(trace_by_sample.get(sample_id), "extraction_transition", None) or "unknown",
+                    transition=final_transition_by_sample.get(sample_id, "unknown"),
                     selected=True,
                     patch_decision=patch_decision,
                     metadata={"raw_status": raw_status},

@@ -393,6 +393,30 @@ class _EvaluationExecutor:
             for r in results
         ]
 
+    def evaluate(self, extraction_result, ground_truth):
+        return EvalRecord(
+            sample_id=extraction_result.sample_id,
+            extraction_result_id=extraction_result.sample_id,
+            status=extraction_result.status,
+            correct=extraction_result.status == "correct",
+        )
+
+
+class _StatusExtractionExecutor:
+    def __init__(self, statuses):
+        self.statuses = dict(statuses)
+
+    def execute(self, prompt, batch, sample_set):
+        return [
+            ExtractionResult(
+                sample_id=sample_id,
+                raw_output="{}",
+                parsed_output={},
+                status=self.statuses.get(sample_id, "correct"),
+            )
+            for sample_id in batch.sample_ids
+        ]
+
 
 def test_extraction_stage_applies_merged_patch_set_directly():
     from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
@@ -498,6 +522,116 @@ def test_extraction_stage_records_patch_attempt_after_regression_test():
     assert attempt.final_decision == "accepted"
     assert attempt.regression_effect == "fixed"
     assert attempt.toxicity_status in {"not_tested", "tested_safe"}
+
+
+def test_extraction_base_metrics_do_not_double_update_evaluation_state():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec
+    from mmap_optimizer.executors.evaluation_executor import EvaluationExecutor
+
+    sample_set = SampleSet()
+    sample_set.add_spec(
+        SampleSpec(id="s1", input={}, ground_truth={"result": "EXPECTED"})
+    )
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 1, ["s1"], "test"),
+        iteration=1,
+        evaluation_executor=EvaluationExecutor(),
+    )
+    stage.base_extraction_results = [
+        ExtractionResult("s1", '{"result":"ACTUAL"}', {"result": "ACTUAL"}, "correct")
+    ]
+
+    stage._step2_compute_base_metrics()
+
+    state = sample_set.states["s1"]
+    assert state.error_count == 1
+    assert state.error_ema == 0.3
+    assert state.difficulty_score == 0.3
+    assert state.last_extraction_status == "wrong"
+
+
+def test_extraction_base_metrics_updates_state_for_non_mutating_evaluator():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec
+
+    sample_set = SampleSet()
+    sample_set.add_spec(SampleSpec(id="s1", input={}, ground_truth={}))
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 1, ["s1"], "test"),
+        iteration=1,
+        evaluation_executor=_EvaluationExecutor(),
+    )
+    stage.base_extraction_results = [
+        ExtractionResult("s1", "{}", {}, "wrong")
+    ]
+
+    stage._step2_compute_base_metrics()
+
+    state = sample_set.states["s1"]
+    assert state.error_count == 1
+    assert state.error_ema == 0.3
+    assert state.difficulty_score == 0.3
+    assert state.last_extraction_status == "wrong"
+
+
+def test_extraction_final_transition_ignores_rejected_toxic_trial_patch():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState, SampleTrace
+    from mmap_optimizer.executors.toxicity_executor import ToxicityTestExecutor
+
+    sample_set = SampleSet(
+        specs={sid: SampleSpec(id=sid, input={}, ground_truth={}) for sid in ("s1", "s2")},
+        states={sid: SampleState(sample_id=sid) for sid in ("s1", "s2")},
+        traces=[
+            SampleTrace("s1", "prompt_optimization", 7, selected=True),
+            SampleTrace("s2", "prompt_optimization", 7, selected=True),
+        ],
+    )
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 7, ["s1", "s2"], "test"),
+        iteration=7,
+        patch_apply_executor=_ApplyExecutor(),
+        extraction_executor=_StatusExtractionExecutor({"s2": "wrong"}),
+        evaluation_executor=_EvaluationExecutor(),
+        toxicity_test_executor=ToxicityTestExecutor(),
+    )
+    stage.base_eval_records = [
+        EvalRecord("s1", "s1", "wrong", False),
+        EvalRecord("s2", "s2", "correct", True),
+    ]
+    stage.patched_eval_records = [
+        EvalRecord("s1", "s1", "correct", True),
+        EvalRecord("s2", "s2", "wrong", False),
+    ]
+    stage.base_extraction_results = [
+        ExtractionResult("s1", "{}", {}, "wrong"),
+        ExtractionResult("s2", "{}", {}, "correct"),
+    ]
+    stage.initial_merged_patches = [
+        ExtractionPatch("p-toxic", "task", "append_to_section", "A", "r", ["s1"])
+    ]
+
+    stage._step7_regression_and_toxicity_test()
+    stage._step9_final_test_and_metrics()
+
+    s1_outcome = sample_set.states["s1"].get_outcome_history("extraction")[0]
+    s2_outcome = sample_set.states["s2"].get_outcome_history("extraction")[0]
+    assert stage.accepted_prompt is None
+    assert s1_outcome.transition == "unchanged_wrong"
+    assert s1_outcome.status == "fail"
+    assert s2_outcome.transition == "unchanged_correct"
+    assert s2_outcome.status == "pass"
+    assert sample_set.states["s2"].historical_broken_count == 0
+    attempt = sample_set.states["s1"].get_optimization_trajectory("extraction")[0].latest_patch_attempts()[0]
+    assert attempt.regression_effect == "fixed"
+    assert attempt.final_decision == "toxic"
 
 
 def test_sample_trace_keeps_extraction_and_analysis_transitions_separate():
@@ -791,6 +925,58 @@ def test_analysis_stage_records_patch_attempt_after_regression_test():
     assert attempt.final_decision == "accepted"
     assert attempt.regression_effect == "fixed"
     assert attempt.toxicity_status in {"not_tested", "tested_safe"}
+
+
+def test_analysis_final_transition_ignores_rejected_trial_patch():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState, SampleTrace
+    from mmap_optimizer.patch.types import AnalysisPatch
+
+    sample_set = SampleSet(
+        specs={sid: SampleSpec(id=sid, input={}, ground_truth={}) for sid in ("s1", "s2")},
+        states={sid: SampleState(sample_id=sid) for sid in ("s1", "s2")},
+        traces=[
+            SampleTrace("s1", "prompt_optimization", 8, selected=True),
+            SampleTrace("s2", "prompt_optimization", 8, selected=True),
+        ],
+    )
+    stage = AnalysisPromptOptimizationStage(
+        analysis_prompt=_prompt(),
+        extraction_results=[
+            ExtractionResult("s1", "{}", {}, "wrong"),
+            ExtractionResult("s2", "{}", {}, "correct"),
+        ],
+        base_analysis_results=[
+            AnalysisResult("s1", {}, False),
+            AnalysisResult("s2", {}, True),
+        ],
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 8, ["s1", "s2"], "test"),
+        iteration=8,
+        patch_apply_executor=_ApplyExecutor(),
+        analysis_executor=None,
+    )
+    stage.patched_analysis_results = [
+        AnalysisResult("s1", {}, True),
+        AnalysisResult("s2", {}, False),
+    ]
+    stage.trial_prompt = _prompt()
+    stage.initial_merged_patches = [
+        AnalysisPatch("a-toxic", "task", "append_to_section", "A", "r", ["s1"])
+    ]
+
+    stage._step6_regression_and_toxicity_test()
+    stage._step8_final_test_and_metrics()
+
+    s1_outcome = sample_set.states["s1"].get_outcome_history("analysis")[0]
+    s2_outcome = sample_set.states["s2"].get_outcome_history("analysis")[0]
+    assert stage.accepted_prompt is None
+    assert s1_outcome.transition == "unchanged_wrong"
+    assert s1_outcome.status == "fail"
+    assert s2_outcome.transition == "unchanged_correct"
+    assert s2_outcome.status == "pass"
+    attempt = sample_set.states["s1"].get_optimization_trajectory("analysis")[0].latest_patch_attempts()[0]
+    assert attempt.regression_effect == "fixed"
+    assert attempt.final_decision == "toxic"
 
 
 def test_analysis_apply_no_change_marks_patch_ineffective_and_stops_consumption():

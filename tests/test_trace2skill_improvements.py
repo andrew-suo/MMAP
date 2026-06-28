@@ -1019,6 +1019,64 @@ def test_merge_executor_repairs_missing_provenance_for_single_group_output(monke
     assert report.merged_patch_count == 1
 
 
+def test_merge_executor_uses_current_patch_ids_for_final_merge_provenance():
+    patch = ExtractionPatch(
+        "safe_patch_1",
+        "task",
+        "append_to_section",
+        "A",
+        "r",
+        ["s1"],
+        metadata={"source_patch_ids": ["draft_patch_1", "draft_patch_2"]},
+    )
+
+    merge_dict = MergeExecutor()._patch_to_merge_dict(patch)
+
+    assert merge_dict["id"] == "safe_patch_1"
+    assert merge_dict["source_patch_ids"] == ["safe_patch_1"]
+    assert merge_dict["upstream_source_patch_ids"] == ["draft_patch_1", "draft_patch_2"]
+
+
+def test_merge_report_excludes_ids_that_survive_from_dropped_list(monkeypatch):
+    from mmap_optimizer.patch.tree_reduce import ParallelPatchMerger
+
+    def _same_id_merge(self, patches, prompt_structure):
+        return [
+            {
+                "id": "p1",
+                "source_patch_ids": ["p1"],
+                "target_section": "task",
+                "op": "append_to_section",
+                "content": "merged",
+                "rationale": "kept",
+                "source_sample_ids": ["s1"],
+            }
+        ]
+
+    monkeypatch.setattr(ParallelPatchMerger, "merge", _same_id_merge)
+
+    class _RejectingValidator:
+        def validate_batch(self, merged_patches, prompt, sample_set):
+            rejected = [
+                ExtractionPatch("p1", "task", "append_to_section", "invalid", "bad", ["s1"])
+            ]
+            return [], rejected
+
+    input_patch = ExtractionPatch("p1", "task", "append_to_section", "A", "r", ["s1"])
+    merged, report = MergeExecutor(
+        patch_validator=_RejectingValidator(),
+        model_client=object(),
+    ).merge(
+        patches=[input_patch],
+        prompt=_prompt(),
+        sample_set=object(),
+    )
+
+    assert merged == []
+    assert report.merged_patch_ids == []
+    assert report.dropped_patch_ids == ["p1"]
+
+
 def test_extraction_stage_records_merge_dropped_patch_attempt():
     from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
 

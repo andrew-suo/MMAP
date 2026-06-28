@@ -162,7 +162,12 @@ class MergeExecutor:
         dropped_patches = deduped_dropped
 
         merged_patch_ids = [getattr(p, "id", "") for p in merged_patches]
-        dropped_patch_ids = [getattr(p, "id", "") for p in dropped_patches]
+        merged_patch_id_set = {patch_id for patch_id in merged_patch_ids if patch_id}
+        dropped_patch_ids = [
+            getattr(p, "id", "")
+            for p in dropped_patches
+            if getattr(p, "id", "") not in merged_patch_id_set
+        ]
 
         report = PatchMergeReport(
             id=f"merge_report_{prompt.id}",
@@ -298,16 +303,22 @@ class MergeExecutor:
 
     def _patch_to_merge_dict(self, patch: Any) -> dict[str, Any]:
         """将 ExtractionPatch / AnalysisPatch 转换为合并用的 dict。"""
+        patch_id = getattr(patch, "id", "")
+        metadata = getattr(patch, "metadata", {}) or {}
+        upstream_source_patch_ids = metadata.get("source_patch_ids", [patch_id])
+        if not isinstance(upstream_source_patch_ids, list):
+            upstream_source_patch_ids = [patch_id]
         return {
-            "id": getattr(patch, "id", ""),
+            "id": patch_id,
             "op": getattr(patch, "operation_type", ""),
             "target_section": getattr(patch, "target_section_id", ""),
             "content": getattr(patch, "content", ""),
             "rationale": getattr(patch, "rationale", ""),
             "source_sample_ids": list(getattr(patch, "source_sample_ids", [])),
-            "source_patch_ids": list(
-                getattr(patch, "metadata", {}).get("source_patch_ids", [getattr(patch, "id", "")])
-            ),
+            "source_patch_ids": [patch_id] if patch_id else [],
+            "upstream_source_patch_ids": [
+                str(item) for item in upstream_source_patch_ids if str(item)
+            ],
         }
 
     def _dict_to_patch(
@@ -320,6 +331,11 @@ class MergeExecutor:
         """将合并后的 dict 转换回 patch 对象。"""
         metadata = dict(d.get("metadata", {}))
         metadata["source_patch_ids"] = list(source_patch_ids)
+        upstream_source_patch_ids = d.get("upstream_source_patch_ids")
+        if isinstance(upstream_source_patch_ids, list) and upstream_source_patch_ids:
+            metadata["upstream_source_patch_ids"] = [
+                str(item) for item in upstream_source_patch_ids if str(item)
+            ]
         return patch_class(
             id=patch_id,
             target_section_id=d.get("target_section", d.get("target_section_id", "")),

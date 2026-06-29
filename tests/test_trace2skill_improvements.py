@@ -75,6 +75,7 @@ def test_semantic_patch_draft_translates_to_strict_patch():
     assert draft.status == "translated"
     assert patch.target_section_id == "task"
     assert patch.operation_type == "append_to_section"
+    assert patch.id == "patch_extraction_s1_1"
     assert patch.metadata["semantic_draft_id"] == "semantic_1"
     assert patch.metadata["translation_status"] == "translated"
 
@@ -1058,6 +1059,7 @@ def test_merge_executor_uses_current_patch_ids_for_final_merge_provenance():
 
     assert merge_dict["id"] == "safe_patch_1"
     assert merge_dict["source_patch_ids"] == ["safe_patch_1"]
+    assert merge_dict["parent_patch_ids"] == ["safe_patch_1"]
     assert merge_dict["upstream_source_patch_ids"] == ["draft_patch_1", "draft_patch_2"]
 
 
@@ -1070,25 +1072,54 @@ def test_parallel_patch_merger_binds_group_provenance_for_all_outputs():
         ],
         input_group=[
             {
-                "id": "p1",
+                "id": "layer_0_merged_input_a",
                 "source_sample_ids": ["s1"],
-                "source_patch_ids": ["draft_1"],
+                "source_patch_ids": ["p1", "p2"],
+                "upstream_source_patch_ids": ["draft_1"],
             },
             {
-                "id": "p2",
+                "id": "layer_0_merged_input_b",
                 "source_sample_ids": ["s2"],
-                "source_patch_ids": ["draft_2"],
+                "source_patch_ids": ["p3"],
+                "upstream_source_patch_ids": ["draft_2"],
             },
         ],
         layer=0,
     )
 
-    assert [item["source_patch_ids"] for item in merged] == [["p1", "p2"], ["p1", "p2"]]
+    assert [item["source_patch_ids"] for item in merged] == [["p1", "p2", "p3"], ["p1", "p2", "p3"]]
     assert [item["source_sample_ids"] for item in merged] == [["s1", "s2"], ["s1", "s2"]]
+    assert [item["parent_patch_ids"] for item in merged] == [
+        ["layer_0_merged_input_a", "layer_0_merged_input_b"],
+        ["layer_0_merged_input_a", "layer_0_merged_input_b"],
+    ]
     assert [item["upstream_source_patch_ids"] for item in merged] == [
         ["draft_1", "draft_2"],
         ["draft_1", "draft_2"],
     ]
+
+
+def test_parallel_patch_merger_generates_code_managed_unique_node_ids():
+    merger = object.__new__(ParallelPatchMerger)
+    merged = merger._backfill_group_provenance(
+        merged_patches=[
+            {"id": "model_supplied_id", "content": "a", "target_section": "task", "op": "append_to_section"},
+            {"content": "b", "target_section": "task", "op": "append_to_section"},
+        ],
+        input_group=[
+            {
+                "id": "p1",
+                "source_sample_ids": ["s1"],
+                "source_patch_ids": ["p1"],
+            },
+        ],
+        layer=1,
+    )
+
+    assert merged[0]["id"].startswith("layer_1_merged_")
+    assert merged[1]["id"].startswith("layer_1_merged_")
+    assert merged[0]["id"] != "model_supplied_id"
+    assert merged[0]["id"] != merged[1]["id"]
 
 
 def test_merge_report_excludes_ids_that_survive_from_dropped_list(monkeypatch):

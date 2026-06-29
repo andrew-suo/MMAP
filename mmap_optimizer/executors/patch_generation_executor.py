@@ -820,8 +820,6 @@ class PatchGenerationExecutor:
         sample_id: str,
         semantic_draft_id: Any = None,
     ) -> str:
-        if semantic_draft_id:
-            return f"{patch_id_prefix}_{sample_id}_{semantic_draft_id}"
         counter_key = f"{patch_id_prefix}:{sample_id}"
         next_index = self._patch_id_counters.get(counter_key, 0) + 1
         self._patch_id_counters[counter_key] = next_index

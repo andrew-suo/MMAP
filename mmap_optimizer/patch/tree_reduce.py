@@ -12,6 +12,7 @@ Root Merge 进行跨 section 一致性审查。
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
 import time
@@ -360,28 +361,50 @@ class ParallelPatchMerger:
             for sample_id in patch.get("source_sample_ids", [])
             if str(sample_id)
         })
-        upstream_source_patch_ids = sorted({
+        authoritative_source_patch_ids = sorted({
             str(source_patch_id)
             for patch in input_group
             for source_patch_id in patch.get("source_patch_ids", [])
             if str(source_patch_id)
         })
+        if not authoritative_source_patch_ids:
+            authoritative_source_patch_ids = list(input_patch_ids)
+        upstream_source_patch_ids = sorted({
+            str(source_patch_id)
+            for patch in input_group
+            for source_patch_id in patch.get("upstream_source_patch_ids", [])
+            if str(source_patch_id)
+        })
         if not upstream_source_patch_ids:
-            upstream_source_patch_ids = list(input_patch_ids)
+            upstream_source_patch_ids = list(authoritative_source_patch_ids)
 
         for idx, merged in enumerate(merged_patches, start=1):
-            if not merged.get("id"):
-                scope = "root" if layer < 0 else f"layer_{layer}"
-                merged["id"] = f"{scope}_merged_{idx}"
-
-            if input_patch_ids:
-                merged["source_patch_ids"] = list(input_patch_ids)
+            merged["id"] = self._merged_patch_id(
+                layer=layer,
+                parent_patch_ids=input_patch_ids,
+                output_index=idx,
+            )
+            if authoritative_source_patch_ids:
+                merged["source_patch_ids"] = list(authoritative_source_patch_ids)
             if input_sample_ids:
                 merged["source_sample_ids"] = list(input_sample_ids)
+            if input_patch_ids:
+                merged["parent_patch_ids"] = list(input_patch_ids)
             if upstream_source_patch_ids:
                 merged["upstream_source_patch_ids"] = list(upstream_source_patch_ids)
 
         return merged_patches
+
+    def _merged_patch_id(
+        self,
+        layer: int,
+        parent_patch_ids: list[str],
+        output_index: int,
+    ) -> str:
+        scope = "root" if layer < 0 else f"layer_{layer}"
+        digest_source = "||".join(parent_patch_ids) if parent_patch_ids else scope
+        digest = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()[:8]
+        return f"{scope}_merged_{digest}_{output_index}"
 
     # ------------------------------------------------------------------
     # LLM 调用与 JSON 解析

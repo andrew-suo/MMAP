@@ -33,6 +33,8 @@ class MergeExecutor:
     ``rejection_reason="MERGED_PATCH_VALIDATION_FAILED"``。
     """
 
+    PROVENANCE_SCHEMA_VERSION = "v3"
+
     def __init__(
         self,
         patch_validator: PatchValidator | None = None,
@@ -108,6 +110,7 @@ class MergeExecutor:
         fallback_used: bool = False
         merge_reason: str = ""
         invalid_provenance_patch_ids: list[str] = []
+        pre_validation_merged_snapshot: list[dict[str, Any]] = []
 
         self.progress_reporter.step(
             f"    [Merge] strategy={merge_strategy} input_patches={len(patches)}"
@@ -115,7 +118,7 @@ class MergeExecutor:
 
         if self.model_client is not None and merge_strategy == "tree_merge":
             try:
-                merged_patches, dropped_patches, conflict_count, conflict_patch_ids, conflicts, merge_reason, invalid_provenance_patch_ids = (
+                merged_patches, dropped_patches, conflict_count, conflict_patch_ids, conflicts, merge_reason, invalid_provenance_patch_ids, pre_validation_merged_snapshot = (
                     self._parallel_merge(patches, prompt)
                 )
             except Exception as exc:
@@ -178,6 +181,8 @@ class MergeExecutor:
             conflicts=conflicts,
             metadata={
                 "strategy": merge_strategy,
+                "provenance_schema_version": self.PROVENANCE_SCHEMA_VERSION,
+                "pre_validation_merged_snapshot": pre_validation_merged_snapshot,
             },
             strategy=merge_strategy,
             dropped_patch_count=len(dropped_patches),
@@ -207,7 +212,7 @@ class MergeExecutor:
         self,
         patches: list,
         prompt: StructuredPrompt,
-    ) -> tuple[list, list, int, list[str], list[dict[str, Any]], str, list[str]]:
+    ) -> tuple[list, list, int, list[str], list[dict[str, Any]], str, list[str], list[dict[str, Any]]]:
         """调用 ParallelPatchMerger 进行 LLM 并行合并。
 
         Returns:
@@ -244,7 +249,9 @@ class MergeExecutor:
         merged_patches: list = []
         dropped_patches: list = []
         invalid_provenance_patch_ids: list[str] = []
+        pre_validation_merged_snapshot: list[dict[str, Any]] = []
         for d in merged_dicts:
+            pre_validation_merged_snapshot.append(self._merge_debug_snapshot(d))
             source_patch_ids = self._normalize_source_patch_ids(
                 d.get("source_patch_ids"),
                 fallback_patch_id=d.get("id", ""),
@@ -291,6 +298,7 @@ class MergeExecutor:
             conflicts,
             merge_reason,
             invalid_provenance_patch_ids,
+            pre_validation_merged_snapshot,
         )
 
     def _build_prompt_structure(self, prompt: StructuredPrompt) -> str:
@@ -420,6 +428,26 @@ class MergeExecutor:
             "status": getattr(patch, "status", ""),
             "rejection_reason": getattr(patch, "rejection_reason", None),
         }
+
+    def _merge_debug_snapshot(self, merged_dict: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": str(merged_dict.get("id", "")),
+            "source_patch_ids": self._list_str_field(merged_dict.get("source_patch_ids")),
+            "parent_patch_ids": self._list_str_field(merged_dict.get("parent_patch_ids")),
+            "upstream_source_patch_ids": self._list_str_field(
+                merged_dict.get("upstream_source_patch_ids")
+            ),
+            "source_sample_ids": self._list_str_field(merged_dict.get("source_sample_ids")),
+            "target_section": str(
+                merged_dict.get("target_section", merged_dict.get("target_section_id", ""))
+            ),
+        }
+
+    @staticmethod
+    def _list_str_field(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value if str(item)]
 
 
 __all__ = ["MergeExecutor"]

@@ -1162,6 +1162,36 @@ def test_merge_report_excludes_ids_that_survive_from_dropped_list(monkeypatch):
     assert report.dropped_patch_ids == ["p1"]
 
 
+def test_multi_layer_tree_merge_keeps_authoritative_source_patch_ids_in_snapshot():
+    from mmap_optimizer.model.client import ModelResponse
+
+    class _SinglePatchMergeClient:
+        def complete(self, messages, model_config=None, response_format=None):
+            return ModelResponse(
+                raw_output='[{"target_section":"task","op":"append_to_section","content":"merged","rationale":"merged"}]'
+            )
+
+    patches = [
+        ExtractionPatch(f"p{i}", "task", "append_to_section", f"content-{i}", "r", [f"s{i}"])
+        for i in range(1, 13)
+    ]
+
+    merged, report = MergeExecutor(model_client=_SinglePatchMergeClient()).merge(
+        patches=patches,
+        prompt=_prompt(),
+        sample_set=None,
+    )
+
+    assert len(merged) == 1
+    assert report.invalid_provenance_patch_ids == []
+    assert report.metadata["provenance_schema_version"] == MergeExecutor.PROVENANCE_SCHEMA_VERSION
+    snapshot = report.metadata["pre_validation_merged_snapshot"]
+    assert len(snapshot) == 1
+    assert set(snapshot[0]["source_patch_ids"]) == {f"p{i}" for i in range(1, 13)}
+    assert all(item.startswith("layer_0_merged_") for item in snapshot[0]["parent_patch_ids"])
+    assert set(merged[0].metadata["source_patch_ids"]) == {f"p{i}" for i in range(1, 13)}
+
+
 def test_extraction_stage_records_merge_dropped_patch_attempt():
     from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
 

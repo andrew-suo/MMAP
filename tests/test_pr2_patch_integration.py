@@ -281,7 +281,7 @@ def test_patch_generation_assigns_unique_ids_for_multiple_suggestions_from_same_
     assert patch1.id != patch2.id
 
 
-def test_patch_generation_uses_semantic_draft_id_in_patch_id_when_available():
+def test_patch_generation_keeps_semantic_draft_id_in_metadata_only():
     executor = PatchGenerationExecutor(model_client=None)
 
     patch = executor._build_patch_from_suggestion(
@@ -297,7 +297,8 @@ def test_patch_generation_uses_semantic_draft_id_in_patch_id_when_available():
         patch_id_prefix="patch_extraction",
     )
 
-    assert patch.id == "patch_extraction_s1_semantic_7"
+    assert patch.id == "patch_extraction_s1_1"
+    assert patch.metadata["semantic_draft_id"] == "semantic_7"
 
 
 def test_patch_generation_resets_per_run_counters():

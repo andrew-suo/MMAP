@@ -305,9 +305,15 @@ class MergeExecutor:
         """将 ExtractionPatch / AnalysisPatch 转换为合并用的 dict。"""
         patch_id = getattr(patch, "id", "")
         metadata = getattr(patch, "metadata", {}) or {}
-        upstream_source_patch_ids = metadata.get("source_patch_ids", [patch_id])
+        upstream_source_patch_ids = metadata.get(
+            "upstream_source_patch_ids",
+            metadata.get("source_patch_ids", [patch_id]),
+        )
+        parent_patch_ids = metadata.get("parent_patch_ids", [patch_id])
         if not isinstance(upstream_source_patch_ids, list):
             upstream_source_patch_ids = [patch_id]
+        if not isinstance(parent_patch_ids, list):
+            parent_patch_ids = [patch_id]
         return {
             "id": patch_id,
             "op": getattr(patch, "operation_type", ""),
@@ -316,6 +322,7 @@ class MergeExecutor:
             "rationale": getattr(patch, "rationale", ""),
             "source_sample_ids": list(getattr(patch, "source_sample_ids", [])),
             "source_patch_ids": [patch_id] if patch_id else [],
+            "parent_patch_ids": [str(item) for item in parent_patch_ids if str(item)],
             "upstream_source_patch_ids": [
                 str(item) for item in upstream_source_patch_ids if str(item)
             ],
@@ -331,6 +338,11 @@ class MergeExecutor:
         """将合并后的 dict 转换回 patch 对象。"""
         metadata = dict(d.get("metadata", {}))
         metadata["source_patch_ids"] = list(source_patch_ids)
+        parent_patch_ids = d.get("parent_patch_ids")
+        if isinstance(parent_patch_ids, list) and parent_patch_ids:
+            metadata["parent_patch_ids"] = [
+                str(item) for item in parent_patch_ids if str(item)
+            ]
         upstream_source_patch_ids = d.get("upstream_source_patch_ids")
         if isinstance(upstream_source_patch_ids, list) and upstream_source_patch_ids:
             metadata["upstream_source_patch_ids"] = [

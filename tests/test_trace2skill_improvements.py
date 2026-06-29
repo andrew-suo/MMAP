@@ -36,6 +36,31 @@ def _prompt() -> StructuredPrompt:
     )
 
 
+def _prompt_with_additional_guidelines() -> StructuredPrompt:
+    return StructuredPrompt(
+        id="prompt_sections",
+        prompt_type="extraction",
+        sections=[
+            PromptSection(
+                id="section_7",
+                title="Additional Guidelines",
+                level=2,
+                content="Guidelines A",
+                mutable=True,
+            ),
+            PromptSection(
+                id="section_14",
+                title="Escalation",
+                level=2,
+                content="Guidelines B",
+                mutable=True,
+            ),
+        ],
+        raw_markdown="## Additional Guidelines\nGuidelines A\n## Escalation\nGuidelines B",
+        version=1,
+    )
+
+
 def test_parse_model_json_output_reports_local_repair_status():
     result = parse_model_json_output("{result: 'OK',}")
 
@@ -1190,6 +1215,48 @@ def test_multi_layer_tree_merge_keeps_authoritative_source_patch_ids_in_snapshot
     assert set(snapshot[0]["source_patch_ids"]) == {f"p{i}" for i in range(1, 13)}
     assert all(item.startswith("layer_0_merged_") for item in snapshot[0]["parent_patch_ids"])
     assert set(merged[0].metadata["source_patch_ids"]) == {f"p{i}" for i in range(1, 13)}
+
+
+def test_merge_executor_normalizes_title_target_section_to_section_id():
+    executor = MergeExecutor()
+    merged_dict = executor._normalize_merged_target_section(
+        {
+            "target_section": "## Additional Guidelines",
+            "content": "merged",
+            "op": "append_to_section",
+        },
+        _prompt_with_additional_guidelines(),
+    )
+
+    assert merged_dict["target_section"] == "section_7"
+    assert merged_dict["normalized_target_section"] == "section_7"
+    assert merged_dict["section_normalization_status"] == "title_mapped"
+
+
+def test_merge_executor_marks_ambiguous_title_target_section_unresolved():
+    prompt = StructuredPrompt(
+        id="prompt_ambiguous",
+        prompt_type="extraction",
+        sections=[
+            PromptSection(id="section_1", title="Additional Guidelines", level=2, content="A", mutable=True),
+            PromptSection(id="section_2", title="Additional Guidelines", level=2, content="B", mutable=True),
+        ],
+        raw_markdown="## Additional Guidelines\nA\n## Additional Guidelines\nB",
+        version=1,
+    )
+    executor = MergeExecutor()
+    merged_dict = executor._normalize_merged_target_section(
+        {
+            "target_section": "## Additional Guidelines",
+            "content": "merged",
+            "op": "append_to_section",
+        },
+        prompt,
+    )
+
+    assert merged_dict["target_section"] == "## Additional Guidelines"
+    assert merged_dict["normalized_target_section"] == ""
+    assert merged_dict["section_normalization_status"] == "ambiguous_title"
 
 
 def test_extraction_stage_records_merge_dropped_patch_attempt():

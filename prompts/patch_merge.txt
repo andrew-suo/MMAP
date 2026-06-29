@@ -34,6 +34,7 @@
 
 ## 一、结构隔离
 - `target_section` 必须来自 Prompt Structure 中已有的 section id。
+- Prompt Structure 中每一行都会给出 `section_id: title`；`target_section` 只能填写 `section_id`，不要填写标题文本或 Markdown header。
 - 带 `[PROTECTED]` 标记的 section 不允许内部编辑；如确需修改，只能使用整体替换类操作。
 - 同一 section 内的新增规则应按判断/执行的自然顺序排列。
 

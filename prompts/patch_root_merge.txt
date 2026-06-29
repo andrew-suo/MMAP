@@ -28,6 +28,7 @@
 * **严禁滥杀**：绝对禁止删除或缩减任何无冲突的、针对特定边界情况的独立补丁（Unique Patches）。
 * **严禁臆造**：绝对禁止新增任何与当前输入补丁无关的全新修改项。
 * **内容优先**：来源记账和 provenance 由外部程序统一绑定；你只需要保证输出 patch 的内容、section 归属与逻辑一致性正确。
+* **section 身份要求**：`target_section` 只能填写 Prompt Structure 中给出的 `section_id`，不要输出标题文本、Markdown header 或自然语言描述。
 
 ---
 
@@ -38,7 +39,7 @@
 [
   {{
     "op": "append_to_section",
-    "target_section": "## Section Name",
+    "target_section": "section_id",
     "content": "清洗或对齐后的内容",
     "reasoning": "【跨 Section 审查说明】：解决了该内容与 XX Section 的冲突/冗余，进行了何种微调"
   }}

@@ -236,6 +236,10 @@ class MergeExecutor:
         )
 
         merged_dicts = merger.merge(patch_dicts, prompt_structure)
+        merged_dicts = [
+            self._normalize_merged_target_section(dict(item), prompt)
+            for item in merged_dicts
+        ]
 
         # 将 dict 转换回 ExtractionPatch / AnalysisPatch
         patch_class_map: dict[str, type] = {}
@@ -304,9 +308,17 @@ class MergeExecutor:
     def _build_prompt_structure(self, prompt: StructuredPrompt) -> str:
         """构建 prompt 结构骨架字符串。"""
         lines: list[str] = []
-        for section in prompt.sections:
+
+        def collect(section: Any, indent: str = "") -> None:
             mutable_tag = "" if section.mutable else " [PROTECTED]"
-            lines.append(f"{section.title}{mutable_tag}")
+            lines.append(
+                f"{indent}- {section.id}: {section.title}{mutable_tag}"
+            )
+            for child in getattr(section, "children", []) or []:
+                collect(child, indent + "  ")
+
+        for section in prompt.sections:
+            collect(section)
         return "\n".join(lines)
 
     def _patch_to_merge_dict(self, patch: Any) -> dict[str, Any]:
@@ -441,6 +453,11 @@ class MergeExecutor:
             "target_section": str(
                 merged_dict.get("target_section", merged_dict.get("target_section_id", ""))
             ),
+            "raw_target_section": str(merged_dict.get("raw_target_section", "")),
+            "normalized_target_section": str(merged_dict.get("normalized_target_section", "")),
+            "section_normalization_status": str(
+                merged_dict.get("section_normalization_status", "unknown")
+            ),
         }
 
     @staticmethod
@@ -448,6 +465,65 @@ class MergeExecutor:
         if not isinstance(value, list):
             return []
         return [str(item) for item in value if str(item)]
+
+    def _normalize_merged_target_section(
+        self,
+        merged_dict: dict[str, Any],
+        prompt: StructuredPrompt,
+    ) -> dict[str, Any]:
+        raw_target = str(
+            merged_dict.get("target_section", merged_dict.get("target_section_id", ""))
+        ).strip()
+        merged_dict["raw_target_section"] = raw_target
+
+        valid_ids: dict[str, str] = {}
+        title_to_ids: dict[str, list[str]] = {}
+
+        def collect(section: Any) -> None:
+            section_id = str(getattr(section, "id", "") or "")
+            title = str(getattr(section, "title", "") or "")
+            if section_id:
+                valid_ids[section_id] = section_id
+            normalized_title = self._normalize_section_title(title)
+            if normalized_title:
+                title_to_ids.setdefault(normalized_title, []).append(section_id)
+            markdown_title = self._normalize_section_title(f"{'#' * max(int(getattr(section, 'level', 1) or 1), 1)} {title}")
+            if markdown_title:
+                title_to_ids.setdefault(markdown_title, []).append(section_id)
+            for child in getattr(section, "children", []) or []:
+                collect(child)
+
+        for section in prompt.sections:
+            collect(section)
+
+        if raw_target in valid_ids:
+            merged_dict["target_section"] = raw_target
+            merged_dict["normalized_target_section"] = raw_target
+            merged_dict["section_normalization_status"] = "already_id"
+            return merged_dict
+
+        normalized_raw = self._normalize_section_title(raw_target)
+        matched_ids = list(dict.fromkeys(title_to_ids.get(normalized_raw, [])))
+        if len(matched_ids) == 1 and matched_ids[0]:
+            merged_dict["target_section"] = matched_ids[0]
+            merged_dict["normalized_target_section"] = matched_ids[0]
+            merged_dict["section_normalization_status"] = "title_mapped"
+            return merged_dict
+        if len(matched_ids) > 1:
+            merged_dict["normalized_target_section"] = ""
+            merged_dict["section_normalization_status"] = "ambiguous_title"
+            return merged_dict
+
+        merged_dict["normalized_target_section"] = ""
+        merged_dict["section_normalization_status"] = "unresolved"
+        return merged_dict
+
+    @staticmethod
+    def _normalize_section_title(value: str) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        return " ".join(text.split())
 
 
 __all__ = ["MergeExecutor"]

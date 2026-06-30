@@ -71,6 +71,18 @@ class FewshotConfig:
     rounds: int = 2
     batch_size: int = 99
     slot_count: int = 5
+    selection_batch_size: int | None = None
+    validation_batch_size: int | None = None
+    candidate_pool_size: int = 20
+    selection_strategy: str = "quota_diverse"
+    fallback_strategy: str = "difficulty_topk"
+    require_no_regression: bool = True
+    min_accuracy_delta: float = 0.01
+    require_schema_stable: bool = True
+    multimodal_render_mode: str = "multi_turn"
+    max_example_images: int | None = None
+    max_total_images: int | None = None
+    max_context_examples: int | None = None
     sampler: SamplerConfig = field(default_factory=lambda: SamplerConfig(type="frequency"))
 
 
@@ -87,6 +99,11 @@ class FewshotMetrics:
     final_invalid_count: int = 0
     accepted: bool = False
     selected_example_count: int = 0
+    fixed_sample_count: int = 0
+    broken_sample_count: int = 0
+    schema_violation_count: int = 0
+    decision_reason: str = "not_evaluated"
+    fallback_used: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典格式。"""
@@ -101,6 +118,11 @@ class FewshotMetrics:
             "final_invalid_count": self.final_invalid_count,
             "accepted": self.accepted,
             "selected_example_count": self.selected_example_count,
+            "fixed_sample_count": self.fixed_sample_count,
+            "broken_sample_count": self.broken_sample_count,
+            "schema_violation_count": self.schema_violation_count,
+            "decision_reason": self.decision_reason,
+            "fallback_used": self.fallback_used,
         }
 
 
@@ -109,13 +131,19 @@ class FewshotOptimizationIterationResult:
     """Few-shot Optimization 单轮迭代结果。"""
     iteration: int
     batch: SampleBatch
+    selection_batch: SampleBatch
+    validation_batch: SampleBatch
     metrics: FewshotMetrics
     old_fewshot_examples: list[FewshotExample]
     new_fewshot_examples: list[FewshotExample]
+    candidate_pool: list[dict[str, Any]] = field(default_factory=list)
+    candidate_scores: list[dict[str, Any]] = field(default_factory=list)
     base_results: list[ExtractionResult] = field(default_factory=list)
     base_eval_records: list[EvalRecord] = field(default_factory=list)
     final_results: list[ExtractionResult] = field(default_factory=list)
     final_eval_records: list[EvalRecord] = field(default_factory=list)
+    validation_report: dict[str, Any] = field(default_factory=dict)
+    decision: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -123,14 +151,52 @@ class FewshotOptimizationIterationResult:
         return {
             "iteration": self.iteration,
             "batch_id": self.batch.id,
+            "selection_batch": self.selection_batch.to_dict(),
+            "validation_batch": self.validation_batch.to_dict(),
             "metrics": self.metrics.to_dict(),
             "old_fewshot_examples": [e.to_dict() for e in self.old_fewshot_examples],
             "new_fewshot_examples": [e.to_dict() for e in self.new_fewshot_examples],
+            "candidate_pool": list(self.candidate_pool),
+            "candidate_scores": list(self.candidate_scores),
             "base_results": [result.to_dict() for result in self.base_results],
             "base_eval_records": [record.to_dict() for record in self.base_eval_records],
             "final_results": [result.to_dict() for result in self.final_results],
             "final_eval_records": [record.to_dict() for record in self.final_eval_records],
+            "validation_report": dict(self.validation_report),
+            "decision": dict(self.decision),
             "notes": list(self.notes),
+        }
+
+
+@dataclass
+class FewshotCandidateRecord:
+    sample_id: str
+    candidate_type: str
+    label: str
+    difficulty_score: float
+    last_extraction_status: str
+    historical_fixed_count: int
+    historical_broken_count: int
+    has_images: bool
+    error_pattern: str
+    selection_score: float
+    selection_reason: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sample_id": self.sample_id,
+            "candidate_type": self.candidate_type,
+            "label": self.label,
+            "difficulty_score": self.difficulty_score,
+            "last_extraction_status": self.last_extraction_status,
+            "historical_fixed_count": self.historical_fixed_count,
+            "historical_broken_count": self.historical_broken_count,
+            "has_images": self.has_images,
+            "error_pattern": self.error_pattern,
+            "selection_score": self.selection_score,
+            "selection_reason": self.selection_reason,
+            "metadata": dict(self.metadata),
         }
 
 
@@ -212,28 +278,41 @@ class FewshotOptimizationPhase:
         """执行单轮迭代。"""
         # Stage 1: Sampling Stage
         batch = self._sampling_stage(iteration)
+        selection_batch, validation_batch, split_notes = self._split_batches(batch)
 
         # Stage 2: Few-shot Optimization Stage
         (
             metrics,
             new_examples,
+            candidate_pool,
+            candidate_scores,
             base_results,
             base_eval_records,
             final_results,
             final_eval_records,
+            validation_report,
+            decision,
+            stage_notes,
         ) = self._fewshot_optimization_stage(iteration, batch)
 
         # 构造结果
         result = FewshotOptimizationIterationResult(
             iteration=iteration,
             batch=batch,
+            selection_batch=selection_batch,
+            validation_batch=validation_batch,
             metrics=metrics,
             old_fewshot_examples=self.fewshot_examples.copy(),
             new_fewshot_examples=new_examples,
+            candidate_pool=candidate_pool,
+            candidate_scores=candidate_scores,
             base_results=base_results,
             base_eval_records=base_eval_records,
             final_results=final_results,
             final_eval_records=final_eval_records,
+            validation_report=validation_report,
+            decision=decision,
+            notes=split_notes + stage_notes,
         )
 
         # 更新 few-shot examples（如果接受）
@@ -272,6 +351,61 @@ class FewshotOptimizationPhase:
 
         return batch
 
+    def _split_batches(self, batch: SampleBatch) -> tuple[SampleBatch, SampleBatch, list[str]]:
+        sample_ids = list(batch.sample_ids)
+        notes: list[str] = []
+        if not sample_ids:
+            empty_selection = self._clone_batch(batch, "selection", [])
+            empty_validation = self._clone_batch(batch, "validation", [])
+            notes.append("empty_batch")
+            return empty_selection, empty_validation, notes
+
+        selection_target = self.config.selection_batch_size
+        validation_target = self.config.validation_batch_size
+        total = len(sample_ids)
+
+        if selection_target is None:
+            selection_target = min(total, max(self.config.slot_count, total // 2 or 1))
+            if total > 1:
+                selection_target = min(selection_target, total - 1)
+        selection_ids = sample_ids[:max(0, min(total, selection_target))]
+
+        remaining_ids = sample_ids[len(selection_ids):]
+        if validation_target is None:
+            validation_target = len(remaining_ids)
+            if validation_target <= 0:
+                validation_target = total
+        validation_ids = remaining_ids[:max(0, min(len(remaining_ids), validation_target))]
+
+        if not selection_ids:
+            selection_ids = sample_ids[: min(total, self.config.slot_count)]
+            notes.append("selection_batch_auto_filled")
+        if not validation_ids:
+            validation_ids = sample_ids[: max(1, min(total, validation_target))]
+            notes.append("validation_overlap_fallback")
+
+        if set(selection_ids) & set(validation_ids):
+            notes.append("selection_validation_overlap")
+
+        return (
+            self._clone_batch(batch, "selection", selection_ids),
+            self._clone_batch(batch, "validation", validation_ids),
+            notes,
+        )
+
+    @staticmethod
+    def _clone_batch(batch: SampleBatch, suffix: str, sample_ids: list[str]) -> SampleBatch:
+        return SampleBatch(
+            id=f"{batch.id}_{suffix}",
+            phase=batch.phase,
+            iteration=batch.iteration,
+            sample_ids=list(sample_ids),
+            sampler_name=batch.sampler_name,
+            scores=dict(batch.scores),
+            metadata={**dict(batch.metadata), "subset": suffix},
+            warnings=list(batch.warnings),
+        )
+
     def _fewshot_optimization_stage(
         self,
         iteration: int,
@@ -279,48 +413,70 @@ class FewshotOptimizationPhase:
     ) -> tuple[
         FewshotMetrics,
         list[FewshotExample],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
         list[ExtractionResult],
         list[EvalRecord],
         list[ExtractionResult],
         list[EvalRecord],
+        dict[str, Any],
+        dict[str, Any],
+        list[str],
     ]:
         """Few-shot Optimization Stage。"""
         metrics = FewshotMetrics()
+        notes: list[str] = []
+        selection_batch, validation_batch, split_notes = self._split_batches(batch)
+        notes.extend(split_notes)
 
-        # Step 1: 抽取
-        base_extraction_results = self._execute_extraction(batch)
+        candidate_records, fallback_used, selection_notes = self._build_candidate_pool(selection_batch)
+        notes.extend(selection_notes)
+        new_examples = self._select_candidate_examples(candidate_records, force_fallback=fallback_used)
+        new_examples, budget_notes = self._apply_example_budget(new_examples)
+        notes.extend(budget_notes)
+        metrics.selected_example_count = len(new_examples)
+        metrics.fallback_used = fallback_used
 
-        # Step 2: 统计结果
-        base_eval_records = self._compute_base_metrics(batch, base_extraction_results, metrics)
-
-        # Step 3: 选择前 N 个困难样本填入 few-shot 槽位
-        new_examples = self._select_difficult_samples(batch, metrics)
+        base_extraction_results = self._execute_extraction(validation_batch)
+        base_eval_records = self._compute_base_metrics(validation_batch, base_extraction_results, metrics)
         final_extraction_results: list[ExtractionResult] = []
         final_eval_records: list[EvalRecord] = []
+        validation_report: dict[str, Any] = self._build_validation_report(
+            validation_batch=validation_batch,
+            candidate_records=candidate_records,
+            base_eval_records=base_eval_records,
+            final_eval_records=[],
+        )
+        decision: dict[str, Any] = self._build_decision(metrics, validation_report, accepted=False)
 
-        # Step 4: 接受判断
         if new_examples:
-            # 使用新的 few-shot set 重新测试
-            final_extraction_results = self._execute_extraction_with_fewshot(batch, new_examples)
-            final_eval_records = self._compute_final_metrics(batch, final_extraction_results, metrics)
-
-            # 判断是否接受
-            if metrics.final_accuracy is not None and metrics.base_accuracy is not None:
-                metrics.accepted = metrics.final_accuracy >= metrics.base_accuracy
-            else:
-                metrics.accepted = False
+            final_extraction_results = self._execute_extraction_with_fewshot(validation_batch, new_examples)
+            final_eval_records = self._compute_final_metrics(validation_batch, final_extraction_results, metrics)
+            validation_report = self._build_validation_report(
+                validation_batch=validation_batch,
+                candidate_records=candidate_records,
+                base_eval_records=base_eval_records,
+                final_eval_records=final_eval_records,
+            )
+            metrics.accepted, metrics.decision_reason = self._decide_acceptance(metrics, validation_report)
+            decision = self._build_decision(metrics, validation_report, accepted=metrics.accepted)
         else:
             metrics.accepted = False
-
-        metrics.selected_example_count = len(new_examples)
+            metrics.decision_reason = "insufficient_candidates"
+            decision = self._build_decision(metrics, validation_report, accepted=False)
 
         return (
             metrics,
             new_examples,
+            [item.to_dict() for item in candidate_records],
+            [self._candidate_score_payload(item) for item in candidate_records],
             base_extraction_results,
             base_eval_records,
             final_extraction_results,
             final_eval_records,
+            validation_report,
+            decision,
+            notes,
         )
 
     def _execute_extraction(self, batch: SampleBatch) -> list[ExtractionResult]:
@@ -544,84 +700,316 @@ class FewshotOptimizationPhase:
             if trace is not None:
                 setattr(trace, trace_status_attr, status)
 
+    def _build_candidate_pool(
+        self,
+        batch: SampleBatch,
+    ) -> tuple[list[FewshotCandidateRecord], bool, list[str]]:
+        records: list[FewshotCandidateRecord] = []
+        notes: list[str] = []
+
+        for sample_id in batch.sample_ids:
+            spec = self.sample_set.specs.get(sample_id)
+            state = self.sample_set.states.get(sample_id)
+            if spec is None or state is None or not spec.ground_truth:
+                continue
+            candidate_type, reason, error_pattern = self._classify_candidate(spec, state)
+            score = self._candidate_score(state, candidate_type)
+            records.append(
+                FewshotCandidateRecord(
+                    sample_id=sample_id,
+                    candidate_type=candidate_type,
+                    label=self._ground_truth_label(spec.ground_truth),
+                    difficulty_score=float(state.difficulty_score),
+                    last_extraction_status=state.last_extraction_status,
+                    historical_fixed_count=state.historical_fixed_count,
+                    historical_broken_count=state.historical_broken_count,
+                    has_images=any(asset.type == "image" for asset in spec.assets),
+                    error_pattern=error_pattern,
+                    selection_score=score,
+                    selection_reason=reason,
+                    metadata={
+                        "selected_from": batch.id,
+                        "assets_count": len(spec.assets),
+                    },
+                )
+            )
+
+        records.sort(key=lambda item: item.selection_score, reverse=True)
+        pool_limit = max(self.config.slot_count, self.config.candidate_pool_size)
+        trimmed = records[:pool_limit]
+
+        fallback_used = self.config.selection_strategy != "quota_diverse"
+        if self.config.selection_strategy == "quota_diverse":
+            distinct_types = {item.candidate_type for item in trimmed}
+            if len(distinct_types) < min(self.config.slot_count, 3):
+                fallback_used = True
+                notes.append("candidate_pool_diversity_insufficient")
+        else:
+            notes.append(f"selection_strategy={self.config.selection_strategy}")
+        return trimmed, fallback_used, notes
+
+    def _classify_candidate(
+        self,
+        spec: SampleSpec,
+        state: SampleState,
+    ) -> tuple[str, str, str]:
+        status = state.last_extraction_status
+        if state.error_count >= 2:
+            return "high_frequency_error", "repeated extraction failures", "repeated_error"
+        if state.historical_fixed_count > 0 or state.historical_broken_count > 0:
+            return "historical_misclassified", "historical prompt sensitivity", "historical_flip"
+        if state.difficulty_score >= 0.6:
+            return "boundary", "high difficulty boundary sample", "boundary_case"
+        if status in {"wrong", "invalid"}:
+            return "canonical_negative", "current extraction failure", status
+        return "canonical_positive", "stable correct baseline", "stable_correct"
+
+    @staticmethod
+    def _candidate_score(state: SampleState, candidate_type: str) -> float:
+        bonus_by_type = {
+            "historical_misclassified": 0.35,
+            "high_frequency_error": 0.30,
+            "boundary": 0.20,
+            "canonical_negative": 0.10,
+            "canonical_positive": 0.05,
+        }
+        return (
+            float(state.difficulty_score)
+            + float(state.error_ema)
+            + bonus_by_type.get(candidate_type, 0.0)
+        )
+
+    def _select_candidate_examples(
+        self,
+        candidate_records: list[FewshotCandidateRecord],
+        *,
+        force_fallback: bool = False,
+    ) -> list[FewshotExample]:
+        if not candidate_records:
+            return []
+        if force_fallback or self.config.selection_strategy != "quota_diverse":
+            return self._build_examples_from_candidates(candidate_records[: self.config.slot_count])
+
+        selected_records: list[FewshotCandidateRecord] = []
+        selected_ids: set[str] = set()
+        priority = [
+            "canonical_positive",
+            "canonical_negative",
+            "high_frequency_error",
+            "boundary",
+            "historical_misclassified",
+        ]
+        by_type: dict[str, list[FewshotCandidateRecord]] = {name: [] for name in priority}
+        remainder: list[FewshotCandidateRecord] = []
+        for record in candidate_records:
+            if record.candidate_type in by_type:
+                by_type[record.candidate_type].append(record)
+            else:
+                remainder.append(record)
+
+        for candidate_type in priority:
+            if len(selected_records) >= self.config.slot_count:
+                break
+            for record in by_type.get(candidate_type, []):
+                if record.sample_id in selected_ids:
+                    continue
+                selected_records.append(record)
+                selected_ids.add(record.sample_id)
+                break
+
+        for record in candidate_records:
+            if len(selected_records) >= self.config.slot_count:
+                break
+            if record.sample_id in selected_ids:
+                continue
+            selected_records.append(record)
+            selected_ids.add(record.sample_id)
+
+        return self._build_examples_from_candidates(selected_records)
+
+    def _build_examples_from_candidates(
+        self,
+        candidate_records: list[FewshotCandidateRecord],
+    ) -> list[FewshotExample]:
+        examples: list[FewshotExample] = []
+        limit = self.config.max_context_examples or self.config.slot_count
+        for record in self.progress.iter(
+            candidate_records[:limit],
+            desc="Building few-shot examples",
+            total=min(len(candidate_records), limit),
+        ):
+            spec = self.sample_set.specs.get(record.sample_id)
+            if spec is None:
+                continue
+            examples.append(self._build_example_from_spec(spec, record))
+        return examples
+
+    def _build_example_from_spec(
+        self,
+        spec: SampleSpec,
+        record: FewshotCandidateRecord | None = None,
+    ) -> FewshotExample:
+        images = [
+            img for img in (
+                asset.uri or asset.local_path or ""
+                for asset in spec.assets
+                if asset.type == "image"
+            )
+            if img
+        ]
+        if self.config.max_example_images is not None:
+            images = images[: max(0, self.config.max_example_images)]
+        metadata: dict[str, Any] = {
+            "render_mode": self.config.multimodal_render_mode,
+        }
+        if record is not None:
+            metadata.update(
+                {
+                    "candidate_type": record.candidate_type,
+                    "selection_reason": record.selection_reason,
+                    "selection_score": record.selection_score,
+                }
+            )
+        return FewshotExample(
+            id=f"fewshot_{spec.id}",
+            sample_id=spec.id,
+            input_text=str(spec.input),
+            input_images=images,
+            output_text=str(spec.ground_truth),
+            output_data=spec.ground_truth,
+            metadata=metadata,
+        )
+
+    def _apply_example_budget(
+        self,
+        examples: list[FewshotExample],
+    ) -> tuple[list[FewshotExample], list[str]]:
+        if not examples:
+            return [], []
+        notes: list[str] = []
+        limited = list(examples)
+        if self.config.max_context_examples is not None:
+            max_examples = max(0, self.config.max_context_examples)
+            if len(limited) > max_examples:
+                limited = limited[:max_examples]
+                notes.append("max_context_examples_trimmed")
+        if self.config.max_total_images is not None:
+            total_images = 0
+            kept: list[FewshotExample] = []
+            for example in limited:
+                image_count = len(example.input_images)
+                if total_images + image_count > self.config.max_total_images:
+                    notes.append("max_total_images_trimmed")
+                    break
+                kept.append(example)
+                total_images += image_count
+            limited = kept
+        return limited, notes
+
+    def _build_validation_report(
+        self,
+        *,
+        validation_batch: SampleBatch,
+        candidate_records: list[FewshotCandidateRecord],
+        base_eval_records: list[EvalRecord],
+        final_eval_records: list[EvalRecord],
+    ) -> dict[str, Any]:
+        base_by_sample = {record.sample_id: record for record in base_eval_records}
+        final_by_sample = {record.sample_id: record for record in final_eval_records}
+        fixed_sample_ids: list[str] = []
+        broken_sample_ids: list[str] = []
+        schema_violation_sample_ids: list[str] = []
+
+        for sample_id in validation_batch.sample_ids:
+            base = base_by_sample.get(sample_id)
+            final = final_by_sample.get(sample_id)
+            if final is None:
+                continue
+            if base is not None and base.status != "correct" and final.status == "correct":
+                fixed_sample_ids.append(sample_id)
+            if base is not None and base.status == "correct" and final.status != "correct":
+                broken_sample_ids.append(sample_id)
+            if final.status == "invalid" and (base is None or base.status != "invalid"):
+                schema_violation_sample_ids.append(sample_id)
+
+        return {
+            "selection_strategy": self.config.selection_strategy,
+            "fallback_strategy": self.config.fallback_strategy,
+            "validation_sample_ids": list(validation_batch.sample_ids),
+            "candidate_sample_ids": [item.sample_id for item in candidate_records],
+            "fixed_sample_ids": fixed_sample_ids,
+            "broken_sample_ids": broken_sample_ids,
+            "schema_violation_sample_ids": schema_violation_sample_ids,
+            "base_eval_count": len(base_eval_records),
+            "final_eval_count": len(final_eval_records),
+        }
+
+    def _decide_acceptance(
+        self,
+        metrics: FewshotMetrics,
+        validation_report: dict[str, Any],
+    ) -> tuple[bool, str]:
+        if metrics.base_accuracy is None or metrics.final_accuracy is None:
+            return False, "missing_accuracy"
+        delta = metrics.final_accuracy - metrics.base_accuracy
+        broken_count = len(validation_report.get("broken_sample_ids", []))
+        schema_violation_count = len(validation_report.get("schema_violation_sample_ids", []))
+        metrics.fixed_sample_count = len(validation_report.get("fixed_sample_ids", []))
+        metrics.broken_sample_count = broken_count
+        metrics.schema_violation_count = schema_violation_count
+        if self.config.require_no_regression and broken_count > 0:
+            return False, "regression_detected"
+        if self.config.require_schema_stable and schema_violation_count > 0:
+            return False, "schema_worsened"
+        if delta < self.config.min_accuracy_delta:
+            if metrics.final_correct_count > metrics.base_correct_count and broken_count == 0:
+                return True, "improved_correct_count"
+            return False, "no_delta"
+        return True, "improved_without_regression"
+
+    @staticmethod
+    def _build_decision(
+        metrics: FewshotMetrics,
+        validation_report: dict[str, Any],
+        *,
+        accepted: bool,
+    ) -> dict[str, Any]:
+        return {
+            "accepted": accepted,
+            "decision_reason": metrics.decision_reason,
+            "base_accuracy": metrics.base_accuracy,
+            "final_accuracy": metrics.final_accuracy,
+            "fixed_sample_ids": list(validation_report.get("fixed_sample_ids", [])),
+            "broken_sample_ids": list(validation_report.get("broken_sample_ids", [])),
+            "schema_violation_sample_ids": list(validation_report.get("schema_violation_sample_ids", [])),
+            "fallback_used": metrics.fallback_used,
+        }
+
+    @staticmethod
+    def _candidate_score_payload(record: FewshotCandidateRecord) -> dict[str, Any]:
+        return {
+            "sample_id": record.sample_id,
+            "candidate_type": record.candidate_type,
+            "selection_score": record.selection_score,
+            "selection_reason": record.selection_reason,
+        }
+
+    @staticmethod
+    def _ground_truth_label(ground_truth: dict[str, Any]) -> str:
+        if not ground_truth:
+            return ""
+        values = [str(value) for value in ground_truth.values() if value is not None]
+        return " | ".join(values[:3])
+
     def _select_difficult_samples(
         self,
         batch: SampleBatch,
         metrics: FewshotMetrics,
     ) -> list[FewshotExample]:
-        """选择前 N 个困难样本填入 few-shot 槽位。"""
-        # 获取本轮样本的困难度排序
-        sample_difficulties: list[tuple[str, float]] = []
-
-        for sample_id in batch.sample_ids:
-            state = self.sample_set.states.get(sample_id)
-            if state:
-                sample_difficulties.append((sample_id, state.difficulty_score))
-
-        # 按困难度降序排序
-        sample_difficulties.sort(key=lambda x: x[1], reverse=True)
-
-        # 选择前 N 个
-        selected_ids = [sid for sid, _ in sample_difficulties[:self.config.slot_count]]
-
-        # 构造 few-shot examples
-        examples: list[FewshotExample] = []
-
-        for sample_id in self.progress.iter(
-            selected_ids,
-            desc="Building few-shot examples",
-            total=len(selected_ids),
-        ):
-            spec = self.sample_set.specs.get(sample_id)
-            if spec is None:
-                continue
-
-            # 构造 example
-            example = FewshotExample(
-                id=f"fewshot_{sample_id}",
-                sample_id=sample_id,
-                input_text=str(spec.input),
-                input_images=[
-                    img for img in (
-                        asset.uri or asset.local_path or ""
-                        for asset in spec.assets
-                        if asset.type == "image"
-                    )
-                    if img
-                ],
-                output_text=str(spec.ground_truth),
-                output_data=spec.ground_truth,
-            )
-            examples.append(example)
-
-        # 如果可用困难样本少于槽位数，从当前 batch 中继续按难度顺序补齐
-        if len(examples) < self.config.slot_count:
-            remaining_ids = [sid for sid, _ in sample_difficulties[self.config.slot_count:]]
-            for sample_id in remaining_ids:
-                if len(examples) >= self.config.slot_count:
-                    break
-
-                spec = self.sample_set.specs.get(sample_id)
-                if spec is None:
-                    continue
-
-                example = FewshotExample(
-                    id=f"fewshot_{sample_id}",
-                    sample_id=sample_id,
-                    input_text=str(spec.input),
-                    input_images=[
-                    img for img in (
-                        asset.uri or asset.local_path or ""
-                        for asset in spec.assets
-                        if asset.type == "image"
-                    )
-                    if img
-                ],
-                    output_text=str(spec.ground_truth),
-                    output_data=spec.ground_truth,
-                )
-                examples.append(example)
-
+        """兼容旧测试入口：当前实现走 candidate pool + 选择策略。"""
+        candidate_records, fallback_used, _ = self._build_candidate_pool(batch)
+        examples = self._select_candidate_examples(candidate_records, force_fallback=fallback_used)
+        examples, _ = self._apply_example_budget(examples)
         return examples
 
     def _save_iteration_artifacts(
@@ -636,7 +1024,9 @@ class FewshotOptimizationPhase:
         iteration_dir.mkdir(parents=True, exist_ok=True)
 
         # 保存 batch
-        write_json_artifact(iteration_dir / "sample_batch.json", result.batch.__dict__)
+        write_json_artifact(iteration_dir / "sample_batch.json", result.batch.to_dict())
+        write_json_artifact(iteration_dir / "selection_batch.json", result.selection_batch.to_dict())
+        write_json_artifact(iteration_dir / "validation_batch.json", result.validation_batch.to_dict())
 
         # PR4: 保存 sample traces
         traces = self.sample_set.get_traces_for_iteration("fewshot_optimization", iteration)
@@ -666,10 +1056,14 @@ class FewshotOptimizationPhase:
 
         # 保存 selected_examples
         _write_jsonl(fewshot_dir / "selected_examples.jsonl", result.new_fewshot_examples)
+        _write_jsonl(fewshot_dir / "candidate_pool.jsonl", result.candidate_pool)
+        _write_jsonl(fewshot_dir / "candidate_scores.jsonl", result.candidate_scores)
 
         # 保存 final_results 和 final_eval
         _write_jsonl(fewshot_dir / "final_results.jsonl", result.final_results)
         _write_jsonl(fewshot_dir / "final_eval.jsonl", result.final_eval_records)
+        _write_json(fewshot_dir / "validation_report.json", result.validation_report)
+        _write_json(fewshot_dir / "decision.json", result.decision)
 
         # 保存 metrics
         _write_json(fewshot_dir / "metrics.json", result.metrics)
@@ -680,3 +1074,4 @@ class FewshotOptimizationPhase:
             iteration_dir / "selected_examples.json",
             [e.to_dict() for e in result.new_fewshot_examples],
         )
+        _write_json(iteration_dir / "decision.json", result.decision)

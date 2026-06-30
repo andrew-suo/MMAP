@@ -322,6 +322,8 @@ def test_runner_accumulates_fewshot_summary_without_overwriting_resume_history()
     result = FewshotOptimizationIterationResult(
         iteration=2,
         batch=SampleBatch(id="b1", phase="fewshot_optimization", iteration=2, sample_ids=["s1"], sampler_name="test"),
+        selection_batch=SampleBatch(id="b1_selection", phase="fewshot_optimization", iteration=2, sample_ids=["s1"], sampler_name="test"),
+        validation_batch=SampleBatch(id="b1_validation", phase="fewshot_optimization", iteration=2, sample_ids=["s1"], sampler_name="test"),
         metrics=FewshotMetrics(base_accuracy=0.65, final_accuracy=0.61, accepted=False),
         old_fewshot_examples=[],
         new_fewshot_examples=[],

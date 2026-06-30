@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sys
+import pytest
 from pathlib import Path
 from typing import Any
 
@@ -245,6 +246,36 @@ def test_sample_state_updated_by_real_evaluation():
 
     # 验证 wrong 的 error_ema 高于 correct
     assert state_wrong.error_ema > state_ok.error_ema
+
+
+def test_evaluation_marks_missing_ground_truth_field_as_invalid():
+    prompt = make_extraction_prompt()
+    sample_set, batch = make_sample_set(ground_truth={})
+
+    client = MockModelClient()
+    extraction_executor = ExtractionExecutor(client)
+    evaluation_executor = EvaluationExecutor(primary_answer_fields=["result"])
+
+    extraction_results = extraction_executor.execute(prompt, batch, sample_set)
+    eval_records = evaluation_executor.evaluate_batch(extraction_results, sample_set)
+
+    assert len(eval_records) == 1
+    record = eval_records[0]
+    assert record.status == "invalid"
+    assert record.details["missing_ground_truth_fields"] == ["result"]
+    assert sample_set.states["sample_1"].last_extraction_status == "invalid"
+
+
+def test_evaluation_rejects_empty_primary_answer_fields():
+    prompt = make_extraction_prompt()
+    sample_set, batch = make_sample_set(ground_truth={"result": "OK"})
+
+    client = MockModelClient()
+    extraction_executor = ExtractionExecutor(client)
+    extraction_results = extraction_executor.execute(prompt, batch, sample_set)
+
+    with pytest.raises(ValueError, match="primary_answer_fields must not be empty"):
+        EvaluationExecutor(primary_answer_fields=[]).evaluate_batch(extraction_results, sample_set)
 
 
 def test_mock_and_real_evaluation_align_on_state_semantics_for_wrong_sample():

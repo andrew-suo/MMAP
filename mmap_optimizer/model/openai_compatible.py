@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import mimetypes
 import os
@@ -12,6 +11,7 @@ from typing import Any
 
 from ..core.logging import get_logger, log_stage
 from ..data.sample import SampleAsset
+from .image_payload import encode_local_image_as_data_url, normalize_image_resize
 from .client import ModelResponse
 
 logger = get_logger(__name__)
@@ -66,8 +66,8 @@ class OpenAICompatibleClient:
             raise
 
     def complete_multimodal(self, messages: list[dict[str, Any]], assets: list[Any], model_config: dict[str, Any] | None = None, response_format: Any | None = None) -> ModelResponse:
-        prepared_messages = self._messages_with_assets(messages, assets)
         cfg = self._effective_model_config(model_config)
+        prepared_messages = self._messages_with_assets(messages, assets, cfg)
         payload = self._build_payload(messages=prepared_messages, model_config=cfg, response_format=response_format)
         log_stage(logger, "model_request_start", "模型请求开始",
             model=payload.get("model"), message_count=len(prepared_messages),
@@ -141,7 +141,12 @@ class OpenAICompatibleClient:
         with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
-    def _messages_with_assets(self, messages: list[dict[str, Any]], assets: list[Any]) -> list[dict[str, Any]]:
+    def _messages_with_assets(
+        self,
+        messages: list[dict[str, Any]],
+        assets: list[Any],
+        model_config: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         if not assets:
             return messages
         prepared = [dict(message) for message in messages]
@@ -151,7 +156,11 @@ class OpenAICompatibleClient:
             target_idx = len(prepared) - 1
         existing_content = prepared[target_idx].get("content", "")
         content_parts = self._content_to_parts(existing_content)
-        content_parts.extend(self._asset_to_content_part(asset) for asset in assets if self._is_image_asset(asset))
+        content_parts.extend(
+            self._asset_to_content_part(asset, model_config=model_config)
+            for asset in assets
+            if self._is_image_asset(asset)
+        )
         prepared[target_idx]["content"] = content_parts
         return prepared
 
@@ -177,10 +186,21 @@ class OpenAICompatibleClient:
             return [{"type": "text", "text": content}] if content else []
         return [{"type": "text", "text": json.dumps(content, ensure_ascii=False)}]
 
-    def _asset_to_content_part(self, asset: Any) -> dict[str, Any]:
+    def _asset_to_content_part(
+        self,
+        asset: Any,
+        model_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         sample_asset = self._coerce_asset(asset)
         if sample_asset.local_path:
-            url = self._local_image_data_url(sample_asset.local_path, sample_asset.mime_type)
+            image_resize = normalize_image_resize(
+                (model_config or {}).get("image_resize")
+            )
+            url = self._local_image_data_url(
+                sample_asset.local_path,
+                sample_asset.mime_type,
+                image_resize=image_resize,
+            )
         elif sample_asset.uri:
             url = sample_asset.uri
         else:
@@ -191,11 +211,17 @@ class OpenAICompatibleClient:
             image_url["detail"] = detail
         return {"type": "image_url", "image_url": image_url}
 
-    def _local_image_data_url(self, local_path: str, mime_type: str | None = None) -> str:
-        path = Path(local_path)
-        inferred_mime = mime_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        return f"data:{inferred_mime};base64,{encoded}"
+    def _local_image_data_url(
+        self,
+        local_path: str,
+        mime_type: str | None = None,
+        image_resize: float | int | None = None,
+    ) -> str:
+        return encode_local_image_as_data_url(
+            local_path=local_path,
+            mime_type=mime_type,
+            image_resize=image_resize,
+        )
 
     def _is_image_asset(self, asset: Any) -> bool:
         sample_asset = self._coerce_asset(asset)

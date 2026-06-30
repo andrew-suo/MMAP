@@ -197,4 +197,5 @@ def test_model_config_to_runtime_dict_preserves_request_fields():
         "max_tokens": 3456,
         "timeout": 88,
         "chat_template_kwargs": {"enable_thinking": False},
+        "image_resize": None,
     }

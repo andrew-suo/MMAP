@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 
 from mmap_optimizer.prompt.prompt_manager import render_prompt
 
@@ -63,8 +64,8 @@ def test_patch_merge_prompt_requires_dedupe_conflict_and_independence_rules():
 
 def test_patch_merge_prompt_template_renders_with_json_examples():
     """patch_merge prompt should render despite literal JSON example braces."""
-    prompt = _read_prompt("patch_merge.txt")
-    rendered = prompt.format(
+    rendered = render_prompt(
+        PROMPTS_DIR / "patch_merge.txt",
         prompt_structure="Task (id=section_1)",
         input_type="raw_patches",
         input_type_instruction="merge raw patches",
@@ -74,6 +75,11 @@ def test_patch_merge_prompt_template_renders_with_json_examples():
     assert "Task (id=section_1)" in rendered
     assert '"op": "append_to_section"' in rendered
     assert "{prompt_structure}" not in rendered
+
+
+def test_render_prompt_raises_clear_error_for_missing_variable():
+    with pytest.raises(KeyError, match="missing variables"):
+        render_prompt(PROMPTS_DIR / "patch_generation.txt", sample_id="s1")
 
 
 def test_patch_calibration_prompt_only_allows_location_field_changes():

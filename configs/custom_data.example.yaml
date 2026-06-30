@@ -83,10 +83,19 @@ models: {}
 #     base_url: https://api.openai.com/v1
 #     model: gpt-4o
 #     api_key_env: OPENAI_API_KEY
+#     image_resize: 1024   # 仅当长边超过 1024 时才缩放
 #     verify_ssl: true
 #   optimizer:
 #     provider: openai_compatible
 #     base_url: https://api.openai.com/v1
 #     model: gpt-4o
 #     api_key_env: OPENAI_API_KEY
+#     image_resize: 0.5    # 所有本地图片按 50% 等比缩放
 #     verify_ssl: true
+#
+# image_resize 支持两种写法:
+#   - 0.5   -> 宽高都缩成原来的 50%
+#   - 1024  -> 只有长边超过 1024 的图片才缩放到 1024
+# 注意:
+#   - 仅对本地 local_path 图片生效
+#   - 纯 URI 图片不会下载，保持原样发送

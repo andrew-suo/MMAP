@@ -1,5 +1,7 @@
 import base64
 
+import pytest
+
 from mmap_optimizer.data.sample import SampleAsset
 from mmap_optimizer.model.openai_compatible import OpenAICompatibleClient
 
@@ -73,3 +75,44 @@ def test_complete_uses_default_model_config_timeout_and_max_tokens():
     assert payload["max_tokens"] == 2049
     assert payload["temperature"] == 0.3
     assert client.timeouts == [66]
+
+
+def test_complete_multimodal_passes_image_resize_to_local_encoder(tmp_path, monkeypatch):
+    image_path = tmp_path / "sample.png"
+    image_path.write_bytes(b"fake-png-bytes")
+    client = RecordingOpenAICompatibleClient()
+    seen: dict[str, object] = {}
+
+    def fake_encoder(local_path, mime_type=None, image_resize=None):
+        seen["local_path"] = local_path
+        seen["mime_type"] = mime_type
+        seen["image_resize"] = image_resize
+        return "data:image/png;base64,ZmFrZQ=="
+
+    monkeypatch.setattr(
+        "mmap_optimizer.model.openai_compatible.encode_local_image_as_data_url",
+        fake_encoder,
+    )
+
+    client.complete_multimodal(
+        messages=[{"role": "user", "content": "inspect"}],
+        assets=[SampleAsset(id="a1", sample_id="s1", local_path=str(image_path), mime_type="image/png")],
+        model_config={"image_resize": 0.5},
+    )
+
+    assert seen["local_path"] == str(image_path)
+    assert seen["mime_type"] == "image/png"
+    assert seen["image_resize"] == 0.5
+
+
+def test_complete_multimodal_keeps_remote_uri_when_image_resize_enabled():
+    client = RecordingOpenAICompatibleClient()
+
+    client.complete_multimodal(
+        messages=[{"role": "user", "content": "inspect this"}],
+        assets=[SampleAsset(id="a1", sample_id="s1", uri="https://cdn.example/image.jpg", mime_type="image/jpeg")],
+        model_config={"image_resize": 1024},
+    )
+
+    image_part = client.payloads[0]["messages"][0]["content"][1]
+    assert image_part["image_url"]["url"] == "https://cdn.example/image.jpg"

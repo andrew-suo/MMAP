@@ -91,18 +91,18 @@ class ParallelPatchMerger:
             return []
 
         current = list(patches)
-        prev_count = len(current)
 
         # 2-4. 分层迭代合并
         for layer in range(self.max_layers):
+            input_count = len(current)
             self.progress_reporter.step(
-                f"      [Tree Merge] layer={layer} input_patches={len(current)}"
+                f"      [Tree Merge] layer={layer} input_patches={input_count}"
             )
             merged, failure_count = self._run_parallel_merge(current, prompt_structure, layer)
 
             logger.info(
                 "Layer %d 完成: 输入=%d, 输出=%d, 失败分组=%d",
-                layer, len(current), len(merged), failure_count,
+                layer, input_count, len(merged), failure_count,
             )
 
             # 终止条件：仅剩 1 个 patch
@@ -110,15 +110,14 @@ class ParallelPatchMerger:
                 current = merged
                 break
             # 终止条件：patch 数量不再减少（与上一轮相同或更多）
-            if len(merged) >= prev_count:
+            if len(merged) >= input_count:
                 logger.info(
                     "Layer %d: patch 数量不再减少 (prev=%d, curr=%d)，终止合并",
-                    layer, prev_count, len(merged),
+                    layer, input_count, len(merged),
                 )
                 current = merged
                 break
 
-            prev_count = len(current)
             current = merged
         else:
             logger.info("达到 max_layers=%d，终止合并", self.max_layers)
@@ -358,13 +357,13 @@ class ParallelPatchMerger:
         input_sample_ids = sorted({
             str(sample_id)
             for patch in input_group
-            for sample_id in patch.get("source_sample_ids", [])
+            for sample_id in (patch.get("source_sample_ids") or [])
             if str(sample_id)
         })
         authoritative_source_patch_ids = sorted({
             str(source_patch_id)
             for patch in input_group
-            for source_patch_id in patch.get("source_patch_ids", [])
+            for source_patch_id in (patch.get("source_patch_ids") or [])
             if str(source_patch_id)
         })
         if not authoritative_source_patch_ids:
@@ -372,7 +371,7 @@ class ParallelPatchMerger:
         upstream_source_patch_ids = sorted({
             str(source_patch_id)
             for patch in input_group
-            for source_patch_id in patch.get("upstream_source_patch_ids", [])
+            for source_patch_id in (patch.get("upstream_source_patch_ids") or [])
             if str(source_patch_id)
         })
         if not upstream_source_patch_ids:

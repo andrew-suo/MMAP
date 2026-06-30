@@ -174,6 +174,12 @@ class ExtractionPromptOptimizationStage:
         self.ema_alpha = ema_alpha
         self.progress = progress_reporter or NullProgressReporter()
         self.logger = get_logger(__name__)
+        if self.extraction_executor is not None and hasattr(self.extraction_executor, "progress_reporter"):
+            self.extraction_executor.progress_reporter = self.progress
+        if self.evaluation_executor is not None and hasattr(self.evaluation_executor, "progress_reporter"):
+            self.evaluation_executor.progress_reporter = self.progress
+        if self.analysis_executor is not None and hasattr(self.analysis_executor, "progress_reporter"):
+            self.analysis_executor.progress_reporter = self.progress
 
         self.base_extraction_results: list[ExtractionResult] = []
         self.base_eval_records: list[EvalRecord] = []

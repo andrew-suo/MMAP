@@ -158,6 +158,8 @@ class FewshotOptimizationPhase:
         self.checkpoint_callback = checkpoint_callback
         self.progress = progress_reporter or NullProgressReporter()
         self.logger = get_logger(__name__)
+        if self.fewshot_executor is not None and hasattr(self.fewshot_executor, "progress_reporter"):
+            self.fewshot_executor.progress_reporter = self.progress
 
         # 创建 sampler
         self.sampler = create_sampler(config.sampler)

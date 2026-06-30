@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..core.progress import NullProgressReporter, ProgressReporter
 from ..stages.extraction_prompt_optimization import EvalRecord, ExtractionResult
 from ..data.sample import SampleSet, SampleState
 
@@ -39,6 +40,7 @@ class EvaluationExecutor:
         self.primary_answer_fields = list(primary_answer_fields) if primary_answer_fields is not None else ["result"]
         self.label_mapping = label_mapping
         self.ema_alpha = ema_alpha
+        self.progress_reporter: ProgressReporter = NullProgressReporter()
 
     def evaluate(
         self,
@@ -135,13 +137,32 @@ class EvaluationExecutor:
     ) -> list[EvalRecord]:
         """批量评估抽取结果。"""
         results: list[EvalRecord] = []
-        for er in extraction_results:
-            spec = sample_set.specs.get(er.sample_id)
-            if spec is None:
-                continue
-            state = sample_set.states.get(er.sample_id)
-            eval_record = self.evaluate(er, spec.ground_truth, state)
-            results.append(eval_record)
+        correct_count = 0
+        processed_count = 0
+        with self.progress_reporter.progress(
+            total=len(extraction_results),
+            desc="Evaluating samples",
+        ) as bar:
+            for er in extraction_results:
+                spec = sample_set.specs.get(er.sample_id)
+                if spec is None:
+                    bar.update(1)
+                    continue
+                state = sample_set.states.get(er.sample_id)
+                eval_record = self.evaluate(er, spec.ground_truth, state)
+                results.append(eval_record)
+                processed_count += 1
+                if eval_record.correct:
+                    correct_count += 1
+                accuracy = correct_count / processed_count if processed_count > 0 else 0.0
+                bar.set_postfix(
+                    {
+                        "acc": f"{accuracy:.1%}",
+                        "correct": correct_count,
+                        "done": processed_count,
+                    }
+                )
+                bar.update(1)
         return results
 
     def _update_sample_state(

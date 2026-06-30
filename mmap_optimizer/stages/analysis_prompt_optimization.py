@@ -120,6 +120,8 @@ class AnalysisPromptOptimizationStage:
         self.ema_alpha = ema_alpha
         self.progress = progress_reporter or NullProgressReporter()
         self.logger = get_logger(__name__)
+        if self.analysis_executor is not None and hasattr(self.analysis_executor, "progress_reporter"):
+            self.analysis_executor.progress_reporter = self.progress
 
         self.reflection_results: list[ReflectionResult] = []
         self.draft_patches: list[AnalysisPatch] = []

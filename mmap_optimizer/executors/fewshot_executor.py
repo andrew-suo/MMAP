@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..core.progress import NullProgressReporter, ProgressReporter
 from ..model.client import ModelClient
 from ..model.retry import FailurePolicyConfig, SampleFailureTracker
 from ..stages.extraction_prompt_optimization import EvalRecord, ExtractionResult
@@ -54,6 +55,7 @@ class FewshotExecutor:
             label_mapping=label_mapping,
             ema_alpha=ema_alpha,
         )
+        self.progress_reporter: ProgressReporter = NullProgressReporter()
 
     def execute_extraction(
         self,
@@ -63,6 +65,7 @@ class FewshotExecutor:
         sample_set: SampleSet,
     ) -> list[ExtractionResult]:
         """使用 locked extraction prompt + 当前 few-shot set 真实抽取。"""
+        self._extraction_executor.progress_reporter = self.progress_reporter
         return self._extraction_executor.execute(
             extraction_prompt,
             batch,
@@ -78,6 +81,7 @@ class FewshotExecutor:
         sample_set: SampleSet,
     ) -> list[ExtractionResult]:
         """使用新 few-shot set 重新抽取。"""
+        self._extraction_executor.progress_reporter = self.progress_reporter
         return self._extraction_executor.execute(
             extraction_prompt,
             batch,
@@ -91,6 +95,7 @@ class FewshotExecutor:
         sample_set: SampleSet,
     ) -> list[EvalRecord]:
         """评估抽取结果。"""
+        self._evaluation_executor.progress_reporter = self.progress_reporter
         return self._evaluation_executor.evaluate_batch(extraction_results, sample_set)
 
     def compute_accuracy(self, eval_records: list[EvalRecord]) -> float:

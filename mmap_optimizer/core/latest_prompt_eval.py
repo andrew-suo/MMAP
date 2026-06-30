@@ -134,44 +134,59 @@ class LatestPromptEvaluator:
         evaluation_executor = executors["evaluation"]
         if hasattr(extraction_executor, "progress_reporter"):
             extraction_executor.progress_reporter = NullProgressReporter()
+        if hasattr(evaluation_executor, "progress_reporter"):
+            evaluation_executor.progress_reporter = NullProgressReporter()
 
         per_sample_results: list[PerSampleEvaluationRecord] = []
-        for sample_id in self.progress.iter(
-            sample_ids,
-            desc="Evaluating samples",
-            total=len(sample_ids),
-        ):
-            batch = SampleBatch(
-                id=f"eval_{sample_id}",
-                phase="evaluation",
-                iteration=1,
-                sample_ids=[sample_id],
-                sampler_name="full_eval",
-            )
-            extraction_results = extraction_executor.execute(
-                prompt,
-                batch,
-                sample_set,
-                fewshot_examples or None,
-            )
-            if not extraction_results:
-                continue
-            extraction_result = extraction_results[0]
-            eval_records = evaluation_executor.evaluate_batch(extraction_results, sample_set)
-            if not eval_records:
-                continue
-            eval_record = eval_records[0]
-            record = PerSampleEvaluationRecord(
-                sample_id=sample_id,
-                extraction_status=extraction_result.status,
-                evaluation_status=eval_record.status,
-                correct=eval_record.correct,
-                raw_output=extraction_result.raw_output,
-                parsed_output=extraction_result.parsed_output,
-                details=eval_record.details,
-            )
-            per_sample_results.append(record)
-            self.progress.write(self._format_sample_line(record))
+        correct_count = 0
+        processed_count = 0
+        with self.progress.progress(total=len(sample_ids), desc="Evaluating samples") as bar:
+            for sample_id in sample_ids:
+                batch = SampleBatch(
+                    id=f"eval_{sample_id}",
+                    phase="evaluation",
+                    iteration=1,
+                    sample_ids=[sample_id],
+                    sampler_name="full_eval",
+                )
+                extraction_results = extraction_executor.execute(
+                    prompt,
+                    batch,
+                    sample_set,
+                    fewshot_examples or None,
+                )
+                if not extraction_results:
+                    bar.update(1)
+                    continue
+                extraction_result = extraction_results[0]
+                eval_records = evaluation_executor.evaluate_batch(extraction_results, sample_set)
+                if not eval_records:
+                    bar.update(1)
+                    continue
+                eval_record = eval_records[0]
+                record = PerSampleEvaluationRecord(
+                    sample_id=sample_id,
+                    extraction_status=extraction_result.status,
+                    evaluation_status=eval_record.status,
+                    correct=eval_record.correct,
+                    raw_output=extraction_result.raw_output,
+                    parsed_output=extraction_result.parsed_output,
+                    details=eval_record.details,
+                )
+                per_sample_results.append(record)
+                processed_count += 1
+                if record.correct:
+                    correct_count += 1
+                accuracy = correct_count / processed_count if processed_count > 0 else 0.0
+                bar.set_postfix(
+                    {
+                        "acc": f"{accuracy:.1%}",
+                        "correct": correct_count,
+                        "done": processed_count,
+                    }
+                )
+                bar.update(1)
+                self.progress.write(self._format_sample_line(record))
 
         summary = self._summarize(per_sample_results)
         self._write_artifacts(

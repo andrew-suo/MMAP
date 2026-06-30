@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from mmap_optimizer.core.config import load_config
+from mmap_optimizer.core.progress import ProgressReporter
 from mmap_optimizer.core.runner import MMAPRunner
 from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
+from mmap_optimizer.executors.analysis_executor import AnalysisExecutor
+from mmap_optimizer.executors.evaluation_executor import EvaluationExecutor
 from mmap_optimizer.executors.extraction_executor import ExtractionExecutor
 from mmap_optimizer.model.client import ModelResponse
 from mmap_optimizer.model.retry import (
@@ -55,6 +59,34 @@ class SampleAwareClient:
         return ModelResponse(raw_output='{"result": "OK"}')
 
 
+class RecordingBar:
+    def __init__(self) -> None:
+        self.postfixes: list[dict[str, Any]] = []
+        self.updates: list[int] = []
+
+    def update(self, n: int = 1) -> None:
+        self.updates.append(n)
+
+    def set_postfix(self, value=None, **kwargs) -> None:
+        if value is None:
+            value = kwargs
+        self.postfixes.append(dict(value))
+
+
+class RecordingProgress(ProgressReporter):
+    def __init__(self) -> None:
+        super().__init__(enabled=False)
+        self.bars: list[RecordingBar] = []
+
+    @contextmanager
+    def progress(self, *, total: int, desc: str, postfix=None):
+        bar = RecordingBar()
+        if postfix:
+            bar.set_postfix(postfix)
+        self.bars.append(bar)
+        yield bar
+
+
 def _prompt() -> StructuredPrompt:
     return StructuredPrompt(
         id="p1",
@@ -85,6 +117,22 @@ def _sample_set(sample_ids: list[str]) -> tuple[SampleSet, SampleBatch]:
         sampler_name="test",
     )
     return SampleSet(specs=specs, states=states), batch
+
+
+def _analysis_prompt() -> StructuredPrompt:
+    return StructuredPrompt(
+        id="a1",
+        prompt_type="analysis",
+        sections=[
+            PromptSection(
+                id="s1",
+                title="Judge",
+                level=1,
+                content="Judge extraction correctness.",
+            )
+        ],
+        raw_markdown="# Judge\nJudge extraction correctness.",
+    )
 
 
 def test_retrying_model_client_retries_then_succeeds(tmp_path):
@@ -151,6 +199,108 @@ def test_extraction_aborts_after_three_consecutive_sample_failures():
 
     with pytest.raises(ConsecutiveModelFailureError):
         executor.execute(_prompt(), batch, sample_set)
+
+
+def test_evaluation_executor_updates_realtime_accuracy_postfix():
+    sample_set, _ = _sample_set(["sample_1", "sample_2", "sample_3"])
+    extraction_results = [
+        type(
+            "_ER",
+            (),
+            {
+                "sample_id": "sample_1",
+                "parsed_output": {"result": "OK"},
+                "evaluation_status": None,
+            },
+        )(),
+        type(
+            "_ER",
+            (),
+            {
+                "sample_id": "sample_2",
+                "parsed_output": {"result": "BAD"},
+                "evaluation_status": None,
+            },
+        )(),
+        type(
+            "_ER",
+            (),
+            {
+                "sample_id": "sample_3",
+                "parsed_output": None,
+                "evaluation_status": None,
+            },
+        )(),
+    ]
+
+    progress = RecordingProgress()
+    executor = EvaluationExecutor(primary_answer_fields=["result"])
+    executor.progress_reporter = progress
+
+    records = executor.evaluate_batch(extraction_results, sample_set)
+
+    assert [r.status for r in records] == ["correct", "wrong", "invalid"]
+    postfixes = progress.bars[0].postfixes
+    assert postfixes[0]["acc"] == "100.0%"
+    assert postfixes[1]["acc"] == "50.0%"
+    assert postfixes[2]["acc"] == "33.3%"
+
+
+def test_analysis_executor_updates_realtime_accuracy_postfix():
+    sample_set, _ = _sample_set(["sample_1", "sample_2"])
+    sample_set.specs["sample_2"].ground_truth = {"result": "NG"}
+    extraction_results = [
+        type(
+            "_ER",
+            (),
+            {
+                "sample_id": "sample_1",
+                "parsed_output": {"result": "OK"},
+                "raw_output": '{"result":"OK"}',
+                "status": "correct",
+                "evaluation_status": "correct",
+                "error_details": [],
+            },
+        )(),
+        type(
+            "_ER",
+            (),
+            {
+                "sample_id": "sample_2",
+                "parsed_output": {"result": "OK"},
+                "raw_output": '{"result":"OK"}',
+                "status": "correct",
+                "evaluation_status": "wrong",
+                "error_details": [],
+            },
+        )(),
+    ]
+
+    class AnalysisClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete_multimodal(self, messages, assets, model_config=None):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelResponse(raw_output='{"judgement":{"is_correct": true}, "status":"CORRECT"}')
+            return ModelResponse(raw_output='{"judgement":{"is_correct": true}, "status":"CORRECT"}')
+
+    progress = RecordingProgress()
+    executor = AnalysisExecutor(AnalysisClient())
+    executor.progress_reporter = progress
+
+    results = executor.execute_batch(
+        _analysis_prompt(),
+        _prompt(),
+        extraction_results,
+        sample_set,
+    )
+
+    assert [r.analysis_correct for r in results] == [True, False]
+    postfixes = progress.bars[0].postfixes
+    assert postfixes[0]["acc"] == "100.0%"
+    assert postfixes[1]["acc"] == "50.0%"
 
 
 def test_runner_resume_skips_completed_prompt_structuring(tmp_path, monkeypatch):

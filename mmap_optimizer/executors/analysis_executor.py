@@ -114,42 +114,57 @@ class AnalysisExecutor:
     ) -> list[AnalysisResult]:
         """对 batch 中所有样本执行盲评分析（不只错误样本）。"""
         results: list[AnalysisResult] = []
-        for extraction_result in self.progress_reporter.iter(
-            extraction_results,
-            desc="Analyzing samples",
+        correct_count = 0
+        processed_count = 0
+        with self.progress_reporter.progress(
             total=len(extraction_results),
-        ):
-            spec = sample_set.specs.get(extraction_result.sample_id)
-            if spec is None:
-                continue
-            try:
-                result = self.execute(
-                    analysis_prompt,
-                    extraction_prompt,
-                    extraction_result,
-                    spec,
-                    sample_set,
+            desc="Analyzing samples",
+        ) as bar:
+            for extraction_result in extraction_results:
+                spec = sample_set.specs.get(extraction_result.sample_id)
+                if spec is None:
+                    bar.update(1)
+                    continue
+                try:
+                    result = self.execute(
+                        analysis_prompt,
+                        extraction_prompt,
+                        extraction_result,
+                        spec,
+                        sample_set,
+                    )
+                    self.sample_failure_tracker.record_success()
+                except Exception as exc:
+                    if not self.failure_policy.skip_single_sample_failure:
+                        raise
+                    self.sample_failure_tracker.record_failure(
+                        sample_id=extraction_result.sample_id,
+                        call_type="analysis",
+                        error=exc,
+                    )
+                    result = AnalysisResult(
+                        sample_id=extraction_result.sample_id,
+                        judgement={
+                            "status": "model_call_failed",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        },
+                        analysis_correct=False,
+                        error_reason=f"model_call_failed: {type(exc).__name__}: {exc}",
+                    )
+                results.append(result)
+                processed_count += 1
+                if result.analysis_correct:
+                    correct_count += 1
+                accuracy = correct_count / processed_count if processed_count > 0 else 0.0
+                bar.set_postfix(
+                    {
+                        "acc": f"{accuracy:.1%}",
+                        "correct": correct_count,
+                        "done": processed_count,
+                    }
                 )
-                self.sample_failure_tracker.record_success()
-            except Exception as exc:
-                if not self.failure_policy.skip_single_sample_failure:
-                    raise
-                self.sample_failure_tracker.record_failure(
-                    sample_id=extraction_result.sample_id,
-                    call_type="analysis",
-                    error=exc,
-                )
-                result = AnalysisResult(
-                    sample_id=extraction_result.sample_id,
-                    judgement={
-                        "status": "model_call_failed",
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    },
-                    analysis_correct=False,
-                    error_reason=f"model_call_failed: {type(exc).__name__}: {exc}",
-                )
-            results.append(result)
+                bar.update(1)
         return results
 
     def reflect(

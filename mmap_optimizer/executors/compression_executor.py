@@ -149,16 +149,17 @@ class CompressionExecutor:
 
             if comp_lines <= line_limit and comp_chars <= char_limit:
                 # Section 级压缩已降至限内，验证
-                if self._llm_validate_prompt(prompt, compressed):
+                valid, reasons = self._llm_validate_prompt(prompt, compressed)
+                if valid:
                     report.accepted = True
                     report.validation_passed = True
-                    report.validation_reasons = ["section-level LLM compression validated"]
+                    report.validation_reasons = reasons or ["section-level LLM compression validated"]
                     logger.info("[Compression] Section 级 LLM 压缩成功，已降至限内")
                     return compressed, report
                 else:
                     report.accepted = False
                     report.rejected_reason = "VALIDATION_FAILED"
-                    report.validation_reasons = ["section-level compression failed validation"]
+                    report.validation_reasons = reasons or ["section-level compression failed validation"]
                     return prompt, report
 
             # 5. Prompt 级 LLM 压缩（兜底）
@@ -171,10 +172,19 @@ class CompressionExecutor:
             report.line_count_after = comp_lines
             report.char_count_after = comp_chars
 
-            if self._llm_validate_prompt(prompt, compressed):
+            warnings = self._verify_constraints(prompt, compressed)
+            report.warnings = warnings
+            if warnings:
+                report.accepted = False
+                report.rejected_reason = "CONSTRAINT_VIOLATION"
+                report.validation_reasons = ["prompt-level compression violated structure constraints"]
+                return prompt, report
+
+            valid, reasons = self._llm_validate_prompt(prompt, compressed)
+            if valid:
                 report.accepted = True
                 report.validation_passed = True
-                report.validation_reasons = ["prompt-level LLM compression validated"]
+                report.validation_reasons = reasons or ["prompt-level LLM compression validated"]
                 logger.info("[Compression] Prompt 级 LLM 压缩成功")
                 if comp_lines > line_limit or comp_chars > char_limit:
                     report.still_over_limit = True
@@ -182,7 +192,7 @@ class CompressionExecutor:
             else:
                 report.accepted = False
                 report.rejected_reason = "VALIDATION_FAILED"
-                report.validation_reasons = ["prompt-level compression failed validation"]
+                report.validation_reasons = reasons or ["prompt-level compression failed validation"]
                 return prompt, report
 
         # 无 model_client，仅确定性压缩
@@ -227,7 +237,7 @@ class CompressionExecutor:
         def _compress_section(section: PromptSection) -> None:
             if section.mutable and section.content:
                 section.content = self._compress_content(section.content)
-            if section.bullets:
+            if section.mutable and section.bullets:
                 seen: set[str] = set()
                 unique_bullets: list[str] = []
                 for b in section.bullets:
@@ -278,8 +288,11 @@ class CompressionExecutor:
             comp_sec = comp_sections.get(sid)
             if comp_sec is None:
                 warnings.append(f"section {sid} was deleted")
-            elif not orig_sec.mutable and orig_sec.content != comp_sec.content:
-                warnings.append(f"immutable section {sid} content was modified")
+            elif not orig_sec.mutable:
+                if orig_sec.content != comp_sec.content:
+                    warnings.append(f"immutable section {sid} content was modified")
+                if list(orig_sec.bullets) != list(comp_sec.bullets):
+                    warnings.append(f"immutable section {sid} bullets were modified")
         return warnings
 
     # ------------------------------------------------------------------
@@ -335,7 +348,8 @@ class CompressionExecutor:
             )
             if compressed_content is not None and compressed_content != section.content:
                 # LLM 验证
-                if self._llm_validate_compression(section.content, compressed_content):
+                valid, _ = self._llm_validate_compression(section.content, compressed_content)
+                if valid:
                     section.content = compressed_content
                     compressed_section_ids.append(section.id)
                     logger.info(
@@ -464,7 +478,7 @@ class CompressionExecutor:
     # LLM 验证
     # ------------------------------------------------------------------
 
-    def _llm_validate_compression(self, original: str, compressed: str) -> bool:
+    def _llm_validate_compression(self, original: str, compressed: str) -> tuple[bool, str]:
         """调用 LLM 验证压缩后的语义等价性。
 
         Args:
@@ -472,19 +486,19 @@ class CompressionExecutor:
             compressed: 压缩后文本
 
         Returns:
-            True 表示验证通过
+            (验证是否通过, 原因)
         """
         if not original.strip() or not compressed.strip():
-            return True
+            return True, "empty_content_skipped"
 
         if self.model_client is None:
-            return True
+            return True, "no_model_client"
 
         try:
             prompt_template = Path(self.validation_prompt_path).read_text(encoding="utf-8")
         except Exception:
             logger.warning("[Compression] 无法加载验证 prompt: %s", self.validation_prompt_path)
-            return True  # 无法加载验证 prompt 时放行
+            return False, "validation_prompt_load_failed"
 
         system_content = prompt_template.format(
             original_section=original,
@@ -505,24 +519,24 @@ class CompressionExecutor:
                 valid, reason = parsed
                 if not valid:
                     logger.info("[Compression] 验证失败: %s", reason)
-                return valid
-            # 解析失败，放行
-            return True
+                return valid, reason or "validation_result_returned_false"
+            return False, "validation_parse_failed"
         except Exception as e:
             logger.warning("[Compression] LLM 验证调用失败: %s", e)
-            return True
+            return False, "validation_call_failed"
 
     def _llm_validate_prompt(
         self,
         original: StructuredPrompt,
         compressed: StructuredPrompt,
-    ) -> bool:
+    ) -> tuple[bool, list[str]]:
         """验证整个 prompt 压缩的语义等价性。
 
         逐 section 验证 mutable section，immutable section 跳过（已有约束检查）。
         """
         orig_sections = {s.id: s for s in self._flatten_sections(original.sections)}
         comp_sections = {s.id: s for s in self._flatten_sections(compressed.sections)}
+        reasons: list[str] = []
 
         for sid, orig_sec in orig_sections.items():
             comp_sec = comp_sections.get(sid)
@@ -532,10 +546,12 @@ class CompressionExecutor:
                 continue
             if orig_sec.content == comp_sec.content:
                 continue
-            if not self._llm_validate_compression(orig_sec.content, comp_sec.content):
-                return False
+            valid, reason = self._llm_validate_compression(orig_sec.content, comp_sec.content)
+            if not valid:
+                reasons.append(f"{sid}:{reason}")
+                return False, reasons
 
-        return True
+        return True, reasons or ["prompt_compression_validated"]
 
     # ------------------------------------------------------------------
     # 辅助方法

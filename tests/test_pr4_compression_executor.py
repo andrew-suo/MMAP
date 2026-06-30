@@ -65,10 +65,14 @@ class MockModelClient:
         compression_output: str = "Compressed content",
         validation_valid: bool = True,
         validation_fail_after: int | None = None,
+        validation_output: str | None = None,
+        raise_on_validation: bool = False,
     ) -> None:
         self.compression_output = compression_output
         self.validation_valid = validation_valid
         self.validation_fail_after = validation_fail_after
+        self.validation_output = validation_output
+        self.raise_on_validation = raise_on_validation
         self.compression_calls = 0
         self.validation_calls = 0
 
@@ -76,6 +80,10 @@ class MockModelClient:
         user_msg = messages[-1]["content"] if messages else ""
         if "验证" in user_msg:
             self.validation_calls += 1
+            if self.raise_on_validation:
+                raise RuntimeError("mock validation call failed")
+            if self.validation_output is not None:
+                return _MockModelResponse(self.validation_output)
             if self.validation_fail_after is not None and self.validation_calls > self.validation_fail_after:
                 return _MockModelResponse(
                     '{"valid": false, "reason": "mock validation fail"}'
@@ -218,6 +226,33 @@ def make_prompt_with_immutable() -> StructuredPrompt:
     )
 
 
+def make_prompt_with_immutable_bullets() -> StructuredPrompt:
+    """构造 immutable bullets 和 mutable bullets 混合的 prompt。"""
+    immutable_section = PromptSection(
+        id="section_immutable",
+        title="Fixed Rules",
+        level=1,
+        content="Keep content",
+        bullets=["A", "A", "B"],
+        mutable=False,
+    )
+    mutable_section = PromptSection(
+        id="section_mutable",
+        title="Mutable Rules",
+        level=1,
+        content="Compress me\nCompress me\n\n\nStill compress me",
+        bullets=["X", "X", "Y"],
+        mutable=True,
+    )
+    return StructuredPrompt(
+        id="p_bullets",
+        prompt_type="extraction",
+        sections=[immutable_section, mutable_section],
+        raw_markdown="",
+        version=1,
+    )
+
+
 def make_sample_set(sample_ids: list[str]) -> SampleSet:
     """构造含多个样本的 SampleSet。"""
     specs: dict[str, SampleSpec] = {}
@@ -348,6 +383,30 @@ def test_immutable_section_not_modified():
     orig_mutable = prompt.get_section_by_id("section_mutable")
     comp_mutable = result_prompt.get_section_by_id("section_mutable")
     assert len(comp_mutable.content.splitlines()) < len(orig_mutable.content.splitlines())
+
+
+def test_immutable_section_bullets_not_modified():
+    """immutable section 的 bullets 不应被确定性压缩去重。"""
+    prompt = make_prompt_with_immutable_bullets()
+    sample_ids = ["s1", "s2"]
+    sample_set = make_sample_set(sample_ids)
+    batch = make_batch(sample_ids)
+
+    executor = CompressionExecutor()
+    result_prompt, report = executor.compress_if_needed(
+        prompt=prompt,
+        line_limit=3,
+        char_limit=10000,
+        batch=batch,
+        sample_set=sample_set,
+        mode="extraction",
+    )
+
+    assert report.accepted is True
+    comp_immutable = result_prompt.get_section_by_id("section_immutable")
+    comp_mutable = result_prompt.get_section_by_id("section_mutable")
+    assert comp_immutable.bullets == ["A", "A", "B"]
+    assert comp_mutable.bullets == ["X", "Y"]
 
 
 def test_compressed_prompt_can_render():
@@ -621,6 +680,212 @@ def test_llm_validation_fail():
     assert report.rejected_reason == "VALIDATION_FAILED"
     assert result_prompt.id == prompt.id  # 返回原 prompt
     assert mock_client.validation_calls >= 2  # 至少 2 次验证调用
+
+
+def test_prompt_level_llm_compression_rejects_deleted_section(monkeypatch):
+    """prompt 级 LLM 压缩删 section 时，应以 CONSTRAINT_VIOLATION 拒绝。"""
+    prompt = make_prompt_with_immutable()
+    sample_ids = ["s1", "s2"]
+    sample_set = make_sample_set(sample_ids)
+    batch = make_batch(sample_ids)
+
+    mock_client = MockModelClient(
+        compression_output="# Fixed Rules\nOnly one section remains",
+        validation_valid=True,
+    )
+    executor = CompressionExecutor(
+        model_client=mock_client,
+        compression_prompt_path=COMPRESSION_PROMPT_PATH,
+        validation_prompt_path=VALIDATION_PROMPT_PATH,
+    )
+
+    monkeypatch.setattr(
+        executor,
+        "_llm_compress_sections",
+        lambda prompt, line_limit, char_limit, contribution_tracker: (
+            prompt,
+            len(prompt.to_markdown().splitlines()),
+            len(prompt.to_markdown()),
+            [],
+        ),
+    )
+
+    result_prompt, report = executor.compress_if_needed(
+        prompt=prompt,
+        line_limit=1,
+        char_limit=100000,
+        batch=batch,
+        sample_set=sample_set,
+        mode="extraction",
+    )
+
+    assert report.triggered is True
+    assert report.accepted is False
+    assert report.rejected_reason == "CONSTRAINT_VIOLATION"
+    assert "section section_mutable was deleted" in report.warnings
+    assert result_prompt.id == prompt.id
+
+
+def test_prompt_level_llm_compression_rejects_immutable_bullet_change(monkeypatch):
+    """prompt 级 LLM 压缩修改 immutable bullets 时，应被拒绝。"""
+    prompt = make_prompt_with_immutable_bullets()
+    sample_ids = ["s1", "s2"]
+    sample_set = make_sample_set(sample_ids)
+    batch = make_batch(sample_ids)
+
+    mock_client = MockModelClient(
+        compression_output="unused",
+        validation_valid=True,
+    )
+    executor = CompressionExecutor(
+        model_client=mock_client,
+        compression_prompt_path=COMPRESSION_PROMPT_PATH,
+        validation_prompt_path=VALIDATION_PROMPT_PATH,
+    )
+
+    monkeypatch.setattr(
+        executor,
+        "_llm_compress_sections",
+        lambda prompt, line_limit, char_limit, contribution_tracker: (
+            prompt,
+            len(prompt.to_markdown().splitlines()),
+            len(prompt.to_markdown()),
+            [],
+        ),
+    )
+    bad_prompt = make_prompt_with_immutable_bullets()
+    bad_prompt.id = f"{prompt.id}_llm_compressed"
+    bad_prompt.version = prompt.version + 1
+    bad_prompt.get_section_by_id("section_immutable").bullets = ["A", "B"]
+    monkeypatch.setattr(
+        executor,
+        "_llm_compress_prompt",
+        lambda prompt, line_limit, char_limit: (
+            bad_prompt,
+            len(bad_prompt.to_markdown().splitlines()),
+            len(bad_prompt.to_markdown()),
+        ),
+    )
+
+    result_prompt, report = executor.compress_if_needed(
+        prompt=prompt,
+        line_limit=1,
+        char_limit=100000,
+        batch=batch,
+        sample_set=sample_set,
+        mode="extraction",
+    )
+
+    assert report.accepted is False
+    assert report.rejected_reason == "CONSTRAINT_VIOLATION"
+    assert "immutable section section_immutable bullets were modified" in report.warnings
+    assert result_prompt.id == prompt.id
+
+
+def test_llm_validation_parse_failure_rejects_compression(monkeypatch):
+    """validation JSON 不可解析时，应拒绝压缩结果而不是放行。"""
+    prompt = make_large_unique_prompt()
+    sample_ids = ["s1", "s2"]
+    sample_set = make_sample_set(sample_ids)
+    batch = make_batch(sample_ids)
+
+    mock_client = MockModelClient(validation_output="not-json")
+    executor = CompressionExecutor(
+        model_client=mock_client,
+        compression_prompt_path=COMPRESSION_PROMPT_PATH,
+        validation_prompt_path=VALIDATION_PROMPT_PATH,
+    )
+
+    monkeypatch.setattr(
+        executor,
+        "_llm_compress_sections",
+        lambda prompt, line_limit, char_limit, contribution_tracker: (
+            prompt,
+            len(prompt.to_markdown().splitlines()),
+            len(prompt.to_markdown()),
+            [],
+        ),
+    )
+    valid_compressed_prompt = make_large_unique_prompt()
+    valid_compressed_prompt.id = f"{prompt.id}_llm_compressed"
+    valid_compressed_prompt.version = prompt.version + 1
+    valid_compressed_prompt.get_section_by_id("section_1").content = "Short compressed content."
+    monkeypatch.setattr(
+        executor,
+        "_llm_compress_prompt",
+        lambda prompt, line_limit, char_limit: (
+            valid_compressed_prompt,
+            len(valid_compressed_prompt.to_markdown().splitlines()),
+            len(valid_compressed_prompt.to_markdown()),
+        ),
+    )
+
+    result_prompt, report = executor.compress_if_needed(
+        prompt=prompt,
+        line_limit=5,
+        char_limit=100000,
+        batch=batch,
+        sample_set=sample_set,
+        mode="extraction",
+    )
+
+    assert report.accepted is False
+    assert report.rejected_reason == "VALIDATION_FAILED"
+    assert any("validation_parse_failed" in reason for reason in report.validation_reasons)
+    assert result_prompt.id == prompt.id
+
+
+def test_llm_validation_call_failure_rejects_compression(monkeypatch):
+    """validation 调用报错时，应拒绝压缩结果而不是放行。"""
+    prompt = make_large_unique_prompt()
+    sample_ids = ["s1", "s2"]
+    sample_set = make_sample_set(sample_ids)
+    batch = make_batch(sample_ids)
+
+    mock_client = MockModelClient(raise_on_validation=True)
+    executor = CompressionExecutor(
+        model_client=mock_client,
+        compression_prompt_path=COMPRESSION_PROMPT_PATH,
+        validation_prompt_path=VALIDATION_PROMPT_PATH,
+    )
+
+    monkeypatch.setattr(
+        executor,
+        "_llm_compress_sections",
+        lambda prompt, line_limit, char_limit, contribution_tracker: (
+            prompt,
+            len(prompt.to_markdown().splitlines()),
+            len(prompt.to_markdown()),
+            [],
+        ),
+    )
+    valid_compressed_prompt = make_large_unique_prompt()
+    valid_compressed_prompt.id = f"{prompt.id}_llm_compressed"
+    valid_compressed_prompt.version = prompt.version + 1
+    valid_compressed_prompt.get_section_by_id("section_1").content = "Short compressed content."
+    monkeypatch.setattr(
+        executor,
+        "_llm_compress_prompt",
+        lambda prompt, line_limit, char_limit: (
+            valid_compressed_prompt,
+            len(valid_compressed_prompt.to_markdown().splitlines()),
+            len(valid_compressed_prompt.to_markdown()),
+        ),
+    )
+
+    result_prompt, report = executor.compress_if_needed(
+        prompt=prompt,
+        line_limit=5,
+        char_limit=100000,
+        batch=batch,
+        sample_set=sample_set,
+        mode="extraction",
+    )
+
+    assert report.accepted is False
+    assert report.rejected_reason == "VALIDATION_FAILED"
+    assert any("validation_call_failed" in reason for reason in report.validation_reasons)
+    assert result_prompt.id == prompt.id
 
 
 # ---------------------------------------------------------------------------

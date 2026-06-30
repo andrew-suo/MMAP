@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -185,6 +186,237 @@ def test_runner_resume_skips_completed_prompt_structuring(tmp_path, monkeypatch)
     assert resumed.run_plan.current_step_index >= 1
     checkpoint = json.loads((Path(config.run.output_dir) / "checkpoint.json").read_text())
     assert checkpoint["run_status"] == "completed"
+
+
+def test_runner_restore_keeps_checkpoint_iteration_and_stage(tmp_path):
+    config = load_config(REPO_ROOT / "configs" / "smoke.yaml")
+    config.run.output_dir = str(tmp_path / "resume_checkpoint")
+    config.run.use_mock = True
+    config.prompt_optimization.rounds = 0
+    config.fewshot_optimization.rounds = 0
+
+    first = MMAPRunner(
+        config=config,
+        extraction_prompt_path=REPO_ROOT / "prompts" / "extraction.txt",
+        analysis_prompt_path=REPO_ROOT / "prompts" / "analysis.txt",
+        use_mock=True,
+    )
+    first._save_initial_artifacts()
+    first._run_prompt_structuring()
+    first._save_checkpoint(
+        current_phase="prompt_optimization",
+        current_step_id="prompt_iter_002",
+        current_iteration=2,
+        current_stage="iteration_completed",
+        event="prompt_iteration_completed",
+    )
+
+    resumed = MMAPRunner(
+        config=config,
+        extraction_prompt_path=REPO_ROOT / "prompts" / "extraction.txt",
+        analysis_prompt_path=REPO_ROOT / "prompts" / "analysis.txt",
+        use_mock=True,
+    )
+    resumed._restore_from_checkpoint()
+
+    assert resumed.checkpoint.current_iteration == 2
+    assert resumed.checkpoint.current_stage == "iteration_completed"
+
+    checkpoint = json.loads((Path(config.run.output_dir) / "checkpoint.json").read_text())
+    assert checkpoint["current_iteration"] == 2
+    assert checkpoint["current_stage"] == "iteration_completed"
+
+
+def test_runner_resume_duration_uses_original_start_time(tmp_path, monkeypatch):
+    config = load_config(REPO_ROOT / "configs" / "smoke.yaml")
+    config.run.output_dir = str(tmp_path / "resume_duration")
+    config.run.use_mock = True
+    config.prompt_optimization.rounds = 0
+    config.fewshot_optimization.rounds = 0
+
+    first = MMAPRunner(
+        config=config,
+        extraction_prompt_path=REPO_ROOT / "prompts" / "extraction.txt",
+        analysis_prompt_path=REPO_ROOT / "prompts" / "analysis.txt",
+        use_mock=True,
+    )
+    first._save_initial_artifacts()
+    first._run_prompt_structuring()
+
+    run_start = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    run_end = run_start + timedelta(seconds=5)
+    first.run_summary.start_time = run_start.isoformat()
+    first.run_summary.status = "running"
+    first._save_final_artifacts()
+
+    time_values = iter([run_end.timestamp() - 1, run_end.timestamp()])
+    iso_values = iter([(run_end - timedelta(seconds=1)).isoformat(), run_end.isoformat()])
+
+    monkeypatch.setattr(MMAPRunner, "_time_seconds", lambda self: next(time_values))
+    monkeypatch.setattr(MMAPRunner, "_now_utc_isoformat", lambda self: next(iso_values))
+
+    resumed = MMAPRunner(
+        config=config,
+        extraction_prompt_path=REPO_ROOT / "prompts" / "extraction.txt",
+        analysis_prompt_path=REPO_ROOT / "prompts" / "analysis.txt",
+        use_mock=True,
+    )
+    summary = resumed.run(resume=True)
+
+    assert summary.status == "completed"
+    assert summary.start_time == run_start.isoformat()
+    assert summary.end_time == run_end.isoformat()
+    assert summary.duration_seconds == 5.0
+
+
+def test_runner_persists_failed_status_and_can_resume(tmp_path, monkeypatch):
+    config = load_config(REPO_ROOT / "configs" / "smoke.yaml")
+    config.run.output_dir = str(tmp_path / "resume_failed")
+    config.run.use_mock = True
+    config.prompt_optimization.rounds = 0
+    config.fewshot_optimization.rounds = 0
+
+    start = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    fail_end = start + timedelta(seconds=3)
+    fail_times = iter([start.timestamp(), fail_end.timestamp()])
+    fail_isos = iter([start.isoformat(), fail_end.isoformat()])
+
+    monkeypatch.setattr(MMAPRunner, "_time_seconds", lambda self: next(fail_times))
+    monkeypatch.setattr(MMAPRunner, "_now_utc_isoformat", lambda self: next(fail_isos))
+    monkeypatch.setattr(
+        MMAPRunner,
+        "_run_prompt_structuring",
+        lambda self: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    runner = MMAPRunner(
+        config=config,
+        extraction_prompt_path=REPO_ROOT / "prompts" / "extraction.txt",
+        analysis_prompt_path=REPO_ROOT / "prompts" / "analysis.txt",
+        use_mock=True,
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        runner.run()
+
+    output_dir = Path(config.run.output_dir)
+    checkpoint = json.loads((output_dir / "checkpoint.json").read_text())
+    summary_data = json.loads((output_dir / "run_summary.json").read_text())
+    assert checkpoint["run_status"] == "failed"
+    assert checkpoint["last_error"] == "boom"
+    assert summary_data["status"] == "failed"
+    assert summary_data["duration_seconds"] == 3.0
+    run_plan = json.loads((output_dir / "run_plan.json").read_text())
+    assert run_plan["current_step_index"] == 0
+    assert run_plan["steps"][0]["status"] == "pending"
+
+    monkeypatch.undo()
+
+    resumed = MMAPRunner(
+        config=config,
+        extraction_prompt_path=REPO_ROOT / "prompts" / "extraction.txt",
+        analysis_prompt_path=REPO_ROOT / "prompts" / "analysis.txt",
+        use_mock=True,
+    )
+    summary = resumed.run(resume=True)
+
+    assert summary.status == "completed"
+
+
+def test_runner_resume_records_run_resumed_event_without_erasing_checkpoint_fields(tmp_path):
+    config = load_config(REPO_ROOT / "configs" / "smoke.yaml")
+    config.run.output_dir = str(tmp_path / "resume_events_restore")
+    config.run.use_mock = True
+    config.prompt_optimization.rounds = 0
+    config.fewshot_optimization.rounds = 0
+
+    first = MMAPRunner(
+        config=config,
+        extraction_prompt_path=REPO_ROOT / "prompts" / "extraction.txt",
+        analysis_prompt_path=REPO_ROOT / "prompts" / "analysis.txt",
+        use_mock=True,
+    )
+    first._save_initial_artifacts()
+    first._run_prompt_structuring()
+    first._save_checkpoint(
+        current_phase="prompt_optimization",
+        current_step_id="prompt_iter_002",
+        current_iteration=2,
+        current_stage="iteration_completed",
+        event="prompt_iteration_completed",
+    )
+
+    resumed = MMAPRunner(
+        config=config,
+        extraction_prompt_path=REPO_ROOT / "prompts" / "extraction.txt",
+        analysis_prompt_path=REPO_ROOT / "prompts" / "analysis.txt",
+        use_mock=True,
+    )
+    resumed._restore_from_checkpoint()
+
+    events_path = Path(config.run.output_dir) / "resume_events.jsonl"
+    events = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert events[-1]["event"] == "run_resumed"
+    assert events[-1]["checkpoint"]["current_iteration"] == 2
+    assert events[-1]["checkpoint"]["current_stage"] == "iteration_completed"
+
+
+def test_runner_resume_keeps_run_plan_progress_and_emits_expected_events(tmp_path, monkeypatch):
+    config = load_config(REPO_ROOT / "configs" / "smoke.yaml")
+    config.run.output_dir = str(tmp_path / "resume_events_full")
+    config.run.use_mock = True
+    config.prompt_optimization.rounds = 0
+    config.fewshot_optimization.rounds = 0
+
+    start = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    fail_end = start + timedelta(seconds=2)
+    fail_times = iter([start.timestamp(), fail_end.timestamp()])
+    fail_isos = iter([start.isoformat(), fail_end.isoformat()])
+    with monkeypatch.context() as m:
+        m.setattr(MMAPRunner, "_time_seconds", lambda self: next(fail_times))
+        m.setattr(MMAPRunner, "_now_utc_isoformat", lambda self: next(fail_isos))
+        m.setattr(
+            MMAPRunner,
+            "_run_prompt_structuring",
+            lambda self: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        runner = MMAPRunner(
+            config=config,
+            extraction_prompt_path=REPO_ROOT / "prompts" / "extraction.txt",
+            analysis_prompt_path=REPO_ROOT / "prompts" / "analysis.txt",
+            use_mock=True,
+        )
+        with pytest.raises(RuntimeError, match="boom"):
+            runner.run()
+
+    resumed = MMAPRunner(
+        config=config,
+        extraction_prompt_path=REPO_ROOT / "prompts" / "extraction.txt",
+        analysis_prompt_path=REPO_ROOT / "prompts" / "analysis.txt",
+        use_mock=True,
+    )
+    summary = resumed.run(resume=True)
+
+    assert summary.status == "completed"
+    assert resumed.run_plan.current_step_index == len(resumed.run_plan.steps)
+
+    run_plan = json.loads((Path(config.run.output_dir) / "run_plan.json").read_text(encoding="utf-8"))
+    assert run_plan["current_step_index"] == len(run_plan["steps"])
+    assert run_plan["steps"][0]["status"] == "completed"
+
+    events_path = Path(config.run.output_dir) / "resume_events.jsonl"
+    events = [
+        json.loads(line)["event"]
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert "run_started" in events
+    assert "run_failed" in events
+    assert "run_resumed" in events
+    assert events[-1] == "run_completed"
 
 
 def test_refactored_config_round_trips_full_fewshot_sampler_fields():

@@ -134,6 +134,7 @@ class AnalysisPromptOptimizationStage:
         self.safe_patches: list[AnalysisPatch] = []
         self.toxic_patches: list[AnalysisPatch] = []
         self.final_prompt: StructuredPrompt | None = None
+        self.final_prompt_source: str = "none"
 
         self.patched_prompt: StructuredPrompt | None = None
         self.patch_apply_report = None
@@ -654,11 +655,13 @@ class AnalysisPromptOptimizationStage:
                 )
                 self.final_prompt = final_prompt
                 self.accepted_prompt = final_prompt
+                self.final_prompt_source = "patch"
                 for patch in self.final_merged_patches:
                     patch.status = "accepted"
             else:
                 self.final_prompt = None
                 self.accepted_prompt = None
+                self.final_prompt_source = "none"
                 self.metrics.no_progress = True
 
             self.metrics.accepted_patch_count = len(self.final_merged_patches)
@@ -711,6 +714,8 @@ class AnalysisPromptOptimizationStage:
 
             if broken_ids:
                 self.accepted_prompt = None
+                self.final_prompt = None
+                self.final_prompt_source = "none"
                 for patch in self.initial_merged_patches:
                     patch.status = "rejected"
                     patch.rejection_reason = "TOXIC"
@@ -718,17 +723,23 @@ class AnalysisPromptOptimizationStage:
             elif not fixed_ids:
                 self.metrics.no_progress = True
                 self.accepted_prompt = None
+                self.final_prompt = None
+                self.final_prompt_source = "none"
                 for patch in self.initial_merged_patches:
                     patch.status = "rejected"
                     patch.rejection_reason = "INEFFECTIVE"
                 self.final_merged_patches = []
             elif patched_accuracy >= base_accuracy:
                 self.accepted_prompt = self.trial_prompt
+                self.final_prompt = self.trial_prompt
+                self.final_prompt_source = "patch"
                 self.final_merged_patches = self.initial_merged_patches.copy()
                 for patch in self.final_merged_patches:
                     patch.status = "accepted"
             else:
                 self.accepted_prompt = None
+                self.final_prompt = None
+                self.final_prompt_source = "none"
                 for patch in self.initial_merged_patches:
                     patch.status = "rejected"
                     patch.rejection_reason = "REGRESSION"
@@ -950,6 +961,7 @@ class AnalysisPromptOptimizationStage:
         """Apply 没有修改 prompt 时，终止当前 patch 消费并写回轨迹。"""
         self.accepted_prompt = None
         self.final_prompt = None
+        self.final_prompt_source = "none"
         self.final_merged_patches = []
         self.safe_patches = []
         self.toxic_patches = []
@@ -1224,9 +1236,10 @@ class AnalysisPromptOptimizationStage:
 
         if report.accepted:
             self.final_prompt = compressed_prompt
-            self.accepted_prompt = compressed_prompt
+            if self.accepted_prompt is None:
+                self.final_prompt_source = "compression_only"
             self.metrics.compression_accepted = True
-            if self.analysis_executor is not None:
+            if self.analysis_executor is not None and not self._has_authoritative_final_results():
                 self.final_analysis_results = self.analysis_executor.execute_batch(
                     analysis_prompt=compressed_prompt,
                     extraction_prompt=self.extraction_prompt,
@@ -1244,14 +1257,16 @@ class AnalysisPromptOptimizationStage:
     def _step8_final_test_and_metrics(self) -> None:
         """Step 8: 最终测试与统计。"""
         if self.patch_apply_executor is not None:
-            if self.accepted_prompt is not None:
+            final_prompt = self.final_prompt or self.accepted_prompt
+            if final_prompt is not None:
                 if self.analysis_executor is not None:
-                    self.final_analysis_results = self.analysis_executor.execute_batch(
-                        analysis_prompt=self.accepted_prompt,
-                        extraction_prompt=self.extraction_prompt,
-                        extraction_results=self.extraction_results,
-                        sample_set=self.sample_set,
-                    )
+                    if not self._has_authoritative_final_results():
+                        self.final_analysis_results = self.analysis_executor.execute_batch(
+                            analysis_prompt=final_prompt,
+                            extraction_prompt=self.extraction_prompt,
+                            extraction_results=self.extraction_results,
+                            sample_set=self.sample_set,
+                        )
                     correct_count = sum(
                         1 for r in self.final_analysis_results if r.analysis_correct
                     )
@@ -1371,3 +1386,6 @@ class AnalysisPromptOptimizationStage:
                     metadata={"analysis_correct": raw_status},
                 )
             )
+
+    def _has_authoritative_final_results(self) -> bool:
+        return bool(self.final_analysis_results)

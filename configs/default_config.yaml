@@ -144,6 +144,18 @@ fewshot_optimization:
   rounds: 2
   batch_size: 99
   slot_count: 5
+  selection_batch_size: null
+  validation_batch_size: null
+  candidate_pool_size: 20
+  selection_strategy: quota_diverse
+  fallback_strategy: difficulty_topk
+  require_no_regression: true
+  min_accuracy_delta: 0.01
+  require_schema_stable: true
+  multimodal_render_mode: multi_turn
+  max_example_images: null
+  max_total_images: null
+  max_context_examples: null
   sampler:
     type: frequency
 

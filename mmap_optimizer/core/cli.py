@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 
 from ..core.config import load_config
+from ..core.latest_prompt_eval import LatestPromptEvaluator
+from ..core.progress import ProgressReporter
 from ..core.runner import MMAPRunner
 
 
@@ -143,10 +145,45 @@ def main() -> None:
         help="配置文件路径",
     )
 
+    # eval-latest 命令
+    eval_parser = subparsers.add_parser("eval-latest", help="用最新 extraction prompt 做全量抽取验证")
+    eval_parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/default_config.yaml",
+        help="配置文件路径 (默认: configs/default_config.yaml)",
+    )
+    eval_parser.add_argument(
+        "--run-dir",
+        type=str,
+        default=None,
+        help="运行目录，默认使用配置中的 run.output_dir",
+    )
+    eval_parser.add_argument(
+        "--artifact-dir",
+        type=str,
+        default=None,
+        help="评估产物输出目录，默认写到 <run-dir>/evaluations/eval_latest_<timestamp>",
+    )
+    eval_parser.add_argument(
+        "--use-mock",
+        action="store_true",
+        default=None,
+        help="强制使用 mock executor 做抽取验证",
+    )
+    eval_parser.add_argument(
+        "--no-mock",
+        action="store_true",
+        default=None,
+        help="强制使用真实 executor 做抽取验证",
+    )
+
     args = parser.parse_args()
 
     if args.command == "run":
         run_command(args)
+    elif args.command == "eval-latest":
+        eval_latest_command(args)
     elif args.command == "validate":
         validate_command(args)
     elif args.command == "info":
@@ -356,6 +393,64 @@ def validate_command(args: argparse.Namespace) -> None:
         print(json.dumps(config.to_dict(), indent=2, ensure_ascii=False))
     except Exception as e:
         print(f"\n配置加载失败: {e}")
+
+
+def eval_latest_command(args: argparse.Namespace) -> None:
+    """执行 eval-latest 命令。"""
+    print("=" * 60)
+    print("MMAP - Latest Extraction Prompt Full Evaluation")
+    print("=" * 60)
+
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print(f"错误: 配置文件不存在: {config_path}")
+        return
+
+    print(f"\n加载配置: {config_path}")
+    config = load_config(config_path)
+
+    run_dir = Path(args.run_dir) if args.run_dir else Path(config.run.output_dir)
+    artifact_dir = Path(args.artifact_dir) if args.artifact_dir else None
+
+    use_mock: bool | None = None
+    if args.use_mock:
+        use_mock = True
+    elif args.no_mock:
+        use_mock = False
+
+    print(f"Run 目录: {run_dir}")
+    if artifact_dir is not None:
+        print(f"评估输出目录: {artifact_dir}")
+    if use_mock is True:
+        print("Mode: mock")
+    elif use_mock is False:
+        print("Mode: real")
+
+    evaluator = LatestPromptEvaluator(
+        config,
+        run_dir=run_dir,
+        artifact_dir=artifact_dir,
+        use_mock=use_mock,
+        progress_reporter=ProgressReporter(enabled=config.run.progress_enabled),
+    )
+    try:
+        result = evaluator.run()
+    except RuntimeError as e:
+        print(f"错误: {e}")
+        sys.exit(1)
+    except FileNotFoundError as e:
+        print(f"错误: {e}")
+        sys.exit(1)
+
+    summary = result.summary
+    print("-" * 60)
+    print("\n评估完成!")
+    print(f"Prompt: {result.prompt_path}")
+    print(f"Few-shot: {result.fewshot_path or '(none)'}")
+    print(f"Total/Correct/Wrong/Invalid: {summary.total_count}/{summary.correct_count}/{summary.wrong_count}/{summary.invalid_count}")
+    print(f"Exact-match Accuracy: {summary.exact_match_accuracy:.4f}")
+    print(f"Artifacts: {result.artifact_dir}")
+    print("=" * 60)
 
 
 def info_command(args: argparse.Namespace) -> None:

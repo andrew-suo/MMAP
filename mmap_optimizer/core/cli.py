@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from ..core.config import load_config
+from ..core.fewshot_only import FewshotOnlyOptimizer
 from ..core.latest_prompt_eval import LatestPromptEvaluator
 from ..core.progress import ProgressReporter
 from ..core.runner import MMAPRunner
@@ -178,12 +179,62 @@ def main() -> None:
         help="强制使用真实 executor 做抽取验证",
     )
 
+    fewshot_only_parser = subparsers.add_parser(
+        "optimize-fewshot",
+        help="针对已有 extraction prompt 单独优化 few-shot",
+    )
+    fewshot_only_parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/default_config.yaml",
+        help="配置文件路径 (默认: configs/default_config.yaml)",
+    )
+    prompt_source_group = fewshot_only_parser.add_mutually_exclusive_group(required=True)
+    prompt_source_group.add_argument(
+        "--run-dir",
+        type=str,
+        default=None,
+        help="已有 run 目录，从其中解析最新 extraction prompt",
+    )
+    prompt_source_group.add_argument(
+        "--prompt-file",
+        type=str,
+        default=None,
+        help="结构化 extraction prompt JSON 文件路径",
+    )
+    fewshot_only_parser.add_argument(
+        "--initial-fewshot-file",
+        type=str,
+        default=None,
+        help="初始 few-shot examples JSONL，优先级高于 run-dir 自带 few-shot",
+    )
+    fewshot_only_parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="few-shot-only 产物输出目录",
+    )
+    fewshot_only_parser.add_argument(
+        "--use-mock",
+        action="store_true",
+        default=None,
+        help="强制使用 mock executor",
+    )
+    fewshot_only_parser.add_argument(
+        "--no-mock",
+        action="store_true",
+        default=None,
+        help="强制使用真实 executor",
+    )
+
     args = parser.parse_args()
 
     if args.command == "run":
         run_command(args)
     elif args.command == "eval-latest":
         eval_latest_command(args)
+    elif args.command == "optimize-fewshot":
+        optimize_fewshot_command(args)
     elif args.command == "validate":
         validate_command(args)
     elif args.command == "info":
@@ -449,6 +500,93 @@ def eval_latest_command(args: argparse.Namespace) -> None:
     print(f"Few-shot: {result.fewshot_path or '(none)'}")
     print(f"Total/Correct/Wrong/Invalid: {summary.total_count}/{summary.correct_count}/{summary.wrong_count}/{summary.invalid_count}")
     print(f"Exact-match Accuracy: {summary.exact_match_accuracy:.4f}")
+    print(f"Artifacts: {result.artifact_dir}")
+    print("=" * 60)
+
+
+def optimize_fewshot_command(args: argparse.Namespace) -> None:
+    """执行 optimize-fewshot 命令。"""
+    print("=" * 60)
+    print("MMAP - Standalone Few-shot Optimization")
+    print("=" * 60)
+
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print(f"错误: 配置文件不存在: {config_path}")
+        return
+
+    print(f"\n加载配置: {config_path}")
+    config = load_config(config_path)
+
+    run_dir = Path(args.run_dir) if args.run_dir else None
+    prompt_file = Path(args.prompt_file) if args.prompt_file else None
+    initial_fewshot_file = (
+        Path(args.initial_fewshot_file) if args.initial_fewshot_file else None
+    )
+    output_dir = Path(args.output_dir) if args.output_dir else None
+
+    if prompt_file is not None and not prompt_file.exists():
+        print(f"错误: prompt 文件不存在: {prompt_file}")
+        return
+    if run_dir is not None and not run_dir.exists():
+        print(f"错误: run 目录不存在: {run_dir}")
+        return
+    if initial_fewshot_file is not None and not initial_fewshot_file.exists():
+        print(f"错误: 初始 few-shot 文件不存在: {initial_fewshot_file}")
+        return
+
+    use_mock: bool | None = None
+    if args.use_mock:
+        use_mock = True
+    elif args.no_mock:
+        use_mock = False
+
+    if run_dir is not None:
+        print(f"Prompt 来源 run 目录: {run_dir}")
+    if prompt_file is not None:
+        print(f"Prompt 文件: {prompt_file}")
+    if initial_fewshot_file is not None:
+        print(f"初始 Few-shot 文件: {initial_fewshot_file}")
+    if output_dir is not None:
+        print(f"输出目录: {output_dir}")
+    if use_mock is True:
+        print("Mode: mock")
+    elif use_mock is False:
+        print("Mode: real")
+
+    optimizer = FewshotOnlyOptimizer(
+        config,
+        run_dir=run_dir,
+        prompt_file=prompt_file,
+        initial_fewshot_file=initial_fewshot_file,
+        artifact_dir=output_dir,
+        use_mock=use_mock,
+        progress_reporter=ProgressReporter(enabled=config.run.progress_enabled),
+    )
+    try:
+        result = optimizer.run()
+    except RuntimeError as e:
+        print(f"错误: {e}")
+        sys.exit(1)
+    except FileNotFoundError as e:
+        print(f"错误: {e}")
+        sys.exit(1)
+    except ValueError as e:
+        print(f"错误: {e}")
+        sys.exit(1)
+
+    summary = result.summary
+    print("-" * 60)
+    print("\n优化完成!")
+    print(f"Prompt: {result.prompt_path}")
+    print(f"Initial Few-shot: {result.initial_fewshot_path or '(none)'}")
+    print(f"Iterations: {summary.iterations}")
+    if summary.base_accuracy_first is not None:
+        print(f"Base Accuracy: {summary.base_accuracy_first:.4f}")
+    if summary.final_accuracy_last is not None:
+        print(f"Final Accuracy: {summary.final_accuracy_last:.4f}")
+    print(f"Accepted: {summary.accepted}")
+    print(f"Initial/Final Few-shot Count: {summary.initial_fewshot_count}/{summary.final_fewshot_count}")
     print(f"Artifacts: {result.artifact_dir}")
     print("=" * 60)
 

@@ -13,7 +13,9 @@ RunPlan
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -398,12 +400,11 @@ class MMAPRunner:
 
     def run(self, resume: bool = False) -> RunSummary:
         """执行完整的 MMAP 运行。"""
-        import time
-        from datetime import datetime, timezone
-
-        # PR4: 记录开始时间
-        start_ts = time.time()
-        self.run_summary.start_time = datetime.now(timezone.utc).isoformat()
+        session_start_ts = self._time_seconds()
+        session_start_iso = self._now_utc_isoformat()
+        run_start_ts = session_start_ts
+        if not resume or not self.checkpoint_store.exists():
+            self.run_summary.start_time = session_start_iso
         log_stage(
             self.logger,
             "run_start",
@@ -418,6 +419,7 @@ class MMAPRunner:
             if self.checkpoint.run_status == "completed":
                 self.run_summary.status = "completed"
                 return self.run_summary
+            run_start_ts = self._resolve_run_start_ts(session_start_ts)
         else:
             # 保存初始配置和 Run Plan
             self._save_initial_artifacts()
@@ -427,48 +429,64 @@ class MMAPRunner:
                 event="run_started",
             )
 
-        # Phase 1: Prompt Structuring
-        if self.run_plan.current_step_index == 0:
-            self.progress.phase_start("Phase 1: Prompt Structuring")
-            self._run_prompt_structuring()
-            self.progress.phase_done("Phase 1: Prompt Structuring")
-        elif self.sample_set is None:
-            self._load_sample_set()
+        try:
+            # Phase 1: Prompt Structuring
+            if self.run_plan.current_step_index == 0:
+                self.progress.phase_start("Phase 1: Prompt Structuring")
+                self._run_prompt_structuring()
+                self.progress.phase_done("Phase 1: Prompt Structuring")
+            elif self.sample_set is None:
+                self._load_sample_set()
 
-        # Phase 2: Prompt Optimization
-        prompt_start = self._next_iteration_for_phase("prompt_optimization")
-        if self.config.prompt_optimization.enabled and prompt_start <= self.config.prompt_optimization.rounds:
-            self.progress.phase_start("Phase 2: Prompt Optimization")
-            self._run_prompt_optimization(start_iteration=prompt_start)
-            po_summary = self.run_summary.prompt_optimization
-            metrics: list[str] = []
-            if po_summary.final_accuracy_last is not None:
-                metrics.append(f"Extraction 准确率: {po_summary.final_accuracy_last:.2%}")
-            if self.run_summary.analysis_prompt.final_accuracy_last is not None:
-                metrics.append(f"Analysis 准确率: {self.run_summary.analysis_prompt.final_accuracy_last:.2%}")
-            self.progress.phase_done(
-                "Phase 2: Prompt Optimization",
-                ", ".join(metrics) if metrics else None,
+            # Phase 2: Prompt Optimization
+            prompt_start = self._next_iteration_for_phase("prompt_optimization")
+            if self.config.prompt_optimization.enabled and prompt_start <= self.config.prompt_optimization.rounds:
+                self.progress.phase_start("Phase 2: Prompt Optimization")
+                self._run_prompt_optimization(start_iteration=prompt_start)
+                po_summary = self.run_summary.prompt_optimization
+                metrics: list[str] = []
+                if po_summary.final_accuracy_last is not None:
+                    metrics.append(f"Extraction 准确率: {po_summary.final_accuracy_last:.2%}")
+                if self.run_summary.analysis_prompt.final_accuracy_last is not None:
+                    metrics.append(f"Analysis 准确率: {self.run_summary.analysis_prompt.final_accuracy_last:.2%}")
+                self.progress.phase_done(
+                    "Phase 2: Prompt Optimization",
+                    ", ".join(metrics) if metrics else None,
+                )
+
+            # Phase 3: Few-shot Optimization
+            fewshot_start = self._next_iteration_for_phase("fewshot_optimization")
+            if self.config.fewshot_optimization.enabled and fewshot_start <= self.config.fewshot_optimization.rounds:
+                self.progress.phase_start("Phase 3: Few-shot Optimization")
+                self._run_fewshot_optimization(start_iteration=fewshot_start)
+                fo_summary = self.run_summary.fewshot_optimization
+                fewshot_metrics: str | None = None
+                if fo_summary.final_accuracy_last is not None:
+                    fewshot_metrics = f"Few-shot 准确率: {fo_summary.final_accuracy_last:.2%}"
+                self.progress.phase_done("Phase 3: Few-shot Optimization", fewshot_metrics)
+        except Exception as exc:
+            end_ts = self._time_seconds()
+            self.run_summary.end_time = self._now_utc_isoformat()
+            self.run_summary.duration_seconds = round(end_ts - run_start_ts, 3)
+            self.run_summary.status = "failed"
+            self._save_final_artifacts()
+            self._save_checkpoint(run_status="failed", last_error=str(exc), event="run_failed")
+            log_stage(
+                self.logger,
+                "run_failed",
+                "运行失败",
+                duration_seconds=self.run_summary.duration_seconds,
+                error=str(exc),
             )
-
-        # Phase 3: Few-shot Optimization
-        fewshot_start = self._next_iteration_for_phase("fewshot_optimization")
-        if self.config.fewshot_optimization.enabled and fewshot_start <= self.config.fewshot_optimization.rounds:
-            self.progress.phase_start("Phase 3: Few-shot Optimization")
-            self._run_fewshot_optimization(start_iteration=fewshot_start)
-            fo_summary = self.run_summary.fewshot_optimization
-            fewshot_metrics: str | None = None
-            if fo_summary.final_accuracy_last is not None:
-                fewshot_metrics = f"Few-shot 准确率: {fo_summary.final_accuracy_last:.2%}"
-            self.progress.phase_done("Phase 3: Few-shot Optimization", fewshot_metrics)
+            raise
 
         # 完成
-        end_ts = time.time()
-        self.run_summary.end_time = datetime.now(timezone.utc).isoformat()
-        self.run_summary.duration_seconds = round(end_ts - start_ts, 3)
+        end_ts = self._time_seconds()
+        self.run_summary.end_time = self._now_utc_isoformat()
+        self.run_summary.duration_seconds = round(end_ts - run_start_ts, 3)
         self.run_summary.status = "completed"
         self._save_final_artifacts()
-        self._save_checkpoint(run_status="completed", event="run_completed")
+        self._save_checkpoint(run_status="completed", last_error=None, event="run_completed")
         log_stage(
             self.logger,
             "run_completed",
@@ -857,8 +875,10 @@ class MMAPRunner:
         self.checkpoint.run_status = run_status
         self.checkpoint.current_phase = current_phase or self.checkpoint.current_phase
         self.checkpoint.current_step_id = current_step_id or self.checkpoint.current_step_id
-        self.checkpoint.current_iteration = current_iteration
-        self.checkpoint.current_stage = current_stage
+        if current_iteration is not None:
+            self.checkpoint.current_iteration = current_iteration
+        if current_stage is not None:
+            self.checkpoint.current_stage = current_stage
         self.checkpoint.completed_steps = completed_steps
         self.checkpoint.structured_extraction_prompt_path = "structured_extraction_prompt.json"
         self.checkpoint.structured_analysis_prompt_path = "structured_analysis_prompt.json"
@@ -883,6 +903,23 @@ class MMAPRunner:
         self._load_current_prompts()
         self._load_sample_set()
         self._save_checkpoint(event="run_resumed")
+
+    def _time_seconds(self) -> float:
+        return time.time()
+
+    def _now_utc_isoformat(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _resolve_run_start_ts(self, fallback_ts: float) -> float:
+        start_time = self.run_summary.start_time
+        if not start_time:
+            self.run_summary.start_time = self._now_utc_isoformat()
+            return fallback_ts
+        try:
+            return datetime.fromisoformat(start_time).timestamp()
+        except ValueError:
+            self.run_summary.start_time = self._now_utc_isoformat()
+            return fallback_ts
 
     def _load_current_prompts(self) -> None:
         extraction_candidates = [

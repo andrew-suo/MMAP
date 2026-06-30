@@ -196,6 +196,7 @@ class ExtractionPromptOptimizationStage:
         self.patched_prompt: StructuredPrompt | None = None
         self.accepted_prompt: StructuredPrompt | None = None
         self.final_prompt: StructuredPrompt | None = None
+        self.final_prompt_source: str = "none"
 
         self.metrics = ExtractionMetrics()
 
@@ -799,11 +800,13 @@ class ExtractionPromptOptimizationStage:
                 )
                 self.final_prompt = final_prompt
                 self.accepted_prompt = final_prompt
+                self.final_prompt_source = "patch"
                 for patch in self.final_merged_patches:
                     patch.status = "accepted"
             else:
                 self.final_prompt = None
                 self.accepted_prompt = None
+                self.final_prompt_source = "none"
                 self.metrics.no_progress = True
 
             self.metrics.accepted_patch_count = len(self.final_merged_patches)
@@ -855,18 +858,24 @@ class ExtractionPromptOptimizationStage:
             if broken_count > 0:
                 self.metrics.rollback = True
                 self.accepted_prompt = None
+                self.final_prompt = None
+                self.final_prompt_source = "none"
                 for patch in self.initial_merged_patches:
                     patch.status = "rejected"
                     patch.rejection_reason = "TOXIC"
                 self.final_merged_patches = []
             elif fixed_count > 0:
                 self.accepted_prompt = self.trial_prompt
+                self.final_prompt = self.trial_prompt
+                self.final_prompt_source = "patch"
                 for patch in self.initial_merged_patches:
                     patch.status = "accepted"
                 self.final_merged_patches = self.initial_merged_patches.copy()
             else:
                 self.metrics.no_progress = True
                 self.accepted_prompt = None
+                self.final_prompt = None
+                self.final_prompt_source = "none"
                 self.final_merged_patches = []
 
             if self.accepted_prompt is not None:
@@ -1082,6 +1091,7 @@ class ExtractionPromptOptimizationStage:
         """Apply 没有修改 prompt 时，终止当前 patch 消费并写回轨迹。"""
         self.accepted_prompt = None
         self.final_prompt = None
+        self.final_prompt_source = "none"
         self.final_merged_patches = []
         self.safe_patches = []
         self.toxic_patches = []
@@ -1396,9 +1406,14 @@ class ExtractionPromptOptimizationStage:
 
         if report.accepted:
             self.final_prompt = compressed_prompt
-            self.accepted_prompt = compressed_prompt
+            if self.accepted_prompt is None:
+                self.final_prompt_source = "compression_only"
             self.metrics.compression_accepted = True
-            if self.extraction_executor is not None and self.evaluation_executor is not None:
+            if (
+                self.extraction_executor is not None
+                and self.evaluation_executor is not None
+                and not self._has_authoritative_final_results()
+            ):
                 self.final_extraction_results = self.extraction_executor.execute(
                     prompt=compressed_prompt, batch=self.batch, sample_set=self.sample_set
                 )
@@ -1417,17 +1432,20 @@ class ExtractionPromptOptimizationStage:
     def _step9_final_test_and_metrics(self) -> None:
         """Step 9: 最终测试与统计。"""
         if self.patch_apply_executor is not None:
-            if self.accepted_prompt is not None:
+            final_prompt = self.final_prompt or self.accepted_prompt
+            if final_prompt is not None:
                 if self.extraction_executor is not None:
-                    self.final_extraction_results = self.extraction_executor.execute(
-                        prompt=self.accepted_prompt,
-                        batch=self.batch,
-                        sample_set=self.sample_set,
-                    )
+                    if not self._has_authoritative_final_results():
+                        self.final_extraction_results = self.extraction_executor.execute(
+                            prompt=final_prompt,
+                            batch=self.batch,
+                            sample_set=self.sample_set,
+                        )
                 if self.evaluation_executor is not None:
-                    self.final_eval_records = self.evaluation_executor.evaluate_batch(
-                        self.final_extraction_results, self.sample_set,
-                    )
+                    if not self.final_eval_records and self.final_extraction_results:
+                        self.final_eval_records = self.evaluation_executor.evaluate_batch(
+                            self.final_extraction_results, self.sample_set,
+                        )
 
                 if self.final_eval_records:
                     correct_count = sum(
@@ -1572,3 +1590,6 @@ class ExtractionPromptOptimizationStage:
                     metadata={"raw_status": raw_status},
                 )
             )
+
+    def _has_authoritative_final_results(self) -> bool:
+        return bool(self.final_eval_records or self.final_extraction_results)

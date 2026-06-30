@@ -479,6 +479,51 @@ class _StatusExtractionExecutor:
         ]
 
 
+class _CountingExtractionExecutor:
+    def __init__(self, status: str = "correct"):
+        self.status = status
+        self.calls = 0
+
+    def execute(self, prompt, batch, sample_set):
+        self.calls += 1
+        return [
+            ExtractionResult(
+                sample_id=sample_id,
+                raw_output="{}",
+                parsed_output={},
+                status=self.status,
+            )
+            for sample_id in batch.sample_ids
+        ]
+
+
+class _CountingAnalysisExecutor:
+    def __init__(self, analysis_correct: bool = True):
+        self.analysis_correct = analysis_correct
+        self.calls = 0
+
+    def execute_batch(self, analysis_prompt, extraction_prompt, extraction_results, sample_set):
+        self.calls += 1
+        return [
+            AnalysisResult(result.sample_id, {}, self.analysis_correct)
+            for result in extraction_results
+        ]
+
+
+class _AcceptedCompressionExecutor:
+    def compress_if_needed(
+        self,
+        prompt,
+        line_limit,
+        char_limit,
+        batch,
+        sample_set,
+        mode=None,
+        contribution_tracker=None,
+    ):
+        return prompt, type("Report", (), {"accepted": True, "triggered": True})()
+
+
 def test_extraction_stage_applies_merged_patch_set_directly():
     from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
 
@@ -1529,3 +1574,75 @@ def test_analysis_apply_no_change_marks_patch_ineffective_and_stops_consumption(
     assert attempt.final_decision == "ineffective"
     assert attempt.merge_status == "initial_merged"
     assert attempt.toxicity_status == "not_tested"
+
+
+def test_extraction_compression_only_final_validation_runs_once():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState, SampleTrace
+
+    sample_set = SampleSet(
+        specs={"s1": SampleSpec(id="s1", input={}, ground_truth={})},
+        states={"s1": SampleState(sample_id="s1")},
+        traces=[SampleTrace("s1", "prompt_optimization", 9, selected=True)],
+    )
+    extraction_executor = _CountingExtractionExecutor(status="correct")
+    stage = ExtractionPromptOptimizationStage(
+        extraction_prompt=_prompt(),
+        analysis_prompt=_prompt(),
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 9, ["s1"], "test"),
+        iteration=9,
+        patch_apply_executor=_ApplyExecutor(),
+        extraction_executor=extraction_executor,
+        evaluation_executor=_EvaluationExecutor(),
+        compression_executor=_AcceptedCompressionExecutor(),
+    )
+    stage.base_eval_records = [EvalRecord("s1", "s1", "wrong", False)]
+    stage.metrics.base_accuracy = 0.0
+    stage.metrics.no_progress = True
+
+    stage._step8_compress_if_needed()
+    assert stage.accepted_prompt is None
+    assert stage.final_prompt is not None
+    assert stage.final_prompt_source == "compression_only"
+    assert extraction_executor.calls == 1
+
+    stage._step9_final_test_and_metrics()
+
+    assert extraction_executor.calls == 1
+    assert stage.metrics.final_accuracy == 1.0
+
+
+def test_analysis_compression_only_final_validation_runs_once():
+    from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState, SampleTrace
+
+    sample_set = SampleSet(
+        specs={"s1": SampleSpec(id="s1", input={}, ground_truth={})},
+        states={"s1": SampleState(sample_id="s1")},
+        traces=[SampleTrace("s1", "prompt_optimization", 10, selected=True)],
+    )
+    analysis_executor = _CountingAnalysisExecutor(analysis_correct=True)
+    stage = AnalysisPromptOptimizationStage(
+        analysis_prompt=_prompt(),
+        extraction_results=[ExtractionResult("s1", "{}", {}, "wrong")],
+        base_analysis_results=[AnalysisResult("s1", {}, False)],
+        sample_set=sample_set,
+        batch=SampleBatch("b1", "prompt_optimization", 10, ["s1"], "test"),
+        iteration=10,
+        patch_apply_executor=_ApplyExecutor(),
+        analysis_executor=analysis_executor,
+        extraction_prompt=_prompt(),
+        compression_executor=_AcceptedCompressionExecutor(),
+    )
+    stage.metrics.base_accuracy = 0.0
+    stage.metrics.no_progress = True
+
+    stage._step7_compress_if_needed()
+    assert stage.accepted_prompt is None
+    assert stage.final_prompt is not None
+    assert stage.final_prompt_source == "compression_only"
+    assert analysis_executor.calls == 1
+
+    stage._step8_final_test_and_metrics()
+
+    assert analysis_executor.calls == 1
+    assert stage.metrics.final_accuracy == 1.0

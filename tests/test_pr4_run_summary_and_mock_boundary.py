@@ -30,8 +30,16 @@ from mmap_optimizer.core.runner import (
     FewshotOptimizationSummary,
     MMAPRunner,
     PromptOptimizationSummary,
+    RunPlan,
     RunSummary,
+    RunPlanStep,
 )
+from mmap_optimizer.data.sample import SampleBatch
+from mmap_optimizer.phases.fewshot_optimization import FewshotMetrics, FewshotOptimizationIterationResult
+from mmap_optimizer.phases.prompt_optimization import PromptOptimizationIterationResult
+from mmap_optimizer.prompt.structured_prompt import PromptSection, StructuredPrompt
+from mmap_optimizer.stages.analysis_prompt_optimization import AnalysisMetrics
+from mmap_optimizer.stages.extraction_prompt_optimization import ExtractionMetrics
 
 
 # ============================================================
@@ -218,6 +226,113 @@ def test_fewshot_optimization_summary_all_fields():
     assert d["iterations"] == 2
     assert d["selected_example_ids"] == ["ex_1", "ex_2"]
     assert d["accepted"] is True
+
+
+def _summary_prompt(prompt_id: str = "p1", prompt_type: str = "extraction") -> StructuredPrompt:
+    return StructuredPrompt(
+        id=prompt_id,
+        prompt_type=prompt_type,
+        sections=[PromptSection(id="s1", title="Task", level=1, content="Do task")],
+        raw_markdown="# Task\nDo task",
+    )
+
+
+def test_runner_accumulates_prompt_summary_without_overwriting_resume_history(tmp_path):
+    runner = MMAPRunner(config=RefactoredConfig(), use_mock=True)
+    runner.run_summary.prompt_optimization.iterations = 2
+    runner.run_summary.prompt_optimization.base_accuracy_first = 0.4
+    runner.run_summary.prompt_optimization.final_accuracy_last = 0.55
+    runner.run_summary.prompt_optimization.best_accuracy = 0.6
+    runner.run_summary.prompt_optimization.total_accepted_patches = 3
+    runner.run_summary.prompt_optimization.total_rejected_patches = 1
+    runner.run_summary.prompt_optimization.total_toxic_patches = 2
+    runner.run_summary.prompt_optimization.rollback_count = 1
+    runner.run_summary.prompt_optimization.no_progress_count = 1
+    runner.run_summary.prompt_optimization.compression_triggered_count = 1
+    runner.run_summary.prompt_optimization.compression_accepted_count = 1
+    runner.run_summary.analysis_prompt.base_accuracy_first = 0.3
+    runner.run_summary.analysis_prompt.final_accuracy_last = 0.45
+    runner.run_summary.analysis_prompt.total_accepted_patches = 2
+    runner.run_summary.analysis_prompt.no_progress_count = 1
+    runner.run_summary.analysis_prompt.compression_triggered_count = 1
+
+    result = PromptOptimizationIterationResult(
+        iteration=3,
+        batch=SampleBatch(id="b1", phase="prompt_optimization", iteration=3, sample_ids=["s1"], sampler_name="test"),
+        extraction_metrics=ExtractionMetrics(
+            base_accuracy=0.5,
+            final_accuracy=0.58,
+            accepted_patch_count=2,
+            rejected_patch_count=1,
+            toxic_patch_count=1,
+            compression_accepted=True,
+        ),
+        analysis_metrics=AnalysisMetrics(
+            base_accuracy=0.42,
+            final_accuracy=0.5,
+            accepted_patch_count=1,
+            compression_accepted=True,
+            no_progress=True,
+        ),
+        extraction_prompt=_summary_prompt("ext3", "extraction"),
+        analysis_prompt=_summary_prompt("ana3", "analysis"),
+        rollback=False,
+        no_progress=True,
+    )
+    extraction_stage = type("_Stage", (), {"compression_report": type("_CR", (), {"triggered": True})()})()
+    analysis_stage = type("_Stage", (), {"compression_report": type("_CR", (), {"triggered": True})()})()
+
+    runner._accumulate_prompt_iteration_summary(
+        runner.run_summary.prompt_optimization,
+        runner.run_summary.analysis_prompt,
+        result,
+        extraction_stage,
+        analysis_stage,
+    )
+
+    po = runner.run_summary.prompt_optimization
+    ap = runner.run_summary.analysis_prompt
+    assert po.iterations == 3
+    assert po.base_accuracy_first == 0.4
+    assert po.final_accuracy_last == 0.58
+    assert po.best_accuracy == 0.6
+    assert po.total_accepted_patches == 5
+    assert po.total_rejected_patches == 2
+    assert po.total_toxic_patches == 3
+    assert po.rollback_count == 1
+    assert po.no_progress_count == 2
+    assert po.compression_triggered_count == 2
+    assert po.compression_accepted_count == 2
+    assert ap.base_accuracy_first == 0.3
+    assert ap.final_accuracy_last == 0.5
+    assert ap.total_accepted_patches == 3
+    assert ap.no_progress_count == 2
+    assert ap.compression_triggered_count == 2
+    assert ap.compression_accepted_count == 1
+
+
+def test_runner_accumulates_fewshot_summary_without_overwriting_resume_history():
+    runner = MMAPRunner(config=RefactoredConfig(), use_mock=True)
+    fo = runner.run_summary.fewshot_optimization
+    fo.iterations = 1
+    fo.base_accuracy_first = 0.6
+    fo.final_accuracy_last = 0.62
+    fo.accepted = True
+
+    result = FewshotOptimizationIterationResult(
+        iteration=2,
+        batch=SampleBatch(id="b1", phase="fewshot_optimization", iteration=2, sample_ids=["s1"], sampler_name="test"),
+        metrics=FewshotMetrics(base_accuracy=0.65, final_accuracy=0.61, accepted=False),
+        old_fewshot_examples=[],
+        new_fewshot_examples=[],
+    )
+
+    runner._accumulate_fewshot_iteration_summary(fo, result)
+
+    assert fo.iterations == 2
+    assert fo.base_accuracy_first == 0.6
+    assert fo.final_accuracy_last == 0.61
+    assert fo.accepted is True
 
 
 # ============================================================

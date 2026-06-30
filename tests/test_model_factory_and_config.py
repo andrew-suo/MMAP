@@ -2,7 +2,12 @@ import os
 
 import pytest
 
-from mmap_optimizer.core.config import ModelConfig, RefactoredConfig
+from mmap_optimizer.core.config import (
+    ModelConfig,
+    RefactoredConfig,
+    model_config_from_mapping,
+    model_config_to_runtime_dict,
+)
 from mmap_optimizer.executors.factory import create_executors
 from mmap_optimizer.model.factory import build_model_client
 from mmap_optimizer.model.client import MockModelClient
@@ -49,6 +54,7 @@ def test_create_executors_exposes_runtime_model_config():
                     "temperature": 0.1,
                     "max_tokens": 111,
                     "request_timeout": 22,
+                    "image_resize": 0.5,
                 },
                 "optimizer": {
                     "provider": "mock",
@@ -56,6 +62,7 @@ def test_create_executors_exposes_runtime_model_config():
                     "temperature": 0.7,
                     "max_tokens": 222,
                     "timeout": 33,
+                    "image_resize": 1024,
                     "chat_template_kwargs": {"enable_thinking": False},
                 },
             },
@@ -65,8 +72,10 @@ def test_create_executors_exposes_runtime_model_config():
 
     assert executors["extraction_model_config"]["max_tokens"] == 111
     assert executors["extraction_model_config"]["timeout"] == 22
+    assert executors["extraction_model_config"]["image_resize"] == 0.5
     assert executors["optimizer_model_config"]["max_tokens"] == 222
     assert executors["optimizer_model_config"]["temperature"] == 0.7
+    assert executors["optimizer_model_config"]["image_resize"] == 1024
     assert executors["optimizer_model_config"]["chat_template_kwargs"] == {
         "enable_thinking": False
     }
@@ -76,3 +85,29 @@ def test_default_dataset_path_points_to_existing_smoke_data():
     config = RefactoredConfig()
 
     assert config.dataset.path == "data/smoke_samples.jsonl"
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, "abc", True])
+def test_model_config_image_resize_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="image_resize"):
+        model_config_from_mapping(
+            {
+                "provider": "openai_compatible",
+                "model": "vision-model",
+                "base_url": "https://example.test/v1",
+                "image_resize": value,
+            }
+        )
+
+
+def test_model_config_runtime_dict_keeps_valid_image_resize():
+    runtime = model_config_to_runtime_dict(
+        ModelConfig(
+            provider="openai_compatible",
+            model="vision-model",
+            base_url="https://example.test/v1",
+            image_resize=1024,
+        )
+    )
+
+    assert runtime["image_resize"] == 1024

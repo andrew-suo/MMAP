@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ class PromptManager:
 
     def __init__(self) -> None:
         self._cached_prompts: dict[str, str] = {}
+        self._placeholder_pattern = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
     def load_prompt(self, path: str | Path) -> str:
         """加载单个 prompt 文件。
@@ -53,7 +55,21 @@ class PromptManager:
             "sample_optimization_trajectory",
             "No prior trajectory for this sample.",
         )
-        return template.format(**kwargs)
+        missing_keys = sorted({
+            key for key in self._placeholder_pattern.findall(template)
+            if key not in kwargs
+        })
+        if missing_keys:
+            raise KeyError(
+                f"Prompt template missing variables for {template_path}: "
+                + ", ".join(missing_keys)
+            )
+
+        def replace_placeholder(match: re.Match[str]) -> str:
+            key = match.group(1)
+            return str(kwargs[key])
+
+        return self._placeholder_pattern.sub(replace_placeholder, template)
 
     def clear_cache(self) -> None:
         """清除缓存。"""

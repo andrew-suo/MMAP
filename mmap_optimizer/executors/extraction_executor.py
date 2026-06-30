@@ -6,13 +6,13 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import mimetypes
 from pathlib import Path
 from typing import Any, Literal
 
 from ..model.client import ModelClient
+from ..model.image_payload import encode_local_image_as_data_url, normalize_image_resize
 from ..model.retry import FailurePolicyConfig, SampleFailureTracker
 from ..core.progress import NullProgressReporter, ProgressReporter
 from ..stages.extraction_prompt_optimization import ExtractionResult
@@ -237,14 +237,12 @@ class ExtractionExecutor:
 
         图片资产由 complete_multimodal 通过 assets 参数统一注入，
         避免重复发送。若样本包含多张图，模型会收到同一 sample 的整组图片。
+        blind 抽取链路默认不注入 metadata，避免 category 等标签侧字段泄漏。
         """
         text_parts: list[str] = []
         if spec.input:
             text_parts.append("Sample Input:")
             text_parts.append(json.dumps(spec.input, ensure_ascii=False, indent=2))
-        if spec.metadata:
-            text_parts.append("Metadata:")
-            text_parts.append(json.dumps(spec.metadata, ensure_ascii=False, indent=2))
         text = "\n".join(text_parts).strip() or spec.id
         return {"role": "user", "content": text}
 
@@ -264,9 +262,12 @@ class ExtractionExecutor:
             path = Path(local_path)
             if path.exists():
                 mime_type = getattr(asset, "mime_type", None) or self._guess_mime_type(str(path))
-                data = path.read_bytes()
-                encoded = base64.b64encode(data).decode("ascii")
-                return f"data:{mime_type};base64,{encoded}"
+                image_resize = normalize_image_resize(self.model_config.get("image_resize"))
+                return encode_local_image_as_data_url(
+                    local_path=str(path),
+                    mime_type=mime_type,
+                    image_resize=image_resize,
+                )
             # 文件不存在时回退到 uri
         return uri
 

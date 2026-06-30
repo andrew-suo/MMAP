@@ -288,6 +288,34 @@ def test_image_string_to_url_http_uri_returns_original():
     assert url == uri
 
 
+def test_image_string_to_url_local_file_passes_resize_config(tmp_path: Path, monkeypatch):
+    executor = ExtractionExecutor(
+        model_client=RecordingClient(base_url="https://example.test"),
+        model_config={"image_resize": 0.5},
+    )
+    img_file = tmp_path / "test.png"
+    img_file.write_bytes(b"placeholder")
+    seen: dict[str, object] = {}
+
+    def fake_encoder(local_path, mime_type=None, image_resize=None):
+        seen["local_path"] = local_path
+        seen["mime_type"] = mime_type
+        seen["image_resize"] = image_resize
+        return "data:image/png;base64,ZmFrZQ=="
+
+    monkeypatch.setattr(
+        "mmap_optimizer.executors.extraction_executor.encode_local_image_as_data_url",
+        fake_encoder,
+    )
+
+    url = executor._image_string_to_url(str(img_file), "owner1", 0)
+
+    assert url == "data:image/png;base64,ZmFrZQ=="
+    assert seen["local_path"] == str(img_file)
+    assert seen["mime_type"] == "image/png"
+    assert seen["image_resize"] == 0.5
+
+
 # ---------------------------------------------------------------------------
 # 4. input_images 过滤
 # ---------------------------------------------------------------------------

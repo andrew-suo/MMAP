@@ -185,3 +185,41 @@ def test_runner_resume_skips_completed_prompt_structuring(tmp_path, monkeypatch)
     assert resumed.run_plan.current_step_index >= 1
     checkpoint = json.loads((Path(config.run.output_dir) / "checkpoint.json").read_text())
     assert checkpoint["run_status"] == "completed"
+
+
+def test_refactored_config_round_trips_full_fewshot_sampler_fields():
+    config = load_config(REPO_ROOT / "configs" / "smoke.yaml")
+    config.fewshot_optimization.sampler.type = "difficulty_frequency"
+    config.fewshot_optimization.sampler.difficulty_weight = 0.11
+    config.fewshot_optimization.sampler.frequency_weight = 0.22
+    config.fewshot_optimization.sampler.random_noise_scale = 0.33
+    config.fewshot_optimization.sampler.error_ratio = 0.44
+    config.fewshot_optimization.sampler.success_ratio = 0.55
+    config.fewshot_optimization.sampler.low_frequency_ratio = 0.66
+    config.fewshot_optimization.sampler.fallback_to_difficulty_frequency = False
+    config.fewshot_optimization.sampler.lookback_window = 7
+    config.fewshot_optimization.sampler.mixed_fail_ratio = 0.12
+    config.fewshot_optimization.sampler.hard_fail_ratio = 0.13
+    config.fewshot_optimization.sampler.unknown_ratio = 0.14
+    config.fewshot_optimization.sampler.easy_ratio = 0.15
+    config.fewshot_optimization.sampler.trajectory_weight = 0.16
+    config.fewshot_optimization.sampler.apex_prompt_type = "analysis"
+
+    restored = type(config).from_dict(config.to_dict())
+    sampler = restored.fewshot_optimization.sampler
+
+    assert sampler.type == "difficulty_frequency"
+    assert sampler.difficulty_weight == 0.11
+    assert sampler.frequency_weight == 0.22
+    assert sampler.random_noise_scale == 0.33
+    assert sampler.error_ratio == 0.44
+    assert sampler.success_ratio == 0.55
+    assert sampler.low_frequency_ratio == 0.66
+    assert sampler.fallback_to_difficulty_frequency is False
+    assert sampler.lookback_window == 7
+    assert sampler.mixed_fail_ratio == 0.12
+    assert sampler.hard_fail_ratio == 0.13
+    assert sampler.unknown_ratio == 0.14
+    assert sampler.easy_ratio == 0.15
+    assert sampler.trajectory_weight == 0.16
+    assert sampler.apex_prompt_type == "analysis"

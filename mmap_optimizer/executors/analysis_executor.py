@@ -230,6 +230,7 @@ class AnalysisExecutor:
         """构建盲评分析消息（多模态，不带 GT）。
 
         若样本包含多张图，模型应把它们视为同一个 sample 的联合证据。
+        blind 分析链路默认不注入 metadata，避免 category 等标签侧字段泄漏。
         """
         system_content = self.renderer.render_system_message(analysis_prompt)
         extraction_prompt_text = self.renderer.render(extraction_prompt)
@@ -258,12 +259,6 @@ class AnalysisExecutor:
         user_parts.append("")
         user_parts.append("# Sample Input")
         user_parts.append(json.dumps(sample_spec.input, ensure_ascii=False, indent=2))
-        if sample_spec.metadata:
-            user_parts.append("")
-            user_parts.append("# Sample Metadata")
-            user_parts.append(
-                json.dumps(sample_spec.metadata, ensure_ascii=False, indent=2)
-            )
         trajectory = self.sample_trajectory_renderer.render(
             sample_set=sample_set,
             sample_id=extraction_result.sample_id,

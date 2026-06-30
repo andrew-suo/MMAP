@@ -26,6 +26,7 @@ from ..phases.prompt_structuring import PromptStructuringConfig
 from ..phases.prompt_optimization import PromptOptimizationConfig
 from ..data.sampler import SamplerConfig
 from ..model.retry import FailurePolicyConfig, RetryConfig
+from ..model.image_payload import normalize_image_resize
 
 
 @dataclass
@@ -41,6 +42,7 @@ class ModelConfig:
     timeout: int = 120
     verify_ssl: bool = True
     chat_template_kwargs: dict[str, Any] | None = None
+    image_resize: float | int | None = None
 
 
 def _bool_value(value: Any) -> bool:
@@ -49,6 +51,51 @@ def _bool_value(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return bool(value)
+
+
+def _sampler_config_to_dict(config: SamplerConfig) -> dict[str, Any]:
+    return {
+        "type": config.type,
+        "difficulty_weight": config.difficulty_weight,
+        "frequency_weight": config.frequency_weight,
+        "random_noise_scale": config.random_noise_scale,
+        "error_ratio": config.error_ratio,
+        "success_ratio": config.success_ratio,
+        "low_frequency_ratio": config.low_frequency_ratio,
+        "fallback_to_difficulty_frequency": config.fallback_to_difficulty_frequency,
+        "lookback_window": config.lookback_window,
+        "mixed_fail_ratio": config.mixed_fail_ratio,
+        "hard_fail_ratio": config.hard_fail_ratio,
+        "unknown_ratio": config.unknown_ratio,
+        "easy_ratio": config.easy_ratio,
+        "trajectory_weight": config.trajectory_weight,
+        "apex_prompt_type": config.apex_prompt_type,
+    }
+
+
+def _sampler_config_from_dict(
+    data: dict[str, Any] | None,
+    *,
+    default_type: str,
+) -> SamplerConfig:
+    data = data or {}
+    return SamplerConfig(
+        type=data.get("type", default_type),
+        difficulty_weight=data.get("difficulty_weight", 0.7),
+        frequency_weight=data.get("frequency_weight", 0.3),
+        random_noise_scale=data.get("random_noise_scale", 0.01),
+        error_ratio=data.get("error_ratio", 0.6),
+        success_ratio=data.get("success_ratio", 0.25),
+        low_frequency_ratio=data.get("low_frequency_ratio", 0.15),
+        fallback_to_difficulty_frequency=data.get("fallback_to_difficulty_frequency", True),
+        lookback_window=data.get("lookback_window", 5),
+        mixed_fail_ratio=data.get("mixed_fail_ratio", 0.55),
+        hard_fail_ratio=data.get("hard_fail_ratio", 0.20),
+        unknown_ratio=data.get("unknown_ratio", 0.15),
+        easy_ratio=data.get("easy_ratio", 0.10),
+        trajectory_weight=data.get("trajectory_weight", 0.30),
+        apex_prompt_type=data.get("apex_prompt_type", "combined"),
+    )
 
 
 def model_config_from_mapping(data: dict[str, Any] | None) -> ModelConfig:
@@ -65,6 +112,7 @@ def model_config_from_mapping(data: dict[str, Any] | None) -> ModelConfig:
         timeout=int(data.get("timeout", data.get("request_timeout", 120))),
         verify_ssl=_bool_value(data.get("verify_ssl", data.get("ssl_verify", True))),
         chat_template_kwargs=data.get("chat_template_kwargs"),
+        image_resize=normalize_image_resize(data.get("image_resize")),
     )
 
 
@@ -80,6 +128,7 @@ def model_config_to_runtime_dict(config: ModelConfig | dict[str, Any] | None) ->
         "max_tokens": config.max_tokens,
         "timeout": config.timeout,
         "chat_template_kwargs": config.chat_template_kwargs,
+        "image_resize": normalize_image_resize(config.image_resize),
     }
 
 
@@ -175,21 +224,7 @@ class RefactoredConfig:
                 "use_model_when_structure_poor": self.prompt_structuring.use_model_when_structure_poor,
             },
             "sampling": {
-                "type": self.sampling.type,
-                "difficulty_weight": self.sampling.difficulty_weight,
-                "frequency_weight": self.sampling.frequency_weight,
-                "random_noise_scale": self.sampling.random_noise_scale,
-                "error_ratio": self.sampling.error_ratio,
-                "success_ratio": self.sampling.success_ratio,
-                "low_frequency_ratio": self.sampling.low_frequency_ratio,
-                "fallback_to_difficulty_frequency": self.sampling.fallback_to_difficulty_frequency,
-                "lookback_window": self.sampling.lookback_window,
-                "mixed_fail_ratio": self.sampling.mixed_fail_ratio,
-                "hard_fail_ratio": self.sampling.hard_fail_ratio,
-                "unknown_ratio": self.sampling.unknown_ratio,
-                "easy_ratio": self.sampling.easy_ratio,
-                "trajectory_weight": self.sampling.trajectory_weight,
-                "apex_prompt_type": self.sampling.apex_prompt_type,
+                **_sampler_config_to_dict(self.sampling),
             },
             "prompt_optimization": {
                 "enabled": self.prompt_optimization.enabled,
@@ -205,23 +240,7 @@ class RefactoredConfig:
                     "shrink_on_rollback": self.prompt_optimization.batch_size_controller.shrink_on_rollback,
                     "shrink_on_no_progress": self.prompt_optimization.batch_size_controller.shrink_on_no_progress,
                 },
-                "sampler": {
-                    "type": self.prompt_optimization.sampler.type,
-                    "difficulty_weight": self.prompt_optimization.sampler.difficulty_weight,
-                    "frequency_weight": self.prompt_optimization.sampler.frequency_weight,
-                    "random_noise_scale": self.prompt_optimization.sampler.random_noise_scale,
-                    "error_ratio": self.prompt_optimization.sampler.error_ratio,
-                    "success_ratio": self.prompt_optimization.sampler.success_ratio,
-                    "low_frequency_ratio": self.prompt_optimization.sampler.low_frequency_ratio,
-                    "fallback_to_difficulty_frequency": self.prompt_optimization.sampler.fallback_to_difficulty_frequency,
-                    "lookback_window": self.prompt_optimization.sampler.lookback_window,
-                    "mixed_fail_ratio": self.prompt_optimization.sampler.mixed_fail_ratio,
-                    "hard_fail_ratio": self.prompt_optimization.sampler.hard_fail_ratio,
-                    "unknown_ratio": self.prompt_optimization.sampler.unknown_ratio,
-                    "easy_ratio": self.prompt_optimization.sampler.easy_ratio,
-                    "trajectory_weight": self.prompt_optimization.sampler.trajectory_weight,
-                    "apex_prompt_type": self.prompt_optimization.sampler.apex_prompt_type,
-                },
+                "sampler": _sampler_config_to_dict(self.prompt_optimization.sampler),
                 "extraction_prompt": {
                     "line_limit": self.prompt_optimization.extraction_prompt_line_limit,
                     "char_limit": self.prompt_optimization.extraction_prompt_char_limit,
@@ -248,9 +267,7 @@ class RefactoredConfig:
                 "rounds": self.fewshot_optimization.rounds,
                 "batch_size": self.fewshot_optimization.batch_size,
                 "slot_count": self.fewshot_optimization.slot_count,
-                "sampler": {
-                    "type": self.fewshot_optimization.sampler.type,
-                },
+                "sampler": _sampler_config_to_dict(self.fewshot_optimization.sampler),
             },
             "models": dict(self.models) if isinstance(self.models, dict) else {},
         }
@@ -315,22 +332,9 @@ class RefactoredConfig:
         )
 
         # 构建 SamplerConfig
-        sampling_config = SamplerConfig(
-            type=sampling_data.get("type", "difficulty_frequency"),
-            difficulty_weight=sampling_data.get("difficulty_weight", 0.7),
-            frequency_weight=sampling_data.get("frequency_weight", 0.3),
-            random_noise_scale=sampling_data.get("random_noise_scale", 0.01),
-            error_ratio=sampling_data.get("error_ratio", 0.6),
-            success_ratio=sampling_data.get("success_ratio", 0.25),
-            low_frequency_ratio=sampling_data.get("low_frequency_ratio", 0.15),
-            fallback_to_difficulty_frequency=sampling_data.get("fallback_to_difficulty_frequency", True),
-            lookback_window=sampling_data.get("lookback_window", 5),
-            mixed_fail_ratio=sampling_data.get("mixed_fail_ratio", 0.55),
-            hard_fail_ratio=sampling_data.get("hard_fail_ratio", 0.20),
-            unknown_ratio=sampling_data.get("unknown_ratio", 0.15),
-            easy_ratio=sampling_data.get("easy_ratio", 0.10),
-            trajectory_weight=sampling_data.get("trajectory_weight", 0.30),
-            apex_prompt_type=sampling_data.get("apex_prompt_type", "combined"),
+        sampling_config = _sampler_config_from_dict(
+            sampling_data,
+            default_type="difficulty_frequency",
         )
 
         # 构建 PromptOptimizationConfig
@@ -358,22 +362,9 @@ class RefactoredConfig:
                 shrink_on_rollback=po_batch_size_controller_data.get("shrink_on_rollback", True),
                 shrink_on_no_progress=po_batch_size_controller_data.get("shrink_on_no_progress", True),
             ),
-            sampler=SamplerConfig(
-                type=po_sampler_data.get("type", "difficulty_frequency"),
-                difficulty_weight=po_sampler_data.get("difficulty_weight", 0.7),
-                frequency_weight=po_sampler_data.get("frequency_weight", 0.3),
-                random_noise_scale=po_sampler_data.get("random_noise_scale", 0.01),
-                error_ratio=po_sampler_data.get("error_ratio", 0.6),
-                success_ratio=po_sampler_data.get("success_ratio", 0.25),
-                low_frequency_ratio=po_sampler_data.get("low_frequency_ratio", 0.15),
-                fallback_to_difficulty_frequency=po_sampler_data.get("fallback_to_difficulty_frequency", True),
-                lookback_window=po_sampler_data.get("lookback_window", 5),
-                mixed_fail_ratio=po_sampler_data.get("mixed_fail_ratio", 0.55),
-                hard_fail_ratio=po_sampler_data.get("hard_fail_ratio", 0.20),
-                unknown_ratio=po_sampler_data.get("unknown_ratio", 0.15),
-                easy_ratio=po_sampler_data.get("easy_ratio", 0.10),
-                trajectory_weight=po_sampler_data.get("trajectory_weight", 0.30),
-                apex_prompt_type=po_sampler_data.get("apex_prompt_type", "combined"),
+            sampler=_sampler_config_from_dict(
+                po_sampler_data,
+                default_type="difficulty_frequency",
             ),
             extraction_prompt_line_limit=po_extraction_prompt_data.get("line_limit", 300),
             extraction_prompt_char_limit=po_extraction_prompt_data.get("char_limit", 20000),
@@ -397,8 +388,9 @@ class RefactoredConfig:
             rounds=fewshot_optimization_data.get("rounds", 2),
             batch_size=fewshot_optimization_data.get("batch_size", 99),
             slot_count=fewshot_optimization_data.get("slot_count", 5),
-            sampler=SamplerConfig(
-                type=fewshot_sampler_data.get("type", "frequency"),
+            sampler=_sampler_config_from_dict(
+                fewshot_sampler_data,
+                default_type="frequency",
             ),
         )
 

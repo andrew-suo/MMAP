@@ -36,7 +36,7 @@ class EvaluationExecutor:
         label_mapping: dict[str, Any] | None = None,
         ema_alpha: float = 0.3,
     ):
-        self.primary_answer_fields = primary_answer_fields or ["result"]
+        self.primary_answer_fields = list(primary_answer_fields) if primary_answer_fields is not None else ["result"]
         self.label_mapping = label_mapping
         self.ema_alpha = ema_alpha
 
@@ -51,6 +51,28 @@ class EvaluationExecutor:
         if extraction_result.parsed_output is None:
             status = "invalid"
             details: dict[str, Any] = {"reason": "parsed_output is None"}
+            extraction_result.evaluation_status = status
+            self._update_sample_state(sample_state, status)
+            return EvalRecord(
+                sample_id=extraction_result.sample_id,
+                extraction_result_id=extraction_result.sample_id,
+                status=status,
+                correct=False,
+                details=details,
+            )
+
+        if not self.primary_answer_fields:
+            raise ValueError("primary_answer_fields must not be empty")
+
+        missing_ground_truth_fields = [
+            field for field in self.primary_answer_fields if field not in ground_truth
+        ]
+        if missing_ground_truth_fields:
+            status = "invalid"
+            details = {
+                "reason": "ground_truth missing primary answer fields",
+                "missing_ground_truth_fields": missing_ground_truth_fields,
+            }
             extraction_result.evaluation_status = status
             self._update_sample_state(sample_state, status)
             return EvalRecord(

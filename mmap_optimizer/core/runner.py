@@ -626,71 +626,33 @@ class MMAPRunner:
         po_summary = self.run_summary.prompt_optimization
         ap_summary = self.run_summary.analysis_prompt
 
-        po_summary.iterations = len(results)
         self.run_summary.final_extraction_prompt_id = self.structured_extraction_prompt.id
         self.run_summary.final_analysis_prompt_id = self.structured_analysis_prompt.id
 
-        # 统计 patches / rollback / no_progress / compression / best_accuracy
-        best_extraction_acc: float | None = None
         for result in results:
-            em = result.extraction_metrics
-            am = result.analysis_metrics
-
-            po_summary.total_accepted_patches += em.accepted_patch_count
-            po_summary.total_rejected_patches += em.rejected_patch_count
-            po_summary.total_toxic_patches += em.toxic_patch_count
-            ap_summary.total_accepted_patches += am.accepted_patch_count
-
-            if result.rollback:
-                po_summary.rollback_count += 1
-            if result.no_progress:
-                po_summary.no_progress_count += 1
-            if am.no_progress:
-                ap_summary.no_progress_count += 1
-
-            # compression 统计（从 stage.compression_report 读取）
-            # ExtractionStage 和 AnalysisStage 在 phase.iteration_results 中无直接引用，
-            # 通过 metrics.compression_accepted 推断 accepted；triggered 需从 stage 取。
-            # 这里通过 phase 暴露的 stage 列表获取（若可用）。
-            if em.compression_accepted:
-                po_summary.compression_accepted_count += 1
-            if am.compression_accepted:
-                ap_summary.compression_accepted_count += 1
-
-            if em.final_accuracy is not None:
-                if best_extraction_acc is None or em.final_accuracy > best_extraction_acc:
-                    best_extraction_acc = em.final_accuracy
-
-        po_summary.best_accuracy = best_extraction_acc
-
-        # 从 phase 获取 compression_triggered_count 和 batch_size_history
-        # phase.extraction_stages / phase.analysis_stages 在 _run_iteration 中创建，
-        # 这里通过 phase 暴露的属性获取（若无则跳过）
-        for stage in getattr(phase, "extraction_stages", []):
-            cr = getattr(stage, "compression_report", None)
-            if cr is not None and getattr(cr, "triggered", False):
-                po_summary.compression_triggered_count += 1
-        for stage in getattr(phase, "analysis_stages", []):
-            cr = getattr(stage, "compression_report", None)
-            if cr is not None and getattr(cr, "triggered", False):
-                ap_summary.compression_triggered_count += 1
+            extraction_stage = next(
+                (
+                    stage for stage in getattr(phase, "extraction_stages", [])
+                    if getattr(stage, "iteration", None) == result.iteration
+                ),
+                None,
+            )
+            analysis_stage = next(
+                (
+                    stage for stage in getattr(phase, "analysis_stages", [])
+                    if getattr(stage, "iteration", None) == result.iteration
+                ),
+                None,
+            )
+            self._accumulate_prompt_iteration_summary(
+                po_summary,
+                ap_summary,
+                result,
+                extraction_stage,
+                analysis_stage,
+            )
 
         po_summary.batch_size_history = list(phase.batch_size_controller.get_history())
-
-        # 计算首末准确率
-        if results:
-            first_result = results[0]
-            last_result = results[-1]
-
-            if first_result.extraction_metrics.base_accuracy is not None:
-                po_summary.base_accuracy_first = first_result.extraction_metrics.base_accuracy
-            if last_result.extraction_metrics.final_accuracy is not None:
-                po_summary.final_accuracy_last = last_result.extraction_metrics.final_accuracy
-
-            if first_result.analysis_metrics.base_accuracy is not None:
-                ap_summary.base_accuracy_first = first_result.analysis_metrics.base_accuracy
-            if last_result.analysis_metrics.final_accuracy is not None:
-                ap_summary.final_accuracy_last = last_result.analysis_metrics.final_accuracy
 
         # 更新 Run Plan
         for result in results:
@@ -753,22 +715,12 @@ class MMAPRunner:
 
         # PR4: 更新 Run Summary 嵌套对象
         fo_summary = self.run_summary.fewshot_optimization
-        fo_summary.iterations = len(results)
         self.run_summary.final_fewshot_example_count = len(phase.fewshot_examples)
         fo_summary.selected_example_ids = [e.id for e in phase.fewshot_examples]
 
-        # 计算首末准确率与 accepted
         if results:
-            first_result = results[0]
-            last_result = results[-1]
-
-            if first_result.metrics.base_accuracy is not None:
-                fo_summary.base_accuracy_first = first_result.metrics.base_accuracy
-            if last_result.metrics.final_accuracy is not None:
-                fo_summary.final_accuracy_last = last_result.metrics.final_accuracy
-
-            # accepted: 任一轮接受即标记为 True
-            fo_summary.accepted = any(r.metrics.accepted for r in results)
+            for result in results:
+                self._accumulate_fewshot_iteration_summary(fo_summary, result)
 
         # 更新 Run Plan
         prompt_opt_steps = self.config.prompt_optimization.rounds
@@ -798,6 +750,66 @@ class MMAPRunner:
             final_accuracy=fo_summary.final_accuracy_last,
             selected_examples=len(phase.fewshot_examples),
         )
+
+    def _accumulate_prompt_iteration_summary(
+        self,
+        po_summary: PromptOptimizationSummary,
+        ap_summary: AnalysisPromptSummary,
+        result: Any,
+        extraction_stage: Any | None = None,
+        analysis_stage: Any | None = None,
+    ) -> None:
+        em = result.extraction_metrics
+        am = result.analysis_metrics
+
+        po_summary.iterations = max(po_summary.iterations, result.iteration)
+        po_summary.total_accepted_patches += em.accepted_patch_count
+        po_summary.total_rejected_patches += em.rejected_patch_count
+        po_summary.total_toxic_patches += em.toxic_patch_count
+        ap_summary.total_accepted_patches += am.accepted_patch_count
+
+        if result.rollback:
+            po_summary.rollback_count += 1
+        if result.no_progress:
+            po_summary.no_progress_count += 1
+        if am.no_progress:
+            ap_summary.no_progress_count += 1
+
+        if em.compression_accepted:
+            po_summary.compression_accepted_count += 1
+        if am.compression_accepted:
+            ap_summary.compression_accepted_count += 1
+
+        extraction_cr = getattr(extraction_stage, "compression_report", None)
+        if extraction_cr is not None and getattr(extraction_cr, "triggered", False):
+            po_summary.compression_triggered_count += 1
+        analysis_cr = getattr(analysis_stage, "compression_report", None)
+        if analysis_cr is not None and getattr(analysis_cr, "triggered", False):
+            ap_summary.compression_triggered_count += 1
+
+        if po_summary.base_accuracy_first is None and em.base_accuracy is not None:
+            po_summary.base_accuracy_first = em.base_accuracy
+        if ap_summary.base_accuracy_first is None and am.base_accuracy is not None:
+            ap_summary.base_accuracy_first = am.base_accuracy
+        if em.final_accuracy is not None:
+            po_summary.final_accuracy_last = em.final_accuracy
+            if po_summary.best_accuracy is None or em.final_accuracy > po_summary.best_accuracy:
+                po_summary.best_accuracy = em.final_accuracy
+        if am.final_accuracy is not None:
+            ap_summary.final_accuracy_last = am.final_accuracy
+
+    def _accumulate_fewshot_iteration_summary(
+        self,
+        fo_summary: FewshotOptimizationSummary,
+        result: Any,
+    ) -> None:
+        fo_summary.iterations = max(fo_summary.iterations, result.iteration)
+        if fo_summary.base_accuracy_first is None and result.metrics.base_accuracy is not None:
+            fo_summary.base_accuracy_first = result.metrics.base_accuracy
+        if result.metrics.final_accuracy is not None:
+            fo_summary.final_accuracy_last = result.metrics.final_accuracy
+        if result.metrics.accepted:
+            fo_summary.accepted = True
 
     def _save_run_plan(self) -> None:
         """保存 Run Plan。"""

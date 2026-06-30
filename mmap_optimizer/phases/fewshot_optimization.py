@@ -112,6 +112,10 @@ class FewshotOptimizationIterationResult:
     metrics: FewshotMetrics
     old_fewshot_examples: list[FewshotExample]
     new_fewshot_examples: list[FewshotExample]
+    base_results: list[ExtractionResult] = field(default_factory=list)
+    base_eval_records: list[EvalRecord] = field(default_factory=list)
+    final_results: list[ExtractionResult] = field(default_factory=list)
+    final_eval_records: list[EvalRecord] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -122,6 +126,10 @@ class FewshotOptimizationIterationResult:
             "metrics": self.metrics.to_dict(),
             "old_fewshot_examples": [e.to_dict() for e in self.old_fewshot_examples],
             "new_fewshot_examples": [e.to_dict() for e in self.new_fewshot_examples],
+            "base_results": [result.to_dict() for result in self.base_results],
+            "base_eval_records": [record.to_dict() for record in self.base_eval_records],
+            "final_results": [result.to_dict() for result in self.final_results],
+            "final_eval_records": [record.to_dict() for record in self.final_eval_records],
             "notes": list(self.notes),
         }
 
@@ -204,7 +212,14 @@ class FewshotOptimizationPhase:
         batch = self._sampling_stage(iteration)
 
         # Stage 2: Few-shot Optimization Stage
-        metrics, new_examples = self._fewshot_optimization_stage(iteration, batch)
+        (
+            metrics,
+            new_examples,
+            base_results,
+            base_eval_records,
+            final_results,
+            final_eval_records,
+        ) = self._fewshot_optimization_stage(iteration, batch)
 
         # 构造结果
         result = FewshotOptimizationIterationResult(
@@ -213,6 +228,10 @@ class FewshotOptimizationPhase:
             metrics=metrics,
             old_fewshot_examples=self.fewshot_examples.copy(),
             new_fewshot_examples=new_examples,
+            base_results=base_results,
+            base_eval_records=base_eval_records,
+            final_results=final_results,
+            final_eval_records=final_eval_records,
         )
 
         # 更新 few-shot examples（如果接受）
@@ -255,7 +274,14 @@ class FewshotOptimizationPhase:
         self,
         iteration: int,
         batch: SampleBatch,
-    ) -> tuple[FewshotMetrics, list[FewshotExample]]:
+    ) -> tuple[
+        FewshotMetrics,
+        list[FewshotExample],
+        list[ExtractionResult],
+        list[EvalRecord],
+        list[ExtractionResult],
+        list[EvalRecord],
+    ]:
         """Few-shot Optimization Stage。"""
         metrics = FewshotMetrics()
 
@@ -263,16 +289,18 @@ class FewshotOptimizationPhase:
         base_extraction_results = self._execute_extraction(batch)
 
         # Step 2: 统计结果
-        self._compute_base_metrics(batch, base_extraction_results, metrics)
+        base_eval_records = self._compute_base_metrics(batch, base_extraction_results, metrics)
 
         # Step 3: 选择前 N 个困难样本填入 few-shot 槽位
         new_examples = self._select_difficult_samples(batch, metrics)
+        final_extraction_results: list[ExtractionResult] = []
+        final_eval_records: list[EvalRecord] = []
 
         # Step 4: 接受判断
         if new_examples:
             # 使用新的 few-shot set 重新测试
             final_extraction_results = self._execute_extraction_with_fewshot(batch, new_examples)
-            self._compute_final_metrics(batch, final_extraction_results, metrics)
+            final_eval_records = self._compute_final_metrics(batch, final_extraction_results, metrics)
 
             # 判断是否接受
             if metrics.final_accuracy is not None and metrics.base_accuracy is not None:
@@ -284,7 +312,14 @@ class FewshotOptimizationPhase:
 
         metrics.selected_example_count = len(new_examples)
 
-        return metrics, new_examples
+        return (
+            metrics,
+            new_examples,
+            base_extraction_results,
+            base_eval_records,
+            final_extraction_results,
+            final_eval_records,
+        )
 
     def _execute_extraction(self, batch: SampleBatch) -> list[ExtractionResult]:
         """执行抽取（使用当前 few-shot examples）。"""
@@ -377,7 +412,7 @@ class FewshotOptimizationPhase:
         batch: SampleBatch,
         results: list[ExtractionResult],
         metrics: FewshotMetrics,
-    ) -> None:
+    ) -> list[EvalRecord]:
         """统计原始 few-shot 指标。"""
         if self.fewshot_executor is not None:
             eval_records = self.fewshot_executor.evaluate_results(results, self.sample_set)
@@ -393,7 +428,7 @@ class FewshotOptimizationPhase:
             metrics.base_accuracy = accuracy if total > 0 else 0.0
 
             self._apply_eval_records_to_base_traces(batch, eval_records)
-            return
+            return eval_records
 
         correct_count = sum(1 for r in results if r.status == "correct")
         wrong_count = sum(1 for r in results if r.status == "wrong")
@@ -413,12 +448,16 @@ class FewshotOptimizationPhase:
                 state.update_error(has_error)
                 state.last_extraction_status = result.status
 
+        eval_records = self._build_eval_records_from_results(results)
+        self._apply_eval_records_to_base_traces(batch, eval_records)
+        return eval_records
+
     def _compute_final_metrics(
         self,
         batch: SampleBatch,
         results: list[ExtractionResult],
         metrics: FewshotMetrics,
-    ) -> None:
+    ) -> list[EvalRecord]:
         """统计最终 few-shot 指标。"""
         if self.fewshot_executor is not None:
             eval_sample_set = copy.deepcopy(self.sample_set)
@@ -434,7 +473,7 @@ class FewshotOptimizationPhase:
             metrics.final_invalid_count = invalid_count
             metrics.final_accuracy = accuracy if total > 0 else 0.0
             self._apply_eval_records_to_final_traces(batch, eval_records)
-            return
+            return eval_records
 
         correct_count = sum(1 for r in results if r.status == "correct")
         wrong_count = sum(1 for r in results if r.status == "wrong")
@@ -445,6 +484,28 @@ class FewshotOptimizationPhase:
         metrics.final_wrong_count = wrong_count
         metrics.final_invalid_count = invalid_count
         metrics.final_accuracy = correct_count / total if total > 0 else 0.0
+        eval_records = self._build_eval_records_from_results(results)
+        self._apply_eval_records_to_final_traces(batch, eval_records)
+        return eval_records
+
+    def _build_eval_records_from_results(
+        self,
+        results: list[ExtractionResult],
+    ) -> list[EvalRecord]:
+        """为 mock 路径构造与执行结果一致的评测记录。"""
+        eval_records: list[EvalRecord] = []
+        for result in results:
+            status = result.evaluation_status or result.status
+            eval_records.append(
+                EvalRecord(
+                    sample_id=result.sample_id,
+                    extraction_result_id=result.sample_id,
+                    status=status,
+                    correct=(status == "correct"),
+                    details={},
+                )
+            )
+        return eval_records
 
     def _apply_eval_records_to_base_traces(
         self,
@@ -598,15 +659,15 @@ class FewshotOptimizationPhase:
             write_json_artifact(path, data)
 
         # 保存 base_results 和 base_eval (from result)
-        _write_jsonl(fewshot_dir / "base_results.jsonl", getattr(result, "base_results", []))
-        _write_jsonl(fewshot_dir / "base_eval.jsonl", getattr(result, "base_eval_records", []))
+        _write_jsonl(fewshot_dir / "base_results.jsonl", result.base_results)
+        _write_jsonl(fewshot_dir / "base_eval.jsonl", result.base_eval_records)
 
         # 保存 selected_examples
         _write_jsonl(fewshot_dir / "selected_examples.jsonl", result.new_fewshot_examples)
 
         # 保存 final_results 和 final_eval
-        _write_jsonl(fewshot_dir / "final_results.jsonl", getattr(result, "final_results", []))
-        _write_jsonl(fewshot_dir / "final_eval.jsonl", getattr(result, "final_eval_records", []))
+        _write_jsonl(fewshot_dir / "final_results.jsonl", result.final_results)
+        _write_jsonl(fewshot_dir / "final_eval.jsonl", result.final_eval_records)
 
         # 保存 metrics
         _write_json(fewshot_dir / "metrics.json", result.metrics)

@@ -123,6 +123,85 @@ def test_executors_build_all_multi_image_assets():
     assert [asset.id for asset in analysis_assets] == ["a1", "a2"]
 
 
+def test_extraction_user_message_does_not_include_metadata_category():
+    spec = SampleSpec(
+        id="s1",
+        input={"text": "inspect the sample"},
+        ground_truth={"result": "OK"},
+        metadata={"category": "correct", "difficulty": "easy"},
+    )
+
+    message = ExtractionExecutor(MockModelClient())._build_user_message(spec)
+
+    assert message["role"] == "user"
+    assert "Sample Input:" in message["content"]
+    assert "Metadata:" not in message["content"]
+    assert "category" not in message["content"]
+    assert "correct" not in message["content"]
+
+
+def test_analysis_blind_message_does_not_include_metadata_category():
+    prompt = StructuredPrompt(
+        id="p1",
+        prompt_type="analysis",
+        sections=[
+            PromptSection(
+                id="section_1",
+                title="Task",
+                level=1,
+                content="Judge the extraction result from the evidence only.",
+                mutable=True,
+            )
+        ],
+        raw_markdown="# Task\nJudge the extraction result from the evidence only.",
+    )
+    extraction_prompt = StructuredPrompt(
+        id="ext1",
+        prompt_type="extraction",
+        sections=[
+            PromptSection(
+                id="section_1",
+                title="Task",
+                level=1,
+                content="Extract a sample-level result.",
+                mutable=True,
+            )
+        ],
+        raw_markdown="# Task\nExtract a sample-level result.",
+    )
+    extraction_result = type(
+        "_ExtractionResult",
+        (),
+        {
+            "sample_id": "s1",
+            "status": "correct",
+            "evaluation_status": "wrong",
+            "raw_output": '{"result":"OK"}',
+            "parsed_output": {"result": "OK"},
+            "error_details": [],
+        },
+    )()
+    sample_spec = SampleSpec(
+        id="s1",
+        input={"text": "inspect the sample"},
+        ground_truth={"result": "NG"},
+        metadata={"category": "error", "difficulty": "medium"},
+    )
+
+    messages, _ = AnalysisExecutor(model_client=MockModelClient())._build_analysis_messages(
+        prompt,
+        extraction_prompt,
+        extraction_result,
+        sample_spec,
+    )
+
+    user_content = messages[1]["content"]
+    assert "# Sample Input" in user_content
+    assert "# Sample Metadata" not in user_content
+    assert "category" not in user_content
+    assert "error" not in user_content
+
+
 def test_openai_compatible_client_keeps_multiple_images_for_one_sample():
     client = OpenAICompatibleClient(base_url="https://example.test")
     assets = [

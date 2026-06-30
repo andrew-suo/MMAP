@@ -1147,6 +1147,61 @@ def test_parallel_patch_merger_generates_code_managed_unique_node_ids():
     assert merged[0]["id"] != merged[1]["id"]
 
 
+def test_parallel_patch_merger_tolerates_none_provenance_fields():
+    merger = object.__new__(ParallelPatchMerger)
+    merged = merger._backfill_group_provenance(
+        merged_patches=[
+            {"content": "a", "target_section": "task", "op": "append_to_section"},
+        ],
+        input_group=[
+            {
+                "id": "p1",
+                "source_sample_ids": None,
+                "source_patch_ids": None,
+                "upstream_source_patch_ids": None,
+            },
+        ],
+        layer=0,
+    )
+
+    assert merged[0]["source_patch_ids"] == ["p1"]
+    assert merged[0]["parent_patch_ids"] == ["p1"]
+    assert "source_sample_ids" not in merged[0]
+
+
+def test_parallel_patch_merger_stops_when_current_layer_does_not_reduce(monkeypatch):
+    merger = object.__new__(ParallelPatchMerger)
+    merger.max_layers = 4
+    merger.model_client = object()
+    merger.progress_reporter = type(
+        "_Reporter",
+        (),
+        {"step": lambda self, message: None},
+    )()
+
+    calls: list[int] = []
+
+    def _fake_run_parallel_merge(current, prompt_structure, layer):
+        calls.append(len(current))
+        if layer == 0:
+            return [{"id": "m1"}, {"id": "m2"}], 0
+        return [{"id": "m3"}, {"id": "m4"}], 0
+
+    def _fake_root_merge(current, prompt_structure):
+        return current
+
+    merger._run_parallel_merge = _fake_run_parallel_merge
+    merger._root_merge = _fake_root_merge
+
+    result = merger.merge(
+        patches=[{"id": "p1"}, {"id": "p2"}, {"id": "p3"}],
+        prompt_structure="structure",
+    )
+
+    assert calls == [3, 2]
+    assert result == [{"id": "m3"}, {"id": "m4"}]
+
+
 def test_merge_report_excludes_ids_that_survive_from_dropped_list(monkeypatch):
     from mmap_optimizer.patch.tree_reduce import ParallelPatchMerger
 

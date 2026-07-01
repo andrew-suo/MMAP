@@ -126,7 +126,7 @@ class OpenAICompatibleClient:
         return payload
 
     def _post_json(self, payload: dict[str, Any], *, timeout: int | float = 120) -> dict[str, Any]:
-        data = json.dumps(payload).encode("utf-8")
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=data,

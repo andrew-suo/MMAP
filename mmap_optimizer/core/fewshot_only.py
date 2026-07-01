@@ -56,6 +56,7 @@ class FewshotOnlyOptimizationResult:
 class PromptLoadInfo:
     prompt: StructuredPrompt
     input_format: str
+    text_encoding: str
     conversion_applied: bool
     standardized: bool
     source_text: str | None = None
@@ -171,13 +172,14 @@ class FewshotOnlyOptimizer:
         runtime_config: RefactoredConfig,
         executors: dict[str, Any],
     ) -> PromptLoadInfo:
-        text = prompt_path.read_text(encoding="utf-8")
+        text, text_encoding = self._read_prompt_text(prompt_path)
         prompt_data = self._try_load_structured_prompt_json(text)
         if prompt_data is not None:
             prompt = StructuredPrompt.from_dict(prompt_data)
             return PromptLoadInfo(
                 prompt=prompt,
                 input_format="structured_json",
+                text_encoding=text_encoding,
                 conversion_applied=False,
                 standardized=bool(prompt.metadata.get("standardized", False)),
                 source_text=None,
@@ -198,9 +200,28 @@ class FewshotOnlyOptimizer:
         return PromptLoadInfo(
             prompt=prompt,
             input_format="raw_text",
+            text_encoding=text_encoding,
             conversion_applied=True,
             standardized=bool(prompt.metadata.get("standardized", False)),
             source_text=text,
+        )
+
+    @staticmethod
+    def _read_prompt_text(path: Path) -> tuple[str, str]:
+        raw = path.read_bytes()
+        encodings = ("utf-8", "utf-8-sig", "gb18030", "gbk")
+        errors: list[str] = []
+        for encoding in encodings:
+            try:
+                return raw.decode(encoding), encoding
+            except UnicodeDecodeError as exc:
+                errors.append(f"{encoding}: {exc}")
+        raise UnicodeDecodeError(
+            "prompt_file",
+            raw,
+            0,
+            min(len(raw), 1),
+            "unable to decode prompt file with utf-8/utf-8-sig/gb18030/gbk",
         )
 
     @staticmethod
@@ -289,6 +310,7 @@ class FewshotOnlyOptimizer:
                 "source_run_dir": str(self.run_dir) if self.run_dir is not None else None,
                 "prompt_path": str(prompt_path),
                 "prompt_input_format": prompt_info.input_format,
+                "prompt_text_encoding": prompt_info.text_encoding,
                 "prompt_conversion_applied": prompt_info.conversion_applied,
                 "prompt_standardized": prompt_info.standardized,
                 "initial_fewshot_path": (

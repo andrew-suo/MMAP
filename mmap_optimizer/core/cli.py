@@ -200,7 +200,7 @@ def main() -> None:
         "--prompt-file",
         type=str,
         default=None,
-        help="结构化 extraction prompt JSON 文件路径",
+        help="extraction prompt 文件路径，支持结构化 JSON 或原始文本/Markdown",
     )
     fewshot_only_parser.add_argument(
         "--initial-fewshot-file",

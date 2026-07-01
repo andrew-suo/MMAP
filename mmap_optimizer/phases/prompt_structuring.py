@@ -207,6 +207,50 @@ class PromptStructuringPhase:
 
         return structured_extraction, structured_analysis
 
+    def structure_prompt_text(
+        self,
+        markdown: str,
+        *,
+        prompt_type: str,
+        prompt_id: str,
+    ) -> StructuredPrompt:
+        """结构化单个 prompt 文本。
+
+        先走常规解析/标准化链路；如果结果仍为空且原始文本非空，
+        则退化为单 section 结构，保证纯文本 prompt 也可进入后续流程。
+        """
+        normalized = markdown.strip()
+        if not normalized:
+            raise ValueError("prompt text is empty")
+
+        structured = self._parse_and_standardize(
+            markdown,
+            prompt_type=prompt_type,
+            prompt_id=prompt_id,
+        )
+        if structured.sections:
+            return structured
+
+        fallback_section = PromptSection(
+            id="section_1",
+            title="Instructions",
+            level=1,
+            content=normalized,
+            mutable=True,
+            metadata={"fallback_single_section": True},
+        )
+        return StructuredPrompt(
+            id=prompt_id,
+            prompt_type=cast(Literal["extraction", "analysis"], prompt_type),
+            sections=[fallback_section],
+            raw_markdown=markdown,
+            metadata={
+                "structure_quality": "poor",
+                "standardized": False,
+                "fallback_single_section": True,
+            },
+        )
+
     def _parse_and_standardize(
         self,
         markdown: str,

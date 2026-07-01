@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from ..core.artifacts import write_json_artifact, write_jsonl_artifact
 from ..core.config import RefactoredConfig
@@ -14,6 +15,7 @@ from ..core.progress import NullProgressReporter, ProgressReporter
 from ..data.dataset_loader import DatasetLoader
 from ..executors import create_executors
 from ..phases.fewshot_optimization import FewshotExample, FewshotOptimizationPhase
+from ..phases.prompt_structuring import PromptStructuringPhase
 from ..prompt.structured_prompt import StructuredPrompt
 
 
@@ -48,6 +50,15 @@ class FewshotOnlyOptimizationResult:
     artifact_dir: str
     summary: FewshotOnlySummary
     final_fewshot_examples: list[FewshotExample] = field(default_factory=list)
+
+
+@dataclass
+class PromptLoadInfo:
+    prompt: StructuredPrompt
+    input_format: str
+    conversion_applied: bool
+    standardized: bool
+    source_text: str | None = None
 
 
 def load_fewshot_examples_from_file(path: Path) -> list[FewshotExample]:
@@ -90,7 +101,15 @@ class FewshotOnlyOptimizer:
     def run(self) -> FewshotOnlyOptimizationResult:
         started_at = datetime.now().isoformat()
         prompt_path = self._resolve_prompt_path()
-        prompt = StructuredPrompt.from_dict(json.loads(prompt_path.read_text(encoding="utf-8")))
+        runtime_config = RefactoredConfig.from_dict(self.config.to_dict())
+        runtime_config.run.output_dir = str(self.artifact_dir)
+        executors = create_executors(runtime_config.to_dict(), use_mock=self.use_mock)
+        prompt_info = self._load_prompt(
+            prompt_path,
+            runtime_config=runtime_config,
+            executors=executors,
+        )
+        prompt = prompt_info.prompt
         initial_examples, initial_fewshot_path = self._load_initial_fewshot_examples()
 
         loader = DatasetLoader(
@@ -99,10 +118,6 @@ class FewshotOnlyOptimizer:
             image_root=self.config.dataset.image_root,
         )
         sample_set = loader.load_with_ground_truth(self.config.dataset.ground_truth_path)
-
-        runtime_config = RefactoredConfig.from_dict(self.config.to_dict())
-        runtime_config.run.output_dir = str(self.artifact_dir)
-        executors = create_executors(runtime_config.to_dict(), use_mock=self.use_mock)
 
         phase = FewshotOptimizationPhase(
             config=runtime_config.fewshot_optimization,
@@ -126,6 +141,7 @@ class FewshotOnlyOptimizer:
         self._write_artifacts(
             prompt=prompt,
             prompt_path=prompt_path,
+            prompt_info=prompt_info,
             initial_examples=initial_examples,
             initial_fewshot_path=initial_fewshot_path,
             final_examples=phase.fewshot_examples,
@@ -147,6 +163,62 @@ class FewshotOnlyOptimizer:
             return resolve_latest_extraction_prompt(self.run_dir)
         assert self.prompt_file is not None
         return self.prompt_file
+
+    def _load_prompt(
+        self,
+        prompt_path: Path,
+        *,
+        runtime_config: RefactoredConfig,
+        executors: dict[str, Any],
+    ) -> PromptLoadInfo:
+        text = prompt_path.read_text(encoding="utf-8")
+        prompt_data = self._try_load_structured_prompt_json(text)
+        if prompt_data is not None:
+            prompt = StructuredPrompt.from_dict(prompt_data)
+            return PromptLoadInfo(
+                prompt=prompt,
+                input_format="structured_json",
+                conversion_applied=False,
+                standardized=bool(prompt.metadata.get("standardized", False)),
+                source_text=None,
+            )
+
+        structuring_phase = PromptStructuringPhase(
+            runtime_config.prompt_structuring,
+            model_client=executors.get("optimizer_model_client") or executors.get("model_client"),
+            model_config=executors.get("optimizer_model_config") or executors.get("extraction_model_config"),
+        )
+        prompt = structuring_phase.structure_prompt_text(
+            text,
+            prompt_type="extraction",
+            prompt_id="fewshot_only_extraction_prompt",
+        )
+        if not prompt.sections:
+            raise ValueError(f"unable to structure prompt from text: {prompt_path}")
+        return PromptLoadInfo(
+            prompt=prompt,
+            input_format="raw_text",
+            conversion_applied=True,
+            standardized=bool(prompt.metadata.get("standardized", False)),
+            source_text=text,
+        )
+
+    @staticmethod
+    def _try_load_structured_prompt_json(text: str) -> dict[str, Any] | None:
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        required_keys = {"id", "prompt_type", "sections", "raw_markdown"}
+        if not required_keys.issubset(data.keys()):
+            return None
+        if data.get("prompt_type") not in {"extraction", "analysis"}:
+            return None
+        if not isinstance(data.get("sections"), list):
+            return None
+        return data
 
     def _load_initial_fewshot_examples(self) -> tuple[list[FewshotExample], Path | None]:
         if self.initial_fewshot_file is not None:
@@ -184,6 +256,7 @@ class FewshotOnlyOptimizer:
         *,
         prompt: StructuredPrompt,
         prompt_path: Path,
+        prompt_info: PromptLoadInfo,
         initial_examples: list[FewshotExample],
         initial_fewshot_path: Path | None,
         final_examples: list[FewshotExample],
@@ -192,7 +265,13 @@ class FewshotOnlyOptimizer:
         started_at: str,
         ended_at: str,
     ) -> None:
+        self.artifact_dir.mkdir(parents=True, exist_ok=True)
         write_json_artifact(self.artifact_dir / "used_extraction_prompt.json", prompt)
+        if prompt_info.source_text is not None:
+            (self.artifact_dir / "source_prompt.txt").write_text(
+                prompt_info.source_text,
+                encoding="utf-8",
+            )
         write_jsonl_artifact(self.artifact_dir / "initial_fewshot_examples.jsonl", initial_examples)
         write_jsonl_artifact(self.artifact_dir / "final_fewshot_examples.jsonl", final_examples)
         write_json_artifact(
@@ -209,6 +288,9 @@ class FewshotOnlyOptimizer:
                 "artifact_dir": str(self.artifact_dir),
                 "source_run_dir": str(self.run_dir) if self.run_dir is not None else None,
                 "prompt_path": str(prompt_path),
+                "prompt_input_format": prompt_info.input_format,
+                "prompt_conversion_applied": prompt_info.conversion_applied,
+                "prompt_standardized": prompt_info.standardized,
                 "initial_fewshot_path": (
                     str(initial_fewshot_path) if initial_fewshot_path is not None else None
                 ),

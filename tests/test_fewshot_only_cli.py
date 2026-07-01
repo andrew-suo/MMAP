@@ -49,6 +49,18 @@ def _write_fewshot_file(path: Path) -> None:
     path.write_text(json.dumps(example.to_dict(), ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def _write_text_prompt(path: Path) -> str:
+    text = "You are an extraction assistant.\nReturn the final result as JSON with a result field."
+    path.write_text(text, encoding="utf-8")
+    return text
+
+
+def _write_markdown_prompt(path: Path) -> str:
+    text = "# Task\nExtract the result.\n\n## Output Format\n{\"result\": \"string\"}"
+    path.write_text(text, encoding="utf-8")
+    return text
+
+
 def _config(dataset_path: Path, output_dir: Path) -> RefactoredConfig:
     config = RefactoredConfig()
     config.dataset.path = str(dataset_path)
@@ -85,6 +97,62 @@ def test_fewshot_only_optimizer_with_prompt_file_writes_artifacts(tmp_path: Path
     assert (artifact_dir / "sample_states.json").exists()
     assert (artifact_dir / "sample_traces.jsonl").exists()
     assert (artifact_dir / "fewshot_optimization" / "iteration_1" / "fewshot" / "metrics.json").exists()
+    run_context = json.loads((artifact_dir / "run_context.json").read_text(encoding="utf-8"))
+    assert run_context["prompt_input_format"] == "structured_json"
+    assert run_context["prompt_conversion_applied"] is False
+    assert not (artifact_dir / "source_prompt.txt").exists()
+
+
+def test_fewshot_only_optimizer_accepts_plain_text_prompt_file(tmp_path: Path):
+    dataset_path = tmp_path / "dataset.jsonl"
+    _write_dataset(dataset_path)
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_text = _write_text_prompt(prompt_file)
+
+    artifact_dir = tmp_path / "fewshot_only_out"
+    optimizer = FewshotOnlyOptimizer(
+        _config(dataset_path, tmp_path / "base_out"),
+        prompt_file=prompt_file,
+        artifact_dir=artifact_dir,
+        use_mock=True,
+    )
+
+    result = optimizer.run()
+
+    assert result.summary.iterations == 1
+    used_prompt = json.loads((artifact_dir / "used_extraction_prompt.json").read_text(encoding="utf-8"))
+    run_context = json.loads((artifact_dir / "run_context.json").read_text(encoding="utf-8"))
+    assert used_prompt["prompt_type"] == "extraction"
+    assert len(used_prompt["sections"]) == 1
+    assert used_prompt["sections"][0]["title"] == "Instructions"
+    assert used_prompt["sections"][0]["content"] == prompt_text
+    assert run_context["prompt_input_format"] == "raw_text"
+    assert run_context["prompt_conversion_applied"] is True
+    assert (artifact_dir / "source_prompt.txt").read_text(encoding="utf-8") == prompt_text
+
+
+def test_fewshot_only_optimizer_accepts_markdown_prompt_file(tmp_path: Path):
+    dataset_path = tmp_path / "dataset.jsonl"
+    _write_dataset(dataset_path)
+    prompt_file = tmp_path / "prompt.md"
+    _write_markdown_prompt(prompt_file)
+
+    artifact_dir = tmp_path / "fewshot_only_out"
+    optimizer = FewshotOnlyOptimizer(
+        _config(dataset_path, tmp_path / "base_out"),
+        prompt_file=prompt_file,
+        artifact_dir=artifact_dir,
+        use_mock=True,
+    )
+
+    optimizer.run()
+
+    used_prompt = json.loads((artifact_dir / "used_extraction_prompt.json").read_text(encoding="utf-8"))
+    run_context = json.loads((artifact_dir / "run_context.json").read_text(encoding="utf-8"))
+    assert len(used_prompt["sections"]) >= 1
+    assert used_prompt["sections"][0]["title"] == "Task"
+    assert run_context["prompt_input_format"] == "raw_text"
+    assert run_context["prompt_conversion_applied"] is True
 
 
 def test_fewshot_only_optimizer_uses_run_dir_initial_fewshot_without_mutating_source(tmp_path: Path):

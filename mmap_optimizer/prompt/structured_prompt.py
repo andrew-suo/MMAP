@@ -226,6 +226,7 @@ class StructuredPrompt:
             output_text = _get_attr(example, "output_text", "")
             input_images = _get_attr(example, "input_images", []) or []
             output_data = _get_attr(example, "output_data", {}) or {}
+            rationale_text = _get_attr(example, "rationale_text", "")
 
             if input_text:
                 lines.append("Input:")
@@ -247,6 +248,11 @@ class StructuredPrompt:
             if output_data:
                 lines.append("Output Data:")
                 lines.append(_format_data(output_data))
+                lines.append("")
+
+            if rationale_text:
+                lines.append("Decision Rationale:")
+                lines.append(rationale_text)
                 lines.append("")
 
         return "\n".join(lines).strip()

@@ -37,6 +37,8 @@ class FewshotExample:
     output_text: str
     input_images: list[str] = field(default_factory=list)
     output_data: dict[str, Any] = field(default_factory=dict)
+    rationale_text: str = ""
+    rationale_source: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +50,8 @@ class FewshotExample:
             "input_images": list(self.input_images),
             "output_text": self.output_text,
             "output_data": dict(self.output_data),
+            "rationale_text": self.rationale_text,
+            "rationale_source": self.rationale_source,
             "metadata": dict(self.metadata),
         }
 
@@ -60,6 +64,8 @@ class FewshotExample:
             input_images=list(data.get("input_images", [])),
             output_text=data.get("output_text", ""),
             output_data=dict(data.get("output_data", {})),
+            rationale_text=data.get("rationale_text", ""),
+            rationale_source=data.get("rationale_source", ""),
             metadata=dict(data.get("metadata", {})),
         )
 
@@ -79,6 +85,17 @@ class FewshotConfig:
     require_no_regression: bool = True
     min_accuracy_delta: float = 0.01
     require_schema_stable: bool = True
+    enable_rationale: bool = True
+    rationale_max_chars: int = 200
+    rationale_source_preference: list[str] = field(default_factory=lambda: [
+        "prompt_optimization_history",
+        "fewshot_inline_generation",
+    ])
+    rationale_for_candidate_types: list[str] = field(default_factory=lambda: [
+        "boundary",
+        "historical_misclassified",
+        "high_frequency_error",
+    ])
     multimodal_render_mode: str = "multi_turn"
     max_example_images: int | None = None
     max_total_images: int | None = None
@@ -138,6 +155,8 @@ class FewshotOptimizationIterationResult:
     new_fewshot_examples: list[FewshotExample]
     candidate_pool: list[dict[str, Any]] = field(default_factory=list)
     candidate_scores: list[dict[str, Any]] = field(default_factory=list)
+    rationale_records: list[dict[str, Any]] = field(default_factory=list)
+    rationale_trajectory: list[dict[str, Any]] = field(default_factory=list)
     base_results: list[ExtractionResult] = field(default_factory=list)
     base_eval_records: list[EvalRecord] = field(default_factory=list)
     final_results: list[ExtractionResult] = field(default_factory=list)
@@ -158,6 +177,8 @@ class FewshotOptimizationIterationResult:
             "new_fewshot_examples": [e.to_dict() for e in self.new_fewshot_examples],
             "candidate_pool": list(self.candidate_pool),
             "candidate_scores": list(self.candidate_scores),
+            "rationale_records": list(self.rationale_records),
+            "rationale_trajectory": list(self.rationale_trajectory),
             "base_results": [result.to_dict() for result in self.base_results],
             "base_eval_records": [record.to_dict() for record in self.base_eval_records],
             "final_results": [result.to_dict() for result in self.final_results],
@@ -196,6 +217,32 @@ class FewshotCandidateRecord:
             "error_pattern": self.error_pattern,
             "selection_score": self.selection_score,
             "selection_reason": self.selection_reason,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass
+class FewshotRationaleRecord:
+    sample_id: str
+    example_id: str
+    candidate_type: str
+    rationale_text: str
+    rationale_source: str
+    rationale_mode: str
+    history_inputs_used: list[str] = field(default_factory=list)
+    generation_notes: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sample_id": self.sample_id,
+            "example_id": self.example_id,
+            "candidate_type": self.candidate_type,
+            "rationale_text": self.rationale_text,
+            "rationale_source": self.rationale_source,
+            "rationale_mode": self.rationale_mode,
+            "history_inputs_used": list(self.history_inputs_used),
+            "generation_notes": list(self.generation_notes),
             "metadata": dict(self.metadata),
         }
 
@@ -286,6 +333,8 @@ class FewshotOptimizationPhase:
             new_examples,
             candidate_pool,
             candidate_scores,
+            rationale_records,
+            rationale_trajectory,
             base_results,
             base_eval_records,
             final_results,
@@ -306,6 +355,8 @@ class FewshotOptimizationPhase:
             new_fewshot_examples=new_examples,
             candidate_pool=candidate_pool,
             candidate_scores=candidate_scores,
+            rationale_records=rationale_records,
+            rationale_trajectory=rationale_trajectory,
             base_results=base_results,
             base_eval_records=base_eval_records,
             final_results=final_results,
@@ -415,6 +466,8 @@ class FewshotOptimizationPhase:
         list[FewshotExample],
         list[dict[str, Any]],
         list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
         list[ExtractionResult],
         list[EvalRecord],
         list[ExtractionResult],
@@ -431,11 +484,16 @@ class FewshotOptimizationPhase:
 
         candidate_records, fallback_used, selection_notes = self._build_candidate_pool(selection_batch)
         notes.extend(selection_notes)
-        new_examples = self._select_candidate_examples(candidate_records, force_fallback=fallback_used)
+        new_examples, rationale_records = self._select_candidate_examples(
+            candidate_records,
+            force_fallback=fallback_used,
+        )
         new_examples, budget_notes = self._apply_example_budget(new_examples)
         notes.extend(budget_notes)
         metrics.selected_example_count = len(new_examples)
         metrics.fallback_used = fallback_used
+        rationale_records = self._sync_rationale_records_with_examples(rationale_records, new_examples)
+        rationale_trajectory = [self._rationale_trajectory_payload(record) for record in rationale_records]
 
         base_extraction_results = self._execute_extraction(validation_batch)
         base_eval_records = self._compute_base_metrics(validation_batch, base_extraction_results, metrics)
@@ -470,6 +528,8 @@ class FewshotOptimizationPhase:
             new_examples,
             [item.to_dict() for item in candidate_records],
             [self._candidate_score_payload(item) for item in candidate_records],
+            [item.to_dict() for item in rationale_records],
+            rationale_trajectory,
             base_extraction_results,
             base_eval_records,
             final_extraction_results,
@@ -784,21 +844,15 @@ class FewshotOptimizationPhase:
         candidate_records: list[FewshotCandidateRecord],
         *,
         force_fallback: bool = False,
-    ) -> list[FewshotExample]:
+    ) -> tuple[list[FewshotExample], list[FewshotRationaleRecord]]:
         if not candidate_records:
-            return []
+            return [], []
         if force_fallback or self.config.selection_strategy != "quota_diverse":
             return self._build_examples_from_candidates(candidate_records[: self.config.slot_count])
 
         selected_records: list[FewshotCandidateRecord] = []
         selected_ids: set[str] = set()
-        priority = [
-            "canonical_positive",
-            "canonical_negative",
-            "high_frequency_error",
-            "boundary",
-            "historical_misclassified",
-        ]
+        priority = self._selection_priority(candidate_records)
         by_type: dict[str, list[FewshotCandidateRecord]] = {name: [] for name in priority}
         remainder: list[FewshotCandidateRecord] = []
         for record in candidate_records:
@@ -827,11 +881,45 @@ class FewshotOptimizationPhase:
 
         return self._build_examples_from_candidates(selected_records)
 
+    def _selection_priority(
+        self,
+        candidate_records: list[FewshotCandidateRecord],
+    ) -> list[str]:
+        default_priority = [
+            "canonical_positive",
+            "canonical_negative",
+            "high_frequency_error",
+            "boundary",
+            "historical_misclassified",
+        ]
+        if not self.config.enable_rationale:
+            return default_priority
+
+        prefer_history = "prompt_optimization_history" in set(self.config.rationale_source_preference)
+        if not prefer_history:
+            return default_priority
+
+        has_historical_candidate = any(
+            record.candidate_type == "historical_misclassified"
+            for record in candidate_records
+        )
+        if not has_historical_candidate:
+            return default_priority
+
+        return [
+            "canonical_positive",
+            "canonical_negative",
+            "high_frequency_error",
+            "historical_misclassified",
+            "boundary",
+        ]
+
     def _build_examples_from_candidates(
         self,
         candidate_records: list[FewshotCandidateRecord],
-    ) -> list[FewshotExample]:
+    ) -> tuple[list[FewshotExample], list[FewshotRationaleRecord]]:
         examples: list[FewshotExample] = []
+        rationale_records: list[FewshotRationaleRecord] = []
         limit = self.config.max_context_examples or self.config.slot_count
         for record in self.progress.iter(
             candidate_records[:limit],
@@ -841,14 +929,17 @@ class FewshotOptimizationPhase:
             spec = self.sample_set.specs.get(record.sample_id)
             if spec is None:
                 continue
-            examples.append(self._build_example_from_spec(spec, record))
-        return examples
+            example, rationale_record = self._build_example_from_spec(spec, record)
+            examples.append(example)
+            if rationale_record is not None:
+                rationale_records.append(rationale_record)
+        return examples, rationale_records
 
     def _build_example_from_spec(
         self,
         spec: SampleSpec,
         record: FewshotCandidateRecord | None = None,
-    ) -> FewshotExample:
+    ) -> tuple[FewshotExample, FewshotRationaleRecord | None]:
         images = [
             img for img in (
                 asset.uri or asset.local_path or ""
@@ -870,15 +961,47 @@ class FewshotOptimizationPhase:
                     "selection_score": record.selection_score,
                 }
             )
-        return FewshotExample(
+        rationale_text = ""
+        rationale_source = ""
+        rationale_record: FewshotRationaleRecord | None = None
+        if self.config.enable_rationale and record is not None:
+            rationale_text, rationale_source, rationale_mode, history_inputs_used, generation_notes = (
+                self._build_rationale_for_sample(spec, record)
+            )
+            metadata.update(
+                {
+                    "rationale_enabled": bool(rationale_text),
+                    "rationale_mode": rationale_mode,
+                    "rationale_source": rationale_source,
+                }
+            )
+            if rationale_text:
+                rationale_record = FewshotRationaleRecord(
+                    sample_id=spec.id,
+                    example_id=f"fewshot_{spec.id}",
+                    candidate_type=record.candidate_type,
+                    rationale_text=rationale_text,
+                    rationale_source=rationale_source,
+                    rationale_mode=rationale_mode,
+                    history_inputs_used=history_inputs_used,
+                    generation_notes=generation_notes,
+                    metadata={
+                        "has_images": bool(images),
+                        "image_count": len(images),
+                    },
+                )
+        example = FewshotExample(
             id=f"fewshot_{spec.id}",
             sample_id=spec.id,
             input_text=str(spec.input),
             input_images=images,
             output_text=str(spec.ground_truth),
             output_data=spec.ground_truth,
+            rationale_text=rationale_text,
+            rationale_source=rationale_source,
             metadata=metadata,
         )
+        return example, rationale_record
 
     def _apply_example_budget(
         self,
@@ -905,6 +1028,158 @@ class FewshotOptimizationPhase:
                 total_images += image_count
             limited = kept
         return limited, notes
+
+    def _build_rationale_for_sample(
+        self,
+        spec: SampleSpec,
+        record: FewshotCandidateRecord,
+    ) -> tuple[str, str, str, list[str], list[str]]:
+        if not self._should_attach_rationale(spec, record):
+            return "", "", "disabled", [], ["rationale_skipped"]
+        state = self.sample_set.states.get(spec.id)
+        history_text, history_inputs_used, history_notes = self._history_based_rationale(
+            spec,
+            record,
+            state,
+        )
+        if history_text:
+            return history_text, "prompt_optimization_history", "history_based", history_inputs_used, history_notes
+        inline_text, inline_notes = self._inline_rationale(spec, record, state)
+        if inline_text:
+            return inline_text, "fewshot_inline_generation", "inline_generate", [], inline_notes
+        return "", "", "empty", history_inputs_used, history_notes + inline_notes
+
+    def _should_attach_rationale(
+        self,
+        spec: SampleSpec,
+        record: FewshotCandidateRecord,
+    ) -> bool:
+        if len([asset for asset in spec.assets if asset.type == "image"]) > 1:
+            return True
+        return record.candidate_type in set(self.config.rationale_for_candidate_types)
+
+    def _history_based_rationale(
+        self,
+        spec: SampleSpec,
+        record: FewshotCandidateRecord,
+        state: SampleState | None,
+    ) -> tuple[str, list[str], list[str]]:
+        if state is None:
+            return "", [], ["no_state_for_history"]
+        trajectories = state.get_optimization_trajectory(limit=6)
+        if not trajectories:
+            return "", [], ["no_optimization_trajectory"]
+        history_inputs_used: list[str] = []
+        notes: list[str] = []
+        rationale_parts: list[str] = []
+        analysis_trajectories = [t for t in trajectories if t.prompt_type == "analysis"]
+        extraction_trajectories = [t for t in trajectories if t.prompt_type == "extraction"]
+        latest_analysis = analysis_trajectories[-1] if analysis_trajectories else None
+        latest_extraction = extraction_trajectories[-1] if extraction_trajectories else None
+
+        if latest_analysis is not None:
+            analysis_reason = latest_analysis.analysis_summary.get("error_reason")
+            if analysis_reason:
+                rationale_parts.append(self._normalize_rationale_text(analysis_reason))
+                history_inputs_used.append("analysis_summary.error_reason")
+            reflection_reason = latest_analysis.reflection_summary.get("error_reason")
+            if reflection_reason and not rationale_parts:
+                rationale_parts.append(self._normalize_rationale_text(reflection_reason))
+                history_inputs_used.append("reflection_summary.error_reason")
+        if latest_extraction is not None and not rationale_parts:
+            attempts = latest_extraction.latest_patch_attempts(limit=3)
+            for attempt in reversed(attempts):
+                if attempt.rationale:
+                    rationale_parts.append(self._normalize_rationale_text(attempt.rationale))
+                    history_inputs_used.append("patch_attempts.rationale")
+                    break
+                if attempt.rejection_reason:
+                    rationale_parts.append(self._normalize_rationale_text(attempt.rejection_reason))
+                    history_inputs_used.append("patch_attempts.rejection_reason")
+                    break
+
+        rationale = " ".join(part for part in rationale_parts if part).strip()
+        if not rationale:
+            notes.append("history_available_but_no_reason")
+        rationale = self._augment_rationale_with_sample_context(rationale, spec, record)
+        rationale = self._truncate_rationale(rationale)
+        return rationale, history_inputs_used, notes
+
+    def _inline_rationale(
+        self,
+        spec: SampleSpec,
+        record: FewshotCandidateRecord,
+        state: SampleState | None,
+    ) -> tuple[str, list[str]]:
+        notes: list[str] = []
+        parts: list[str] = []
+        image_count = len([asset for asset in spec.assets if asset.type == "image"])
+        if image_count > 1:
+            parts.append("Consider all provided images together before deciding the sample-level label.")
+        candidate_type = record.candidate_type
+        if candidate_type == "boundary":
+            parts.append("The label depends on a subtle boundary condition rather than a single obvious cue.")
+        elif candidate_type == "historical_misclassified":
+            parts.append("This is a historically unstable case, so rely on the decisive evidence and avoid repeating prior mistakes.")
+        elif candidate_type == "high_frequency_error":
+            parts.append("This sample represents a frequent failure pattern and should be checked against the main error cue.")
+        elif candidate_type == "canonical_negative":
+            parts.append("The final label is driven by a clear failure condition in the sample.")
+        if state is not None and state.last_extraction_status in {"wrong", "invalid"}:
+            parts.append("Do not rely on superficial similarity to previously correct examples.")
+        rationale = self._truncate_rationale(" ".join(parts).strip())
+        if not rationale:
+            notes.append("inline_rationale_empty")
+        return rationale, notes
+
+    @staticmethod
+    def _normalize_rationale_text(text: str) -> str:
+        return " ".join(str(text).split())
+
+    def _augment_rationale_with_sample_context(
+        self,
+        rationale: str,
+        spec: SampleSpec,
+        record: FewshotCandidateRecord,
+    ) -> str:
+        parts: list[str] = []
+        if rationale:
+            parts.append(rationale)
+        image_count = len([asset for asset in spec.assets if asset.type == "image"])
+        if image_count > 1 and "all provided images together" not in rationale.lower():
+            parts.append("Consider all provided images together before deciding the sample-level label.")
+        if record.candidate_type == "boundary" and "boundary" not in rationale.lower():
+            parts.append("Focus on the boundary cue that separates this case from similar examples.")
+        return " ".join(parts).strip()
+
+    def _truncate_rationale(self, rationale: str) -> str:
+        text = rationale.strip()
+        if not text:
+            return ""
+        limit = max(20, self.config.rationale_max_chars)
+        if len(text) <= limit:
+            return text
+        return text[: limit - 3].rstrip() + "..."
+
+    @staticmethod
+    def _sync_rationale_records_with_examples(
+        records: list[FewshotRationaleRecord],
+        examples: list[FewshotExample],
+    ) -> list[FewshotRationaleRecord]:
+        valid_ids = {example.id for example in examples}
+        return [record for record in records if record.example_id in valid_ids]
+
+    @staticmethod
+    def _rationale_trajectory_payload(record: FewshotRationaleRecord) -> dict[str, Any]:
+        return {
+            "sample_id": record.sample_id,
+            "example_id": record.example_id,
+            "candidate_type": record.candidate_type,
+            "rationale_source": record.rationale_source,
+            "rationale_mode": record.rationale_mode,
+            "history_inputs_used": list(record.history_inputs_used),
+            "generation_notes": list(record.generation_notes),
+        }
 
     def _build_validation_report(
         self,
@@ -1008,7 +1283,7 @@ class FewshotOptimizationPhase:
     ) -> list[FewshotExample]:
         """兼容旧测试入口：当前实现走 candidate pool + 选择策略。"""
         candidate_records, fallback_used, _ = self._build_candidate_pool(batch)
-        examples = self._select_candidate_examples(candidate_records, force_fallback=fallback_used)
+        examples, _ = self._select_candidate_examples(candidate_records, force_fallback=fallback_used)
         examples, _ = self._apply_example_budget(examples)
         return examples
 
@@ -1056,8 +1331,11 @@ class FewshotOptimizationPhase:
 
         # 保存 selected_examples
         _write_jsonl(fewshot_dir / "selected_examples.jsonl", result.new_fewshot_examples)
+        _write_jsonl(fewshot_dir / "selected_fewshot_with_rationale.jsonl", result.new_fewshot_examples)
         _write_jsonl(fewshot_dir / "candidate_pool.jsonl", result.candidate_pool)
         _write_jsonl(fewshot_dir / "candidate_scores.jsonl", result.candidate_scores)
+        _write_jsonl(fewshot_dir / "fewshot_rationale_records.jsonl", result.rationale_records)
+        _write_jsonl(fewshot_dir / "fewshot_rationale_trajectory.jsonl", result.rationale_trajectory)
 
         # 保存 final_results 和 final_eval
         _write_jsonl(fewshot_dir / "final_results.jsonl", result.final_results)

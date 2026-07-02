@@ -275,6 +275,10 @@ class RefactoredConfig:
                 "require_no_regression": self.fewshot_optimization.require_no_regression,
                 "min_accuracy_delta": self.fewshot_optimization.min_accuracy_delta,
                 "require_schema_stable": self.fewshot_optimization.require_schema_stable,
+                "enable_rationale": self.fewshot_optimization.enable_rationale,
+                "rationale_max_chars": self.fewshot_optimization.rationale_max_chars,
+                "rationale_source_preference": list(self.fewshot_optimization.rationale_source_preference),
+                "rationale_for_candidate_types": list(self.fewshot_optimization.rationale_for_candidate_types),
                 "multimodal_render_mode": self.fewshot_optimization.multimodal_render_mode,
                 "max_example_images": self.fewshot_optimization.max_example_images,
                 "max_total_images": self.fewshot_optimization.max_total_images,
@@ -408,6 +412,20 @@ class RefactoredConfig:
             require_no_regression=fewshot_optimization_data.get("require_no_regression", True),
             min_accuracy_delta=float(fewshot_optimization_data.get("min_accuracy_delta", 0.01)),
             require_schema_stable=fewshot_optimization_data.get("require_schema_stable", True),
+            enable_rationale=fewshot_optimization_data.get("enable_rationale", True),
+            rationale_max_chars=int(fewshot_optimization_data.get("rationale_max_chars", 200)),
+            rationale_source_preference=list(
+                fewshot_optimization_data.get(
+                    "rationale_source_preference",
+                    ["prompt_optimization_history", "fewshot_inline_generation"],
+                )
+            ),
+            rationale_for_candidate_types=list(
+                fewshot_optimization_data.get(
+                    "rationale_for_candidate_types",
+                    ["boundary", "historical_misclassified", "high_frequency_error"],
+                )
+            ),
             multimodal_render_mode=fewshot_optimization_data.get("multimodal_render_mode", "multi_turn"),
             max_example_images=fewshot_optimization_data.get("max_example_images"),
             max_total_images=fewshot_optimization_data.get("max_total_images"),

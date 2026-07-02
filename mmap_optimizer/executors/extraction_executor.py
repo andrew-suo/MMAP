@@ -185,7 +185,11 @@ class ExtractionExecutor:
         if not output_text:
             output_data = getattr(example, "output_data", {}) or {}
             output_text = json.dumps(output_data, ensure_ascii=False)
-        return {"role": "assistant", "content": f"Few-shot Example Output:\n{output_text}"}
+        rationale_text = getattr(example, "rationale_text", "") or ""
+        assistant_parts = [f"Few-shot Example Output:\n{output_text}"]
+        if rationale_text:
+            assistant_parts.append(f"Decision Rationale:\n{rationale_text}")
+        return {"role": "assistant", "content": "\n\n".join(assistant_parts)}
 
     def _image_string_to_url(self, img_str: str, owner_id: str, idx: int) -> str | None:
         """把 few-shot 图片字符串（文件路径或 URI）转成 data URL 或 URI。

@@ -242,6 +242,8 @@ def test_render_with_fewshot_lists_all_images_for_same_sample():
         input_images=["front.png", "back.png", "detail.png"],
         output_text='{"result":"NG"}',
         output_data={"result": "NG"},
+        rationale_text="Consider all images together before deciding the sample-level result.",
+        rationale_source="fewshot_inline_generation",
     )
 
     rendered = prompt.render_with_fewshot([example])
@@ -251,6 +253,8 @@ def test_render_with_fewshot_lists_all_images_for_same_sample():
     assert "- front.png" in rendered
     assert "- back.png" in rendered
     assert "- detail.png" in rendered
+    assert "Decision Rationale:" in rendered
+    assert "Consider all images together" in rendered
 
 
 def test_fewshot_selection_carries_all_sample_images(tmp_path):

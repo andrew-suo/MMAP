@@ -152,6 +152,15 @@ fewshot_optimization:
   require_no_regression: true
   min_accuracy_delta: 0.01
   require_schema_stable: true
+  enable_rationale: true
+  rationale_max_chars: 200
+  rationale_source_preference:
+    - prompt_optimization_history
+    - fewshot_inline_generation
+  rationale_for_candidate_types:
+    - boundary
+    - historical_misclassified
+    - high_frequency_error
   multimodal_render_mode: multi_turn
   max_example_images: null
   max_total_images: null

@@ -243,6 +243,32 @@ def test_text_fewshot_stays_in_system_prompt():
     assert msgs[1]["role"] == "user"
 
 
+def test_multimodal_fewshot_assistant_message_can_include_rationale():
+    client = RecordingClient(base_url="https://example.test")
+    executor = ExtractionExecutor(model_client=client)
+
+    prompt = make_extraction_prompt()
+    spec = make_spec("current_sample")
+    examples = [
+        FewshotExample(
+            id="fewshot_text1",
+            sample_id="t1",
+            input_text="text example",
+            output_text='{"result": "dog"}',
+            rationale_text="Focus on the decisive visual cue rather than superficial similarity.",
+            rationale_source="fewshot_inline_generation",
+            input_images=[],
+        ),
+    ]
+
+    executor._execute_single(prompt, spec, examples)
+
+    msgs = client.prepared_messages
+    assert msgs is not None
+    assert "Decision Rationale" in msgs[0]["content"]
+    assert "decisive visual cue" in msgs[0]["content"]
+
+
 def test_no_fewshot_uses_plain_system_message():
     """无 few-shot 时走默认 system message 路径。"""
     client = RecordingClient(base_url="https://example.test")

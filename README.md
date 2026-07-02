@@ -7,7 +7,9 @@ MMAP Optimizer 是一个面向多模态信息抽取任务的 Prompt 自动优化
 ## 目录
 
 - [核心能力](#核心能力)
+- [系统架构](#系统架构)
 - [工作流概览](#工作流概览)
+- [关键流程图](#关键流程图)
 - [安装](#安装)
 - [快速开始](#快速开始)
 - [真实模型配置](#真实模型配置)
@@ -35,6 +37,37 @@ MMAP Optimizer 是一个面向多模态信息抽取任务的 Prompt 自动优化
 - **Few-shot 优化**：维护候选示例池，按 slot 选择更优 few-shot 示例。
 - **可追踪产物**：每轮输出 sample trajectory、sample traces、merge report、toxicity report、compression report 等 artifact。
 
+## 系统架构
+
+```mermaid
+flowchart LR
+    dataset["Dataset JSONL + Images"] --> loader["DatasetLoader"]
+    prompts["Prompt Templates / Markdown"] --> struct["Prompt Structuring"]
+    loader --> runner["MMAP Runner"]
+    struct --> runner
+
+    runner --> po["Prompt Optimization"]
+    runner --> fo["Few-shot Optimization"]
+    runner --> eval["Eval Latest"]
+
+    po --> ex["Extraction Stage"]
+    po --> an["Analysis Stage"]
+
+    ex --> ex_exec["Extraction / Evaluation / Analysis Executors"]
+    an --> an_exec["Analysis / Reflection Executors"]
+
+    ex_exec --> patch["Patch Generation / Validation / Merge / Apply"]
+    an_exec --> patch
+    patch --> tox["Toxicity / Regression Guard"]
+    tox --> compress["Compression"]
+
+    po --> state["SampleState / Trace / Trajectory"]
+    fo --> state
+    eval --> artifacts["Artifacts / Reports / Final Prompts"]
+    state --> artifacts
+    compress --> artifacts
+```
+
 ## 工作流概览
 
 ```text
@@ -58,6 +91,88 @@ Phase 3: Few-shot Optimization
   Candidate examples
     -> slot evaluation
     -> final few-shot examples
+```
+
+### 运行模式
+
+| 模式 | 命令 | 目的 |
+| --- | --- | --- |
+| 完整优化 | `mmap-optimizer run ...` | 结构化 prompt、优化 extraction / analysis、再优化 few-shot |
+| 全量验证 | `mmap-optimizer eval-latest ...` | 使用最新 extraction prompt 对整个数据集做抽取验证 |
+| 单独优化 few-shot | `mmap-optimizer optimize-fewshot ...` | 锁定已有 extraction prompt，只优化 few-shot 示例 |
+
+## 关键流程图
+
+### 单轮 Prompt Optimization
+
+```mermaid
+flowchart TD
+    start["Sample Batch"] --> sample["Sampler"]
+    sample --> base["Base Extraction"]
+    base --> eval["Evaluation Against GT"]
+    eval --> wrong{"Wrong / Invalid?"}
+
+    wrong -- No --> done["Keep Trace / Update State"]
+    wrong -- Yes --> blind["Blind Analysis"]
+    blind --> draft["Semantic Patch Drafts"]
+    draft --> translate["Translate to Strict Patches"]
+    translate --> validate["Validate / Calibrate"]
+    validate --> merge["Tree Merge + Root Merge"]
+    merge --> apply["Apply to Prompt"]
+    apply --> retest["Retest on Candidate Samples"]
+    retest --> tox["Toxicity / Regression Check"]
+    tox --> accept{"Accepted?"}
+    accept -- Yes --> compress["Compression If Needed"]
+    accept -- No --> done
+    compress --> done
+```
+
+### Patch 生命周期
+
+```mermaid
+flowchart LR
+    a["Wrong Sample"] --> b["Analysis / Reflection"]
+    b --> c["Semantic Patch Draft"]
+    c --> d["Strict Patch"]
+    d --> e["Validator"]
+    e -->|valid| f["Merge Candidate"]
+    e -->|rejected| r1["Rejected Patch"]
+    f --> g["Merged Patch"]
+    g --> h["Apply to Prompt"]
+    h --> i["Retest"]
+    i -->|safe + effective| j["Accepted Patch"]
+    i -->|toxic| r2["Toxic Patch"]
+    i -->|no change / ineffective| r3["Dropped Patch"]
+```
+
+### Few-shot 双路径
+
+```mermaid
+flowchart TD
+    s["Few-shot Candidate Samples"] --> kind{"入口方式"}
+    kind -- "after prompt optimization" --> hist["Read existing sample trajectory / optimization history"]
+    kind -- "fewshot-only" --> inline["Inline rationale generation during selection"]
+
+    hist --> pool["Candidate Pool + Diversity Selection"]
+    inline --> pool
+    pool --> validate_fs["Validation Set Evaluation"]
+    validate_fs --> gate{"Improve and no regression?"}
+    gate -- Yes --> accept_fs["Accept few-shot set"]
+    gate -- No --> reject_fs["Reject / Keep previous set"]
+```
+
+### 状态与产物流向
+
+```mermaid
+flowchart LR
+    exec["Executors"] --> ss["SampleState"]
+    exec --> trace["SampleTrace"]
+    exec --> traj["SampleOptimizationTrajectory"]
+    ss --> sampler["Next-round Sampler"]
+    trace --> reports["Iteration Reports"]
+    traj --> fewshot["Few-shot Rationale Reuse"]
+    sampler --> next["Next Iteration"]
+    reports --> out["run_summary / merge_report / toxicity_report / validation_report"]
 ```
 
 ## 安装
@@ -104,7 +219,35 @@ python -m mmap_optimizer.core.cli info --config configs/smoke.yaml
 mmap-optimizer run --config configs/smoke.yaml --use-mock
 ```
 
+使用最新 extraction prompt 对全量数据做验证：
+
+```bash
+mmap-optimizer eval-latest \
+  --config configs/custom_data.example.yaml \
+  --run-dir runs/real_run \
+  --no-mock
+```
+
+锁定某个已有 prompt，单独优化 few-shot：
+
+```bash
+mmap-optimizer optimize-fewshot \
+  --config configs/custom_data.example.yaml \
+  --prompt-file prompts/extraction.txt \
+  --output-dir runs/fewshot_only \
+  --no-mock
+```
+
 如果你要接入自己的数据，建议先复制 `configs/custom_data.example.yaml`，再把数据路径、图片根目录和模型配置替换成你的环境。
+
+如果是从中断运行继续：
+
+```bash
+mmap-optimizer run \
+  --config configs/custom_data.example.yaml \
+  --output-dir runs/real_run \
+  --resume
+```
 
 ## 真实模型配置
 
@@ -217,6 +360,18 @@ python -m mmap_optimizer.core.cli run \
 
 参考样例见 `data/smoke_samples.jsonl`（smoke 回归数据）和 `data/custom_samples.example.jsonl`（自定义接入模板）。
 
+### 数据流示意
+
+```mermaid
+flowchart LR
+    sample["JSONL Row"] --> spec["SampleSpec"]
+    gt["ground_truth / gt file"] --> spec
+    asset["assets[*]"] --> spec
+    spec --> exec["Multimodal Executor"]
+    exec --> result["Extraction Result"]
+    result --> judge["Evaluation / Analysis"]
+```
+
 ## 配置说明
 
 项目配置分为以下顶层块：
@@ -258,6 +413,13 @@ prompt_optimization:
 
 完整示例见 `configs/default_config.yaml` 和 `configs/smoke.yaml`。
 如果你要接自己的数据，建议优先从 `configs/custom_data.example.yaml` 复制一份。
+
+### 推荐调参顺序
+
+1. 先用 `smoke.yaml` + `--use-mock` 验证流程和 artifact。
+2. 再切到自己的数据，只跑 `eval-latest` 确认当前 prompt 的真实基线。
+3. 然后打开完整 `run`，先观察 extraction accuracy、patch 数、merge 数、toxicity 结果是否合理。
+4. 最后再启用或单独运行 `optimize-fewshot`，避免把 prompt 和 few-shot 两类变化混在一起排查。
 
 ## 运行输出与日志
 
@@ -320,6 +482,20 @@ runs/<run_id>/
 | `toxicity_report.json` | patch 测毒结果 |
 | `compression_report.json` | Prompt 压缩触发、验证和接受情况 |
 
+### 产物阅读顺序
+
+建议按下面顺序排查一次运行：
+
+1. `run_summary.json`
+2. `prompt_optimization/iteration_X/sample_batch.json`
+3. `prompt_optimization/iteration_X/extraction/metrics.json`
+4. `prompt_optimization/iteration_X/extraction/analysis_results.jsonl`
+5. `prompt_optimization/iteration_X/extraction/validated_patches.jsonl`
+6. `prompt_optimization/iteration_X/extraction/initial_merge_report.json`
+7. `prompt_optimization/iteration_X/extraction/toxicity_report.json`
+8. `prompt_optimization/iteration_X/extraction/compression_report.json`
+9. `sample_states.json`
+
 ## 项目结构
 
 ```text
@@ -354,6 +530,8 @@ tests/                    # 单元测试、集成测试、smoke 测试
 .venv/bin/python -m pytest tests/test_trace2skill_improvements.py -q
 .venv/bin/python -m pytest tests/test_trace2skill_sampling.py -q
 ```
+
+README 中的 Mermaid 图需要你的 Markdown 渲染器支持 Mermaid；GitHub 和大多数现代文档平台可以直接显示。
 
 检查 diff 空白问题：
 

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mmap_optimizer.data.sample import SampleBatch, SampleSet, SampleSpec, SampleState
+from mmap_optimizer.data.sample import (
+    SampleBatch,
+    SampleOptimizationTrajectory,
+    SampleSet,
+    SampleSpec,
+    SampleState,
+)
 from mmap_optimizer.phases.fewshot_optimization import (
     FewshotConfig,
     FewshotMetrics,
@@ -87,6 +93,43 @@ def test_select_difficult_samples_uses_candidate_pool_diversity(tmp_path: Path):
     assert "high_frequency_error" in candidate_types or "canonical_negative" in candidate_types
 
 
+def test_selected_examples_use_history_based_rationale_when_trajectory_exists(tmp_path: Path):
+    sample_set = _sample_set()
+    sample_set.states["s3"].add_optimization_trajectory(
+        SampleOptimizationTrajectory(
+            sample_id="s3",
+            prompt_type="analysis",
+            iteration=1,
+            analysis_summary={"error_reason": "The label depends on a narrow boundary cue."},
+        )
+    )
+    phase = FewshotOptimizationPhase(
+        config=FewshotConfig(slot_count=3, batch_size=4, candidate_pool_size=4, enable_rationale=True),
+        extraction_prompt=_prompt(),
+        sample_set=sample_set,
+        output_dir=tmp_path,
+    )
+
+    examples = phase._select_difficult_samples(_batch(["s1", "s2", "s3", "s4"]), FewshotMetrics())
+    example_by_id = {example.sample_id: example for example in examples}
+
+    assert example_by_id["s3"].rationale_source == "prompt_optimization_history"
+    assert "boundary" in example_by_id["s3"].rationale_text.lower()
+
+
+def test_selected_examples_use_inline_rationale_without_history(tmp_path: Path):
+    phase = FewshotOptimizationPhase(
+        config=FewshotConfig(slot_count=3, batch_size=4, candidate_pool_size=4, enable_rationale=True),
+        extraction_prompt=_prompt(),
+        sample_set=_sample_set(),
+        output_dir=tmp_path,
+    )
+
+    examples = phase._select_difficult_samples(_batch(["s1", "s2", "s4", "s5"]), FewshotMetrics())
+
+    assert any(example.rationale_source == "fewshot_inline_generation" for example in examples)
+
+
 def test_fewshot_stage_rejects_no_delta_candidate(tmp_path: Path, monkeypatch):
     phase = FewshotOptimizationPhase(
         config=FewshotConfig(slot_count=2, batch_size=4, min_accuracy_delta=0.01),
@@ -128,7 +171,7 @@ def test_fewshot_stage_rejects_no_delta_candidate(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(phase, "_compute_base_metrics", fake_base_metrics)
     monkeypatch.setattr(phase, "_compute_final_metrics", fake_final_metrics)
 
-    metrics, _, _, _, _, _, _, _, _, decision, _ = phase._fewshot_optimization_stage(1, batch)
+    metrics, _, _, _, _, _, _, _, _, _, _, decision, _ = phase._fewshot_optimization_stage(1, batch)
 
     assert metrics.accepted is False
     assert metrics.decision_reason == "no_delta"
@@ -183,5 +226,7 @@ def test_fewshot_stage_rejects_regression_and_writes_audit_artifacts(tmp_path: P
     assert result.metrics.decision_reason == "regression_detected"
     assert (fewshot_dir / "candidate_pool.jsonl").exists()
     assert (fewshot_dir / "candidate_scores.jsonl").exists()
+    assert (fewshot_dir / "fewshot_rationale_records.jsonl").exists()
+    assert (fewshot_dir / "fewshot_rationale_trajectory.jsonl").exists()
     assert (fewshot_dir / "validation_report.json").exists()
     assert (fewshot_dir / "decision.json").exists()
